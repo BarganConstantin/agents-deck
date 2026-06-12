@@ -23,7 +23,7 @@ if (flags.uninstall) {
   process.exit(0);
 }
 
-const port = Number(flags.port ?? process.env.CCGRAPH_PORT ?? 4317);
+const port = Number(flags.port ?? process.env.AGENT_DAG_PORT ?? 4317);
 const workspace = flags.all ? "" : (flags.workspace ?? process.cwd());
 const openBrowser = flags.noOpen !== true;
 const persist = flags.noPersist
@@ -41,41 +41,101 @@ if (!existsSync(WEB_DIST)) {
   process.exit(1);
 }
 
-console.log(`
-  ╔══════════════════════════════════╗
-  ║  ◉  agent-dag  v1.0.3           ║
-  ║     live DAG · Claude agents    ║
-  ╚══════════════════════════════════╝
-`);
-console.log("  workspace :", workspace === "" ? "(all)" : workspace);
+// ── ANSI helpers ──────────────────────────────────────────────────────────────
+const tty = process.stdout.isTTY;
+const C = {
+  reset:   tty ? "\x1b[0m"  : "",
+  bold:    tty ? "\x1b[1m"  : "",
+  dim:     tty ? "\x1b[2m"  : "",
+  cyan:    tty ? "\x1b[36m" : "",
+  blue:    tty ? "\x1b[34m" : "",
+  magenta: tty ? "\x1b[35m" : "",
+  yellow:  tty ? "\x1b[33m" : "",
+  green:   tty ? "\x1b[32m" : "",
+  white:   tty ? "\x1b[97m" : "",
+  bCyan:   tty ? "\x1b[96m" : "",
+  bMag:    tty ? "\x1b[95m" : "",
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const { settingsPath, hookPath, events } = await installHooks();
-console.log("  hooks     :", hookPath);
-console.log("  settings  :", settingsPath);
+// ── Animated banner ───────────────────────────────────────────────────────────
+async function printBanner() {
+  const W = "══════════════════════════════════════";
+  const lines = [
+    "",
+    `  ${C.cyan}${C.bold}╔${W}╗${C.reset}`,
+    `  ${C.blue}${C.bold}║${C.reset}  ${C.bCyan}${C.bold}◉  agent-dag${C.reset}  ${C.dim}v1.0.4${C.reset}                    ${C.blue}${C.bold}║${C.reset}`,
+    `  ${C.magenta}${C.bold}║${C.reset}  ${C.dim}live DAG · Claude Code agents${C.reset}         ${C.magenta}${C.bold}║${C.reset}`,
+    `  ${C.bMag}${C.bold}║${C.reset}  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}     ${C.bMag}${C.bold}║${C.reset}`,
+    `  ${C.cyan}${C.bold}╚${W}╝${C.reset}`,
+    "",
+  ];
+  for (const line of lines) {
+    process.stdout.write(line + "\n");
+    if (tty) await sleep(45);
+  }
+}
 
+// ── Spinner ───────────────────────────────────────────────────────────────────
+function spinner(label) {
+  if (!tty) { process.stdout.write(`  … ${label}\n`); return { stop: (ok, msg) => process.stdout.write(`  ${ok ? "✓" : "✗"} ${msg}\n`) }; }
+  const frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+  let i = 0;
+  const iv = setInterval(() => {
+    process.stdout.write(`\r  ${C.cyan}${frames[i++ % frames.length]}${C.reset}  ${label}`);
+  }, 80);
+  return {
+    stop(ok, msg) {
+      clearInterval(iv);
+      const icon = ok ? `${C.green}✓${C.reset}` : `${C.yellow}✗${C.reset}`;
+      process.stdout.write(`\r  ${icon}  ${msg}\n`);
+    }
+  };
+}
+
+await printBanner();
+
+// ── Startup steps ─────────────────────────────────────────────────────────────
+process.stdout.write(`  ${C.dim}workspace :${C.reset} ${workspace === "" ? C.yellow + "(all)" + C.reset : workspace}\n`);
+
+let sp = spinner("installing hooks…");
+const { settingsPath, hookPath } = await installHooks();
+sp.stop(true, `hooks installed  ${C.dim}→ ${hookPath}${C.reset}`);
+
+sp = spinner("starting server…");
 const server = await startServer({ port, persist }).catch(err => {
-  console.error("agent-dag: server failed:", err.message);
+  sp.stop(false, `server failed: ${err.message}`);
   process.exit(1);
 });
-
 const addr = server.address();
 const realPort = typeof addr === "object" && addr ? addr.port : port;
 const url = `http://127.0.0.1:${realPort}`;
+sp.stop(true, `server ready     ${C.dim}→ ${C.reset}${C.bCyan}${C.bold}${url}${C.reset}`);
+
+if (persist) process.stdout.write(`  ${C.dim}log       : ${persist}${C.reset}\n`);
+
+process.stdout.write(`\n  ${C.green}${C.bold}▶  opening browser…${C.reset}\n\n`);
 
 const discoveryFile = await writeDiscovery({ port: realPort, workspace });
-console.log(`  url: ${url}`);
-if (persist) console.log(`  log: ${persist}`);
 
 if (openBrowser) {
   try {
     const { default: open } = await import("open");
     await open(url);
-  } catch {
-    // open is optional; user can navigate manually.
-  }
+  } catch {}
+}
+
+// ── Pulse indicator ───────────────────────────────────────────────────────────
+if (tty) {
+  const pulseFrames = [`${C.green}●${C.reset}`, `${C.dim}●${C.reset}`];
+  let pi = 0;
+  setInterval(() => {
+    process.stdout.write(`\r  ${pulseFrames[pi++ % 2]}  ${C.dim}listening — Ctrl+C to stop${C.reset}   `);
+  }, 800).unref();
 }
 
 const shutdown = async () => {
+  if (tty) process.stdout.write(`\n\n  ${C.yellow}◉  shutting down…${C.reset}\n`);
   await removeDiscovery(discoveryFile);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();
@@ -84,7 +144,7 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("beforeExit", () => removeDiscovery(discoveryFile));
 
-// --- helpers ---
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 function parseArgs(args) {
   const out = {};

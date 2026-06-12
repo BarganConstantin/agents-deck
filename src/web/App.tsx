@@ -50,6 +50,9 @@ function snapshotToFlow(
   pinned: Map<string, { x: number; y: number }>,
   query: string,
   measured: Map<string, { width: number; height: number }>,
+  positions: Map<string, { x: number; y: number }>,
+  layoutSig: string,
+  lastLayoutSigRef: { current: string },
 ): { nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[]; edges: Edge[] } {
   const nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[] = [];
   const edges: Edge[] = [];
@@ -97,7 +100,26 @@ function snapshotToFlow(
       });
     }
   }
-  return { nodes: autoLayout(nodes, edges, { direction: "LR", pinned, measured }), edges };
+  // Only rerun dagre when the structure or measured sizes actually change.
+  // Between layouts, reuse cached positions so per-event renders don't shift
+  // nodes — that was the source of canvas flicker + drag-snap-back.
+  if (layoutSig !== lastLayoutSigRef.current) {
+    const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
+    for (const n of laidOut) positions.set(n.id, n.position);
+    lastLayoutSigRef.current = layoutSig;
+  } else {
+    // Lay out any brand-new nodes whose position is still missing.
+    const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
+    if (missing.length > 0) {
+      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
+      for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
+    }
+  }
+  const finalNodes = nodes.map(n => {
+    const p = pinned.get(n.id) ?? positions.get(n.id) ?? { x: 0, y: 0 };
+    return { ...n, position: p };
+  });
+  return { nodes: finalNodes, edges };
 }
 
 export default function App() {
@@ -205,9 +227,26 @@ function Inner() {
   }, []);
   const sizeVersion = useStore(measuredSelector);
 
+  // Position cache + structural signature. Layout reruns only when the set
+  // of visible agents OR sizes OR pin-set changes — NOT on every event.
+  const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const lastLayoutSigRef = useRef<string>("");
+  const layoutSig = useMemo(() => {
+    const ids: string[] = [];
+    for (const a of stateRef.current.agents.values()) {
+      if (a.exitAt != null && now - a.exitAt > EXIT_ANIM_MS) continue;
+      ids.push(a.id + (a.parentId ? `>${a.parentId}` : ""));
+    }
+    ids.sort();
+    return `${ids.join("|")}#sv${sizeVersion}#pn${pinnedRef.current.size}`;
+  }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion]);
+
   const { nodes, edges } = useMemo(
-    () => snapshotToFlow(stateRef.current, now, pinnedRef.current, query, measuredRef.current),
-    [stateRef.current, stateRef.current.lastSeq, now, query, sizeVersion],
+    () => snapshotToFlow(
+      stateRef.current, now, pinnedRef.current, query,
+      measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
+    ),
+    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig],
   );
 
   const selected = selectedId ? stateRef.current.agents.get(selectedId) : null;
