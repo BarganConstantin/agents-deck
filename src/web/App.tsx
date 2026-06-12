@@ -21,35 +21,56 @@ function cssVar(name: string): string {
 
 const nodeTypes = { agent: AgentNode };
 
+function matchesQuery(a: AgentNodeData, q: string): boolean {
+  if (!q) return true;
+  const needle = q.toLowerCase();
+  if (a.label.toLowerCase().includes(needle)) return true;
+  if (a.cwd?.toLowerCase().includes(needle)) return true;
+  if (a.cwdBasename?.toLowerCase().includes(needle)) return true;
+  if (a.sessionId.toLowerCase().includes(needle)) return true;
+  if (a.firstPrompt?.toLowerCase().includes(needle)) return true;
+  for (const t of a.tools) if (t.name.toLowerCase().includes(needle)) return true;
+  return false;
+}
+
 function snapshotToFlow(
   state: GraphState,
   now: number,
   pinned: Map<string, { x: number; y: number }>,
-): { nodes: Node<AgentNodeData & { now: number }>[]; edges: Edge[] } {
-  const nodes: Node<AgentNodeData & { now: number }>[] = [];
+  query: string,
+): { nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[]; edges: Edge[] } {
+  const nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[] = [];
   const edges: Edge[] = [];
+  const matchSet = new Set<string>();
+  if (query) {
+    for (const a of state.agents.values()) if (matchesQuery(a, query)) matchSet.add(a.id);
+  }
+
   for (const a of state.agents.values()) {
+    const dim = query ? !matchSet.has(a.id) : false;
     nodes.push({
       id: a.id,
       type: "agent",
       position: { x: 0, y: 0 },
-      data: { ...a, now },
+      data: { ...a, now, dim },
+      className: dim ? "rf-dim" : undefined,
     });
     if (a.parentId && state.agents.has(a.parentId)) {
       const hue = sessionHue(a.sessionId);
       const stroke = a.state === "active" ? `hsl(${hue} 80% 72%)` : `hsl(${hue} 50% 55%)`;
+      const edgeDim = query && (!matchSet.has(a.id) && !matchSet.has(a.parentId));
       edges.push({
         id: `e:${a.parentId}->${a.id}`,
         source: a.parentId,
         target: a.id,
-        animated: a.state === "active",
+        animated: a.state === "active" && !edgeDim,
         type: "smoothstep",
         label: a.label,
         labelBgPadding: [6, 3],
         labelBgBorderRadius: 4,
-        labelStyle: { fontSize: 10, fill: stroke, fontFamily: "ui-monospace, monospace" },
-        labelBgStyle: { fill: "var(--bg-soft)", fillOpacity: 0.85, stroke, strokeWidth: 0.5 },
-        style: { stroke, strokeWidth: a.state === "active" ? 2 : 1.5 },
+        labelStyle: { fontSize: 10, fill: stroke, fontFamily: "ui-monospace, monospace", opacity: edgeDim ? 0.3 : 1 },
+        labelBgStyle: { fill: "var(--bg-soft)", fillOpacity: edgeDim ? 0.4 : 0.85, stroke, strokeWidth: 0.5 },
+        style: { stroke, strokeWidth: a.state === "active" ? 2 : 1.5, opacity: edgeDim ? 0.25 : 1 },
       });
     }
   }
@@ -75,6 +96,7 @@ function Inner() {
   const queueRef = useRef<HookEnvelope[]>([]);
   const [now, setNow] = useState(Date.now());
   const pinnedRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const [query, setQuery] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window === "undefined") return "dark";
     return (window.localStorage.getItem("ccgraph.theme") as "dark" | "light") ?? "dark";
@@ -116,8 +138,8 @@ function Inner() {
   }, []);
 
   const { nodes, edges } = useMemo(
-    () => snapshotToFlow(stateRef.current, now, pinnedRef.current),
-    [stateRef.current, stateRef.current.lastSeq, now],
+    () => snapshotToFlow(stateRef.current, now, pinnedRef.current, query),
+    [stateRef.current, stateRef.current.lastSeq, now, query],
   );
 
   const selected = selectedId ? stateRef.current.agents.get(selectedId) : null;
@@ -165,6 +187,19 @@ function Inner() {
           ccgraph <span className="v">v0.2</span>
         </div>
         <div className="actions">
+          <div className="search">
+            <span className="search-icon">⌕</span>
+            <input
+              type="text"
+              placeholder="search agent / cwd / tool…"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              spellCheck={false}
+            />
+            {query && (
+              <button className="search-clear" aria-label="Clear" onClick={() => setQuery("")}>×</button>
+            )}
+          </div>
           <span className="status">
             <span className={`pill ${live ? "live" : "dead"}`}>{live ? "live" : "disconnected"}</span>
             <span><span className="count">{sessionCount}</span> sessions</span>

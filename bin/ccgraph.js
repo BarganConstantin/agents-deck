@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // ccgraph CLI entrypoint. Registers hooks, starts server, opens browser.
 import { resolve, dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 
@@ -25,6 +26,9 @@ if (flags.uninstall) {
 const port = Number(flags.port ?? process.env.CCGRAPH_PORT ?? 4317);
 const workspace = flags.all ? "" : (flags.workspace ?? process.cwd());
 const openBrowser = flags.noOpen !== true;
+const persist = flags.noPersist
+  ? null
+  : (flags.history ?? join(homedir(), ".claude", "ccgraph", "events.jsonl"));
 
 const { installHooks, writeDiscovery, removeDiscovery } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
@@ -45,7 +49,7 @@ console.log("  hook installed:", hookPath);
 console.log("  events:", events.join(", "));
 console.log("  settings:", settingsPath);
 
-const server = await startServer({ port }).catch(err => {
+const server = await startServer({ port, persist }).catch(err => {
   if (err && err.code === "EADDRINUSE") {
     console.error(`\nccgraph: port ${port} in use. Try --port <N>.`);
   } else {
@@ -60,6 +64,7 @@ const url = `http://127.0.0.1:${realPort}`;
 
 const discoveryFile = await writeDiscovery({ port: realPort, workspace });
 console.log(`  url: ${url}`);
+if (persist) console.log(`  log: ${persist}`);
 
 if (openBrowser) {
   try {
@@ -91,6 +96,8 @@ function parseArgs(args) {
     else if (a === "--uninstall") out.uninstall = true;
     else if (a === "--workspace") out.workspace = args[++i];
     else if (a === "--all") out.all = true;
+    else if (a === "--no-persist") out.noPersist = true;
+    else if (a === "--history") out.history = args[++i];
   }
   return out;
 }
@@ -106,6 +113,8 @@ Options:
       --no-open            Don't open the browser automatically
       --workspace <path>   Workspace root (default: cwd)
       --all                Capture sessions from ALL workspaces (machine-wide)
+      --history <path>     Override events log file (default: ~/.claude/ccgraph/events.jsonl)
+      --no-persist         Don't write or replay events log (RAM-only)
       --uninstall          Remove ccgraph hook entries from ~/.claude/settings.json
   -h, --help               Show this help
 `);

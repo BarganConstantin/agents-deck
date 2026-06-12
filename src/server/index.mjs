@@ -1,11 +1,12 @@
 // ccgraph server: HTTP ingest + SSE broadcast + static file serving.
 // Single-file pure Node HTTP server, zero deps.
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { extname, join, resolve } from "node:path";
+import { readFile, stat, mkdir, appendFile, open, truncate } from "node:fs/promises";
+import { createReadStream, existsSync } from "node:fs";
+import { extname, join, resolve, dirname as pdirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { createInterface } from "node:readline";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
@@ -29,11 +30,13 @@ const events = [];                  // ring buffer
 let nextSeq = 1;
 const sseClients = new Set();       // res handles
 
-function pushEvent(raw, source) {
+let persistPath = null;             // absolute path to events.jsonl, or null
+
+function pushEvent(raw, source, opts = {}) {
   const seq = nextSeq++;
   const evt = {
     seq,
-    receivedAt: Date.now(),
+    receivedAt: opts.receivedAt ?? Date.now(),
     source,
     payload: raw,
   };
@@ -44,7 +47,30 @@ function pushEvent(raw, source) {
   for (const res of sseClients) {
     try { res.write(line); } catch {}
   }
+
+  if (persistPath && !opts.replay) {
+    // Fire-and-forget append. JSONL = newline-delimited JSON.
+    appendFile(persistPath, JSON.stringify(evt) + "\n", "utf8").catch(() => {});
+  }
+
   return evt;
+}
+
+async function replayLog(filePath) {
+  if (!existsSync(filePath)) return 0;
+  let count = 0;
+  const rl = createInterface({ input: createReadStream(filePath, { encoding: "utf8" }) });
+  for await (const line of rl) {
+    if (!line) continue;
+    try {
+      const evt = JSON.parse(line);
+      if (evt && typeof evt === "object" && evt.payload) {
+        pushEvent(evt.payload, evt.source ?? "replay", { receivedAt: evt.receivedAt, replay: true });
+        count++;
+      }
+    } catch { /* skip corrupt line */ }
+  }
+  return count;
 }
 
 function send(res, status, body, headers = {}) {
@@ -140,7 +166,16 @@ function handleHealth(_req, res) {
   });
 }
 
-export function startServer({ port = 4317, host = "127.0.0.1" } = {}) {
+export async function startServer({ port = 4317, host = "127.0.0.1", persist = null } = {}) {
+  if (persist) {
+    persistPath = resolve(persist);
+    try { await mkdir(pdirname(persistPath), { recursive: true }); } catch {}
+    const replayed = await replayLog(persistPath);
+    if (replayed > 0) {
+      // Don't broadcast replays as live; SSE clients catch up via Last-Event-ID
+      // already. Just keep the buffer + seq counter primed.
+    }
+  }
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? host}`);
 
@@ -153,9 +188,10 @@ export function startServer({ port = 4317, host = "127.0.0.1" } = {}) {
       return send(res, 200, events.filter(e => e.seq > since));
     }
 
-    // POST /api/clear — wipe in-memory buffer (UI reset button)
+    // POST /api/clear — wipe in-memory buffer + persistence file (UI reset)
     if (req.method === "POST" && url.pathname === "/api/clear") {
       events.length = 0;
+      if (persistPath) truncate(persistPath, 0).catch(() => {});
       pushEvent({ hook_event_name: "__clear", cwd: "" }, "internal");
       return send(res, 200, { ok: true });
     }
