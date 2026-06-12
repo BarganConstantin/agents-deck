@@ -238,7 +238,7 @@ function Inner() {
       ids.push(a.id + (a.parentId ? `>${a.parentId}` : ""));
     }
     ids.sort();
-    return `${ids.join("|")}#sv${sizeVersion}#pn${pinnedRef.current.size}`;
+    return `${ids.join("|")}#sv${sizeVersion}`;
   }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion]);
 
   const { nodes, edges } = useMemo(
@@ -261,12 +261,16 @@ function Inner() {
     stateRef.current = initialState();
     pinnedRef.current.clear();
     measuredRef.current.clear();
+    positionsRef.current.clear();
+    lastLayoutSigRef.current = "";
     setSelectedId(null);
     rerender();
   }, [rerender]);
 
   const handleRelayout = useCallback(() => {
     pinnedRef.current.clear();
+    positionsRef.current.clear();
+    lastLayoutSigRef.current = "";
     rerender();
   }, [rerender]);
 
@@ -378,8 +382,18 @@ function Inner() {
           selectionOnDrag={false}
           onNodeClick={(_, n) => setSelectedId(n.id)}
           onPaneClick={() => setSelectedId(null)}
+          onNodeDragStart={(_, n) => {
+            pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
+          }}
+          onNodeDrag={(_, n) => {
+            // Live-pin during drag so an incoming event re-render doesn't
+            // snap the node back to its dagre slot mid-motion.
+            pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
+            positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
+          }}
           onNodeDragStop={(_, n) => {
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
+            positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
           }}
         >
           <Background gap={28} size={1} color={cssVar("--grid-line")} />

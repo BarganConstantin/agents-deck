@@ -60,14 +60,22 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Animated banner ───────────────────────────────────────────────────────────
 async function printBanner() {
-  const W = "══════════════════════════════════════";
+  const IW = 38; // inner visible width between ║ chars
+  const pad = (visLen) => " ".repeat(Math.max(0, IW - visLen));
+  const HR = "═".repeat(IW);
+
+  // Each entry: [rendered string with ANSI, visible char count, left-border color, right-border color]
+  const rows = [
+    { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agent-dag${C.reset}  ${C.dim}v1.0.4${C.reset}`, vis: 22, lc: C.blue,    rc: C.blue    },
+    { l: `  ${C.dim}live DAG · Claude Code agents${C.reset}`,                                                   vis: 31, lc: C.magenta, rc: C.magenta },
+    { l: `  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}`,               vis: 34, lc: C.bMag,    rc: C.bMag    },
+  ];
+
   const lines = [
     "",
-    `  ${C.cyan}${C.bold}╔${W}╗${C.reset}`,
-    `  ${C.blue}${C.bold}║${C.reset}  ${C.bCyan}${C.bold}◉  agent-dag${C.reset}  ${C.dim}v1.0.4${C.reset}                    ${C.blue}${C.bold}║${C.reset}`,
-    `  ${C.magenta}${C.bold}║${C.reset}  ${C.dim}live DAG · Claude Code agents${C.reset}         ${C.magenta}${C.bold}║${C.reset}`,
-    `  ${C.bMag}${C.bold}║${C.reset}  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}     ${C.bMag}${C.bold}║${C.reset}`,
-    `  ${C.cyan}${C.bold}╚${W}╝${C.reset}`,
+    `  ${C.cyan}${C.bold}╔${HR}╗${C.reset}`,
+    ...rows.map(r => `  ${r.lc}${C.bold}║${C.reset}${r.l}${pad(r.vis)}${r.rc}${C.bold}║${C.reset}`),
+    `  ${C.cyan}${C.bold}╚${HR}╝${C.reset}`,
     "",
   ];
   for (const line of lines) {
