@@ -83,6 +83,11 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
       <div className="meta">
         <span><b>{data.toolCount}</b> tools</span>
         {inflight > 0 && <span className="inflight-meta"><b>{inflight}</b> in-flight</span>}
+        {(data.usage.inputTokens + data.usage.outputTokens) > 0 && (
+          <span className="tokens-meta" title={`in:${data.usage.inputTokens}  out:${data.usage.outputTokens}  cache-r:${data.usage.cacheReadTokens}  cache-c:${data.usage.cacheCreateTokens}`}>
+            <b>{fmtTok(data.usage.inputTokens + data.usage.outputTokens)}</b> tok
+          </span>
+        )}
       </div>
 
       <Handle type="source" position={Position.Right} style={{ background: "transparent", border: "none" }} />
@@ -93,4 +98,10 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
 function StatePill({ state }: { state: AgentNodeData["state"] }) {
   const label = state === "active" ? "live" : state === "done" ? "done" : "err";
   return <span className={`state-pill state-${state}`}>{label}</span>;
+}
+
+function fmtTok(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }

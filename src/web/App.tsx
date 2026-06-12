@@ -6,6 +6,7 @@ import ReactFlow, {
   type Edge,
   type Node,
   ReactFlowProvider,
+  useReactFlow,
 } from "reactflow";
 import AgentNode from "./components/AgentNode";
 import ToolModal from "./components/ToolModal";
@@ -17,6 +18,12 @@ import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 function cssVar(name: string): string {
   if (typeof window === "undefined") return "";
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "";
+}
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 const nodeTypes = { agent: AgentNode };
@@ -86,6 +93,7 @@ export default function App() {
 }
 
 function Inner() {
+  const rf = useReactFlow();
   const stateRef = useRef<GraphState>(initialState());
   const [, force] = useState(0);
   const rerender = useCallback(() => force(x => x + 1), []);
@@ -137,6 +145,22 @@ function Inner() {
     return () => clearInterval(id);
   }, []);
 
+  // Auto-fit when agent count grows (debounced).
+  const lastAgentCountRef = useRef(0);
+  const fitTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const count = stateRef.current.agents.size;
+    if (count > lastAgentCountRef.current) {
+      lastAgentCountRef.current = count;
+      if (fitTimerRef.current) window.clearTimeout(fitTimerRef.current);
+      fitTimerRef.current = window.setTimeout(() => {
+        try { rf.fitView({ padding: 0.25, duration: 600 }); } catch {}
+      }, 400);
+    } else if (count < lastAgentCountRef.current) {
+      lastAgentCountRef.current = count;
+    }
+  });
+
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(stateRef.current, now, pinnedRef.current, query),
     [stateRef.current, stateRef.current.lastSeq, now, query],
@@ -178,6 +202,16 @@ function Inner() {
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
+  const totalTokens = useMemo(() => {
+    let inT = 0, outT = 0, cacheR = 0, cacheC = 0;
+    for (const a of stateRef.current.agents.values()) {
+      inT += a.usage.inputTokens;
+      outT += a.usage.outputTokens;
+      cacheR += a.usage.cacheReadTokens;
+      cacheC += a.usage.cacheCreateTokens;
+    }
+    return { inT, outT, cacheR, cacheC, sum: inT + outT };
+  }, [stateRef.current, stateRef.current.lastSeq]);
 
   return (
     <div className="app">
@@ -205,6 +239,11 @@ function Inner() {
             <span><span className="count">{sessionCount}</span> sessions</span>
             <span><span className="count">{agentCount}</span> agents</span>
             <span><span className="count">{stateRef.current.totalEvents}</span> events</span>
+            {totalTokens.sum > 0 && (
+              <span title={`in:${totalTokens.inT}  out:${totalTokens.outT}  cache-r:${totalTokens.cacheR}  cache-c:${totalTokens.cacheC}`}>
+                <span className="count">{fmtTokens(totalTokens.sum)}</span> tokens
+              </span>
+            )}
           </span>
           <button className="btn" onClick={() => setPaused(p => !p)} title="Space">
             {paused ? `Resume${queueRef.current.length ? ` (${queueRef.current.length})` : ""}` : "Pause"}
@@ -334,6 +373,18 @@ function Detail({
         {agent.cwd && <div className="row"><span className="k">cwd</span><span className="v" title={agent.cwd}>{agent.cwd}</span></div>}
         <div className="row"><span className="k">session</span><span className="v">{agent.sessionId.slice(0, 8)}…</span></div>
       </div>
+
+      {(agent.usage.inputTokens + agent.usage.outputTokens) > 0 && (
+        <>
+          <h3>Tokens</h3>
+          <div className="tokens-grid">
+            <div><span className="k">in</span><b>{agent.usage.inputTokens.toLocaleString()}</b></div>
+            <div><span className="k">out</span><b>{agent.usage.outputTokens.toLocaleString()}</b></div>
+            <div><span className="k">cache r</span><b>{agent.usage.cacheReadTokens.toLocaleString()}</b></div>
+            <div><span className="k">cache c</span><b>{agent.usage.cacheCreateTokens.toLocaleString()}</b></div>
+          </div>
+        </>
+      )}
 
       {agent.prompts.length > 0 && (
         <>

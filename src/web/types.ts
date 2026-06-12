@@ -14,6 +14,14 @@ export interface ToolCall {
   errorPreview?: string;
   /** Owning agent id, so callers (modal) can navigate back to source. */
   agentId?: string;
+  usage?: TokenUsage;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
 }
 
 export interface PromptEntry {
@@ -43,6 +51,7 @@ export interface AgentNodeData {
   inFlightTool?: ToolCall | null;
   /** Number of direct subagents spawned by this agent. */
   childCount: number;
+  usage: TokenUsage;
 }
 
 export interface HookEnvelope {

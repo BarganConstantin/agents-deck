@@ -1,5 +1,44 @@
 // Event → graph reducer. Pure-ish: same events in any order = same end state.
-import type { AgentNodeData, HookEnvelope, HookPayload, ToolCall } from "./types";
+import type { AgentNodeData, HookEnvelope, HookPayload, TokenUsage, ToolCall } from "./types";
+
+function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
+}
+
+/** Recursively look for a `usage` object with numeric token fields in any
+ *  shape Anthropic / CC might deliver (top-level, nested under message, etc.).
+ */
+function extractUsage(node: unknown, depth = 0): TokenUsage | null {
+  if (!node || typeof node !== "object" || depth > 6) return null;
+  const obj = node as Record<string, unknown>;
+  // Direct shape: { input_tokens, output_tokens, ... }
+  if (
+    typeof obj.input_tokens === "number" ||
+    typeof obj.output_tokens === "number" ||
+    typeof obj.cache_read_input_tokens === "number" ||
+    typeof obj.cache_creation_input_tokens === "number"
+  ) {
+    return {
+      inputTokens: Number(obj.input_tokens ?? 0),
+      outputTokens: Number(obj.output_tokens ?? 0),
+      cacheReadTokens: Number(obj.cache_read_input_tokens ?? 0),
+      cacheCreateTokens: Number(obj.cache_creation_input_tokens ?? 0),
+    };
+  }
+  // Nested: { usage: { ... } } or { message: { usage: {...} } } etc.
+  for (const v of Object.values(obj)) {
+    const u = extractUsage(v, depth + 1);
+    if (u) return u;
+  }
+  return null;
+}
+
+function addUsage(into: TokenUsage, add: TokenUsage): void {
+  into.inputTokens += add.inputTokens;
+  into.outputTokens += add.outputTokens;
+  into.cacheReadTokens += add.cacheReadTokens;
+  into.cacheCreateTokens += add.cacheCreateTokens;
+}
 
 export interface GraphState {
   agents: Map<string, AgentNodeData>;
@@ -53,6 +92,7 @@ function ensureRoot(state: GraphState, sessionId: string, now: number, synthetic
     childCount: 0,
     synthetic,
     inFlightTool: null,
+    usage: emptyUsage(),
   };
   state.agents.set(id, a);
   return a;
@@ -98,6 +138,7 @@ function ensureAgent(state: GraphState, p: HookPayload, now: number): AgentNodeD
     toolCount: 0,
     childCount: 0,
     inFlightTool: null,
+    usage: emptyUsage(),
   };
   state.agents.set(id, a);
   root.childCount += 1;
@@ -183,12 +224,17 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
         tc.ok = name === "PostToolUse";
         tc.response = p.tool_response;
         if (name === "PostToolUseFailure") tc.errorPreview = shortPreview(p.tool_response);
+        const usage = extractUsage(p.tool_response);
+        if (usage) tc.usage = usage;
         state.toolIndex.delete(id!);
         const ownerId = state.toolOwner.get(id!);
         state.toolOwner.delete(id!);
         if (ownerId) {
           const owner = state.agents.get(ownerId);
-          if (owner) refreshInFlight(owner);
+          if (owner) {
+            if (usage) addUsage(owner.usage, usage);
+            refreshInFlight(owner);
+          }
         }
       }
       break;
