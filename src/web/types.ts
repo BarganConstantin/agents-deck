@@ -52,6 +52,10 @@ export interface AgentNodeData {
   /** Number of direct subagents spawned by this agent. */
   childCount: number;
   usage: TokenUsage;
+  /** Set to the timestamp at which this agent should disappear (e.g. a new
+   *  turn has started and this subagent already finished). UI plays an exit
+   *  animation, then drops it from the canvas. */
+  exitAt?: number;
 }
 
 export interface HookEnvelope {

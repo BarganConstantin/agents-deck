@@ -249,6 +249,19 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       break;
     }
     case "UserPromptSubmit": {
+      // New turn for this session. Any subagent that's already done belongs
+      // to the previous turn — mark for exit so the canvas stays focused on
+      // what's relevant to the new request.
+      for (const other of state.agents.values()) {
+        if (other.sessionId === sessionId && other.kind === "subagent" && other.state === "done" && other.exitAt == null) {
+          other.exitAt = now;
+        }
+      }
+      // Also reset session root back to active for the new request.
+      const root = ensureRoot(state, sessionId, now, false);
+      root.state = "active";
+      root.endedAt = undefined;
+
       const target = resolveOwner(state, p, now);
       target.state = "active";
       const text = (typeof p.prompt === "string" ? p.prompt : typeof p.message === "string" ? p.message : "") ?? "";

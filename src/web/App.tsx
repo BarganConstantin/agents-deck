@@ -28,6 +28,8 @@ function fmtTokens(n: number): string {
 
 const nodeTypes = { agent: AgentNode };
 
+const EXIT_ANIM_MS = 600;
+
 function matchesQuery(a: AgentNodeData, q: string): boolean {
   if (!q) return true;
   const needle = q.toLowerCase();
@@ -53,31 +55,42 @@ function snapshotToFlow(
     for (const a of state.agents.values()) if (matchesQuery(a, query)) matchSet.add(a.id);
   }
 
+  const visibleIds = new Set<string>();
   for (const a of state.agents.values()) {
+    if (a.exitAt != null && now - a.exitAt > EXIT_ANIM_MS) continue;
+    visibleIds.add(a.id);
+  }
+
+  for (const a of state.agents.values()) {
+    if (!visibleIds.has(a.id)) continue;
     const dim = query ? !matchSet.has(a.id) : false;
+    const exiting = a.exitAt != null;
+    const cls = [dim ? "rf-dim" : "", exiting ? "rf-exiting" : ""].filter(Boolean).join(" ") || undefined;
     nodes.push({
       id: a.id,
       type: "agent",
       position: { x: 0, y: 0 },
       data: { ...a, now, dim },
-      className: dim ? "rf-dim" : undefined,
+      className: cls,
     });
-    if (a.parentId && state.agents.has(a.parentId)) {
+    if (a.parentId && visibleIds.has(a.parentId)) {
       const hue = sessionHue(a.sessionId);
       const stroke = a.state === "active" ? `hsl(${hue} 80% 72%)` : `hsl(${hue} 50% 55%)`;
       const edgeDim = query && (!matchSet.has(a.id) && !matchSet.has(a.parentId));
+      const fading = exiting;
       edges.push({
         id: `e:${a.parentId}->${a.id}`,
         source: a.parentId,
         target: a.id,
-        animated: a.state === "active" && !edgeDim,
+        animated: a.state === "active" && !edgeDim && !fading,
         type: "smoothstep",
         label: a.label,
         labelBgPadding: [6, 3],
         labelBgBorderRadius: 4,
-        labelStyle: { fontSize: 10, fill: stroke, fontFamily: "ui-monospace, monospace", opacity: edgeDim ? 0.3 : 1 },
-        labelBgStyle: { fill: "var(--bg-soft)", fillOpacity: edgeDim ? 0.4 : 0.85, stroke, strokeWidth: 0.5 },
-        style: { stroke, strokeWidth: a.state === "active" ? 2 : 1.5, opacity: edgeDim ? 0.25 : 1 },
+        labelStyle: { fontSize: 10, fill: stroke, fontFamily: "ui-monospace, monospace", opacity: edgeDim || fading ? 0.25 : 1 },
+        labelBgStyle: { fill: "var(--bg-soft)", fillOpacity: edgeDim || fading ? 0.3 : 0.85, stroke, strokeWidth: 0.5 },
+        style: { stroke, strokeWidth: a.state === "active" ? 2 : 1.5, opacity: edgeDim || fading ? 0.2 : 1, transition: "opacity 500ms ease" },
+        className: fading ? "rf-edge-exiting" : undefined,
       });
     }
   }
@@ -139,9 +152,9 @@ function Inner() {
     rerender();
   }, [paused, rerender]);
 
-  // Tick clock so elapsed-time fields refresh smoothly.
+  // Tick clock so elapsed-time fields refresh smoothly + exit animations clean up.
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
   }, []);
 

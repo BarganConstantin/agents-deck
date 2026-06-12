@@ -220,6 +220,25 @@ button.btn.icon-btn {
 .react-flow__node.rf-dim { opacity: 0.22; filter: saturate(0.4); }
 .react-flow__node.rf-dim:hover { opacity: 0.6; }
 
+/* exit animation when a done subagent is being retired for a new turn.
+   Apply on inner .agent-node so React Flow's translate transform on the
+   outer .react-flow__node element is not clobbered. */
+.react-flow__node.rf-exiting { pointer-events: none; }
+.react-flow__node.rf-exiting .agent-node {
+  animation: nodeExit 600ms cubic-bezier(0.55, 0, 0.55, 1) forwards;
+}
+@keyframes nodeExit {
+  0%   { opacity: 1; filter: blur(0) saturate(1); transform: scale(1); }
+  60%  { opacity: 0.4; filter: blur(2px) saturate(0.4); }
+  100% { opacity: 0; filter: blur(6px) saturate(0); transform: scale(0.85); }
+}
+.react-flow__edge.rf-edge-exiting .react-flow__edge-path {
+  animation: edgeExit 600ms ease forwards;
+}
+@keyframes edgeExit {
+  to { opacity: 0; stroke-dashoffset: 40; }
+}
+
 /* ---------------- canvas ---------------- */
 
 .canvas-wrap {
