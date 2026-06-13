@@ -191,6 +191,10 @@ function parseShellCommand(input: string): string | null {
 interface CommandSkin {
   emoji: string;
   label: string;
+  /** Sub-bubble accent — picks the colored stripe + glow. */
+  category: ToolCategory;
+  /** Optional richer text for the tooltip — full path / full command. */
+  detail?: string;
 }
 
 /** Extract a usable command string from CC's tool_input.
@@ -217,7 +221,121 @@ function skinForShellCall(toolName: string, input: unknown): CommandSkin | null 
   // isn't in our curated emoji map, use a generic gear so the user can
   // still see "agent → Bash → <whatever-the-command-was>".
   const emoji = COMMAND_EMOJI[cmd] ?? "⚙️";
-  return { emoji, label: cmd };
+  return { emoji, label: cmd, category: "shell", detail: raw };
+}
+
+// ─── File-tool introspection ──────────────────────────────────────────────
+// Mirror what we did for Bash: for Read/Write/Edit/MultiEdit/NotebookEdit,
+// crack open tool_input, take the file basename, pick an emoji by
+// extension so the canvas reads "📖 Read → 🐍 main.py" instead of just
+// "📖 Read". Tooltip shows the full path.
+
+const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "LS", "Glob"]);
+
+/** Emoji by file extension — covers code / config / docs / media / etc.
+ *  Picked so each ext is visually distinct from neighbours at low zoom. */
+const EXT_EMOJI: Record<string, string> = {
+  ts: "🟦", tsx: "🟦", d: "🟦",
+  js: "🟨", jsx: "🟨", mjs: "🟨", cjs: "🟨",
+  py: "🐍", pyi: "🐍", ipynb: "📓",
+  rs: "🦀",
+  go: "🐹",
+  rb: "💎", erb: "💎",
+  java: "☕", kt: "☕", scala: "☕", gradle: "☕",
+  cs: "🔷", fs: "🔷",
+  php: "🐘",
+  swift: "🦅",
+  c: "🇨", cpp: "🇨", cc: "🇨", h: "🇨", hpp: "🇨",
+  md: "📝", mdx: "📝", rst: "📝",
+  json: "🪺", json5: "🪺", jsonl: "🪺",
+  yaml: "⚙️", yml: "⚙️", toml: "⚙️", ini: "⚙️", conf: "⚙️", cfg: "⚙️",
+  xml: "📰", html: "🌐", htm: "🌐", vue: "🌐", svelte: "🌐",
+  css: "🎨", scss: "🎨", sass: "🎨", less: "🎨",
+  sh: "⚡", bash: "⚡", zsh: "⚡", fish: "⚡", ps1: "⚡",
+  txt: "📄", log: "📄", out: "📄",
+  csv: "📊", tsv: "📊", xlsx: "📊", xls: "📊",
+  pdf: "📕",
+  png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", webp: "🖼️", svg: "🖼️", ico: "🖼️",
+  mp4: "🎬", mov: "🎬", avi: "🎬", mkv: "🎬", webm: "🎬",
+  mp3: "🎵", wav: "🎵", ogg: "🎵", flac: "🎵",
+  zip: "🗜️", tar: "🗜️", gz: "🗜️", bz2: "🗜️", "7z": "🗜️", xz: "🗜️", rar: "🗜️",
+  env: "🔐", lock: "🔐", pem: "🔐", key: "🔐", crt: "🔐",
+  sql: "🗄️", db: "🗄️", sqlite: "🗄️", parquet: "🗄️",
+};
+
+/** Special filename overrides — when the whole filename is iconic. */
+const SPECIAL_FILES: Record<string, string> = {
+  "dockerfile": "🐳",
+  "makefile": "🔨",
+  "rakefile": "💎",
+  "package.json": "📦",
+  "pnpm-lock.yaml": "📦",
+  "yarn.lock": "📦",
+  "cargo.toml": "🦀",
+  "cargo.lock": "🦀",
+  "go.mod": "🐹",
+  "go.sum": "🐹",
+  "pyproject.toml": "🐍",
+  "requirements.txt": "🐍",
+  "readme.md": "📖",
+  "readme": "📖",
+  "license": "📜",
+  ".gitignore": "🐙",
+  ".gitattributes": "🐙",
+  ".env": "🔐",
+  ".dockerignore": "🐳",
+};
+
+function basenameOf(p: string): string {
+  const norm = p.replace(/\\/g, "/");
+  const trimmed = norm.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+function emojiForFilename(name: string): string {
+  const lc = name.toLowerCase();
+  if (SPECIAL_FILES[lc]) return SPECIAL_FILES[lc];
+  if (lc.startsWith("dockerfile.")) return "🐳";
+  // Test files
+  if (/\.(test|spec)\.[a-z]+$/.test(lc)) return "🧪";
+  // Extension lookup
+  const dot = lc.lastIndexOf(".");
+  if (dot > 0 && dot < lc.length - 1) {
+    const ext = lc.slice(dot + 1);
+    if (EXT_EMOJI[ext]) return EXT_EMOJI[ext];
+  }
+  return "📄";
+}
+
+function extractFilePath(toolName: string, input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  // CC's most-common key shapes across file tools.
+  if (typeof obj.file_path === "string") return obj.file_path;
+  if (typeof obj.notebook_path === "string") return obj.notebook_path;
+  if (typeof obj.path === "string") return obj.path;
+  // Glob uses pattern as the "thing" — render that instead.
+  if (toolName === "Glob" && typeof obj.pattern === "string") return obj.pattern;
+  return null;
+}
+
+function skinForFileCall(toolName: string, input: unknown): CommandSkin | null {
+  if (!FILE_TOOLS.has(toolName)) return null;
+  const path = extractFilePath(toolName, input);
+  if (!path) return null;
+  const name = basenameOf(path);
+  if (!name) return null;
+  // For directories (LS) treat as "file" category with folder emoji.
+  const isDir = toolName === "LS";
+  const emoji = isDir ? "📂" : emojiForFilename(name);
+  return { emoji, label: name, category: "file", detail: path };
+}
+
+/** Single entry point that picks whichever skin applies (shell first, then
+ *  file). Keeps collectBursts callers from caring about tool families. */
+function skinFor(toolName: string, input: unknown): CommandSkin | null {
+  return skinForShellCall(toolName, input) ?? skinForFileCall(toolName, input);
 }
 
 type Status = "inflight" | "done" | "err";
@@ -324,13 +442,13 @@ function collectBursts(
         spawnDx: anchorX - worldX,
         spawnDy: anchorY - (worldY + BUBBLE_HALF_H),
       });
-      // Shell sub-bubble — for Bash/PowerShell calls where we recognised the
-      // underlying command, render a second chained bubble (agent → Bash →
-      // git). Connector anchored on the primary's right edge. Note: we pass
-      // the raw t.input here, NOT inputPreview — CC's tool_input is
-      // {command, description, ...} and stringifying it confuses the
-      // parser.
-      const skin = skinForShellCall(t.name, t.input);
+      // Chained sub-bubble — applies to:
+      //   - Bash/PowerShell: show the parsed underlying command (git, npm…)
+      //   - Read/Write/Edit/MultiEdit/NotebookEdit/LS/Glob: show the file
+      //     basename (or directory / glob pattern)
+      // Pass raw t.input, not inputPreview — CC's tool_input is an object
+      // and stringifying it loses field access.
+      const skin = skinFor(t.name, t.input);
       if (skin) {
         const subWorldX = worldX + ESTIMATED_BUBBLE_W + SUB_GAP;
         const subWorldY = worldY;
@@ -345,11 +463,11 @@ function collectBursts(
           emoji: skin.emoji,
           isSub: true,
           status,
-          // Sub-bubble stays in the shell category so the amber accent reads
-          // as "this is part of a shell call" — the emoji carries the
-          // specific identity.
-          category: "shell",
-          inputPreview,
+          category: skin.category,
+          // For sub-bubbles, prefer the richer `detail` (full path or full
+          // command) over the raw JSON inputPreview — both end up in the
+          // tooltip but `detail` reads better.
+          inputPreview: skin.detail ?? inputPreview,
           fade,
           fading,
           worldX: subWorldX,
