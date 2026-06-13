@@ -14,6 +14,11 @@ const MAX_PER_AGENT = 4;
 const BUBBLE_VERT_GAP = 44;
 const BUBBLE_HALF_H = 16;
 const BUBBLE_OFFSET_X = 52;
+/** Approximate width of a bubble — used to position chained sub-bubbles
+ *  before we know their measured width. ~96 fits "📖 Read" through
+ *  "🎬 Workflow"; anything longer wraps naturally. */
+const ESTIMATED_BUBBLE_W = 96;
+const SUB_GAP = 28;
 
 // Group every tool into a category so we can tint its bubble accent. Picked
 // to read at a glance even at low zoom: file = blue, shell = amber, web =
@@ -212,15 +217,20 @@ function fadeAt(t: ToolCall, now: number): number {
 }
 
 interface Burst {
+  /** React key — unique per visible bubble (a tool can produce 1 or 2). */
   id: string;
+  /** Underlying ToolCall id, used for click-to-open. Same for primary and
+   *  its shell sub-bubble. */
+  toolId: string;
   agentId: string;
   /** Original tool name (e.g. "Bash"). Always present; goes into the tooltip. */
   toolName: string;
-  /** Display label — either toolName or the parsed shell command for
-   *  Bash/PowerShell when we recognised it (e.g. "git"). */
+  /** Display label. */
   name: string;
-  /** Display emoji — overridden for known shell sub-commands. */
+  /** Display emoji. */
   emoji: string;
+  /** True for shell sub-bubbles. Lets us style them slightly differently. */
+  isSub?: boolean;
   status: Status;
   category: ToolCategory;
   inputPreview: string;
@@ -283,18 +293,21 @@ function collectBursts(
       // back to the agent's right edge. The bubble starts there during spawn
       // and rides outward to its resting place.
       const inputPreview = t.inputPreview ?? "";
-      const skin = skinForShellCall(t.name, inputPreview);
+      const status = statusOf(t);
+      const fading = fade < 0.999;
+      // Primary bubble — the actual tool name as CC reported it.
       out.push({
         id: t.id,
+        toolId: t.id,
         agentId: a.id,
         toolName: t.name,
-        name: skin?.label ?? t.name,
-        emoji: skin?.emoji ?? emojiFor(t.name),
-        status: statusOf(t),
+        name: t.name,
+        emoji: emojiFor(t.name),
+        status,
         category: categoryFor(t.name),
         inputPreview,
         fade,
-        fading: fade < 0.999,
+        fading,
         worldX,
         worldY,
         anchorX,
@@ -302,6 +315,39 @@ function collectBursts(
         spawnDx: anchorX - worldX,
         spawnDy: anchorY - (worldY + BUBBLE_HALF_H),
       });
+      // Shell sub-bubble — for Bash/PowerShell calls where we recognised the
+      // underlying command, render a second chained bubble (agent → Bash →
+      // git). Connector anchored on the primary's right edge.
+      const skin = skinForShellCall(t.name, inputPreview);
+      if (skin) {
+        const subWorldX = worldX + ESTIMATED_BUBBLE_W + SUB_GAP;
+        const subWorldY = worldY;
+        const subAnchorX = worldX + ESTIMATED_BUBBLE_W;
+        const subAnchorY = worldY + BUBBLE_HALF_H;
+        out.push({
+          id: `sub:${t.id}`,
+          toolId: t.id,
+          agentId: a.id,
+          toolName: t.name,
+          name: skin.label,
+          emoji: skin.emoji,
+          isSub: true,
+          status,
+          // Sub-bubble stays in the shell category so the amber accent reads
+          // as "this is part of a shell call" — the emoji carries the
+          // specific identity.
+          category: "shell",
+          inputPreview,
+          fade,
+          fading,
+          worldX: subWorldX,
+          worldY: subWorldY,
+          anchorX: subAnchorX,
+          anchorY: subAnchorY,
+          spawnDx: subAnchorX - subWorldX,
+          spawnDy: 0,
+        });
+      }
     });
   }
   return out;
@@ -359,18 +405,18 @@ export default function ToolBursts({ agents, now, onOpenTool }: ToolBurstsProps)
         };
         // Tooltip always shows the underlying tool (Bash/PowerShell/…) so
         // the transport is never hidden, plus the input preview when present.
-        const titleHead = b.name !== b.toolName ? `${b.toolName} · ${b.name}` : b.toolName;
+        const titleHead = b.isSub ? `${b.toolName} · ${b.name}` : b.toolName;
         const title = b.inputPreview ? `${titleHead} · ${b.inputPreview}` : titleHead;
         const clickable = onOpenTool != null;
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
             <div
-              className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}`}
+              className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}`}
               title={title}
               role={clickable ? "button" : undefined}
               tabIndex={clickable ? 0 : undefined}
-              onClick={clickable ? () => onOpenTool!(b.id) : undefined}
-              onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenTool!(b.id); } } : undefined}
+              onClick={clickable ? () => onOpenTool!(b.toolId) : undefined}
+              onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenTool!(b.toolId); } } : undefined}
             >
               <span className="tb-emoji">{b.emoji}</span>
               <span className="tb-name">{b.name}</span>

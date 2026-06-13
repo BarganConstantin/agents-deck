@@ -192,21 +192,81 @@ function Inner() {
     return () => clearInterval(id);
   }, [rerender]);
 
-  // Auto-fit when agent count grows (debounced).
+  // Auto-fit when agent count grows. Two-stage so we react fast to the
+  // first new agent in a quiet window AND still fit again ~250ms later when
+  // dagre's reflow has settled and measurements are stable.
   const lastAgentCountRef = useRef(0);
   const fitTimerRef = useRef<number | null>(null);
+  const lastFitTimeRef = useRef(0);
   useEffect(() => {
     const count = stateRef.current.agents.size;
     if (count > lastAgentCountRef.current) {
       lastAgentCountRef.current = count;
+      const tnow = Date.now();
+      // First growth in 1.5s+ → fit immediately so existing agents stay in
+      // view while dagre repositions everything for the newcomer.
+      if (tnow - lastFitTimeRef.current > 1500) {
+        try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
+        lastFitTimeRef.current = tnow;
+      }
+      // Trailing fit covers the case where the new node only gets measured
+      // (and therefore properly positioned) on the next frame.
       if (fitTimerRef.current) window.clearTimeout(fitTimerRef.current);
       fitTimerRef.current = window.setTimeout(() => {
-        try { rf.fitView({ padding: 0.25, duration: 600 }); } catch {}
-      }, 400);
+        try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
+        lastFitTimeRef.current = Date.now();
+      }, 250);
     } else if (count < lastAgentCountRef.current) {
       lastAgentCountRef.current = count;
     }
   });
+
+  // Auto-recover from "drifted off-screen": every 1.5s check whether ANY
+  // agent's bounding box intersects the visible viewport. If none have at
+  // all, fit-view immediately. Skipped only when the user is actively
+  // interacting (pan/zoom/drag in the last 800ms) so we don't yank the view
+  // mid-gesture. This is the failsafe that recovers from layout reflows
+  // when a new session arrives and dagre shifts everything off-screen.
+  const lastInteractRef = useRef(0);
+  const markInteract = useCallback(() => { lastInteractRef.current = Date.now(); }, []);
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (Date.now() - lastInteractRef.current < 800) return;
+      const state = stateRef.current;
+      const t = Date.now();
+      const liveAgents: { id: string }[] = [];
+      for (const a of state.agents.values()) {
+        if (a.exitAt != null && t - a.exitAt > EXIT_ANIM_MS) continue;
+        liveAgents.push({ id: a.id });
+      }
+      if (liveAgents.length === 0) return;
+      const vp = rf.getViewport();
+      const canvasW = window.innerWidth - 360; // detail panel
+      const canvasH = window.innerHeight - 52; // topbar
+      let anyInView = false;
+      let anyMeasured = false;
+      for (const { id } of liveAgents) {
+        const size = measuredRef.current.get(id);
+        const pos = pinnedRef.current.get(id) ?? positionsRef.current.get(id);
+        if (!size || !pos) continue;
+        anyMeasured = true;
+        const sl = pos.x * vp.zoom + vp.x;
+        const st = pos.y * vp.zoom + vp.y;
+        const sr = (pos.x + size.width) * vp.zoom + vp.x;
+        const sb = (pos.y + size.height) * vp.zoom + vp.y;
+        if (sr > 0 && sl < canvasW && sb > 0 && st < canvasH) {
+          anyInView = true;
+          break;
+        }
+      }
+      // Only attempt a fit if at least one agent is measured AND none of the
+      // measured ones intersect the viewport — that's the genuine drift case.
+      if (anyMeasured && !anyInView) {
+        try { rf.fitView({ padding: 0.25, duration: 600 }); } catch {}
+      }
+    }, 1500);
+    return () => clearInterval(id);
+  }, [rf]);
 
   // Real per-node sizes — read from RF's internal store via a selector that
   // returns a monotonic counter. Counter only ticks when a measurement
@@ -389,16 +449,20 @@ function Inner() {
           selectionOnDrag={false}
           onNodeClick={(_, n) => setSelectedId(n.id)}
           onPaneClick={() => setSelectedId(null)}
+          onMove={markInteract}
           onNodeDragStart={(_, n) => {
+            markInteract();
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
           }}
           onNodeDrag={(_, n) => {
             // Live-pin during drag so an incoming event re-render doesn't
             // snap the node back to its dagre slot mid-motion.
+            markInteract();
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
           }}
           onNodeDragStop={(_, n) => {
+            markInteract();
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
           }}

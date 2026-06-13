@@ -613,6 +613,42 @@ button.btn.icon-btn {
   padding: 2px 4px;
 }
 
+/* Tool-rate sparkline — tools-per-second over the last 60s. Most recent
+   bucket is on the right; brighter for the live one. */
+.tool-spark-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  height: 14px;
+}
+.tool-spark {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.tool-spark-bar {
+  fill: var(--muted-dim);
+  transition: fill 200ms;
+}
+.tool-spark-bar.active { fill: var(--accent); opacity: 0.72; }
+.tool-spark-bar.latest {
+  fill: var(--inflight);
+  opacity: 1;
+  filter: drop-shadow(0 0 3px rgba(240, 171, 252, 0.55));
+}
+.tool-spark-label {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+:root[data-theme="light"] .tool-spark-bar.active { fill: var(--accent); opacity: 0.85; }
+:root[data-theme="light"] .tool-spark-bar.latest {
+  fill: var(--inflight);
+  filter: drop-shadow(0 0 3px rgba(126, 34, 206, 0.45));
+}
+
 .agent-node .meta {
   color: var(--muted);
   font-size: 11px;
@@ -927,6 +963,15 @@ button.btn.icon-btn {
 .tool-burst.cat-plan  { --cat-accent: #c4b5fd; }
 .tool-burst.cat-mcp   { --cat-accent: #5eead4; }
 .tool-burst.cat-other { --cat-accent: #94a3b8; }
+
+/* Shell sub-bubble — slightly compressed and a touch dimmer so the eye
+   parses "primary → sub" instead of "two equal bubbles". */
+.tool-burst.sub {
+  font-size: 10.5px;
+  padding: 4px 10px 4px 8px;
+  opacity: 0.94;
+}
+.tool-burst.sub .tb-emoji { font-size: 12px; }
 
 /* Clickable bubble — pointer-events on, hover lift */
 .tool-burst.clickable {
