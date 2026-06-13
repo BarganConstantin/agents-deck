@@ -1,14 +1,16 @@
-// Overlay that renders a small "tool bubble" next to each agent for every
-// tool call that is in-flight or recently completed. Bubbles literally fly
-// out FROM the agent's centre (via per-bubble --spawn-dx/dy custom
-// properties) and fade out ~LIFETIME_MS after the tool finishes. They live
-// on a layer above React Flow's nodes and follow the canvas pan/zoom via
-// useViewport().
+// Overlay that renders a small "tool bubble" next to each agent for the
+// last MAX_PER_AGENT tool calls — a persistent trail of recent activity.
+// Bubbles fly out FROM the agent's centre (via per-bubble --spawn-dx/dy
+// custom properties) on spawn, get pushed out FIFO when newer tools land,
+// and only fade away when the owning agent retires (exitAt set). Earlier
+// versions hid bubbles a few seconds after the tool finished, which left
+// idle/just-finished sessions looking empty next to a wall of "DONE" cards.
+// They live on a layer above React Flow's nodes and follow the canvas
+// pan/zoom via useViewport().
 import React from "react";
 import { useViewport } from "reactflow";
 import type { AgentNodeData, ToolCall } from "../types";
 
-const LIFETIME_MS = 4000;
 const FADE_MS = 600;
 const MAX_PER_AGENT = 4;
 const BUBBLE_VERT_GAP = 44;
@@ -345,11 +347,15 @@ function statusOf(t: ToolCall): Status {
   return t.ok === false ? "err" : "done";
 }
 
-function fadeAt(t: ToolCall, now: number): number {
-  if (t.endedAt == null) return 1;
-  const since = now - t.endedAt;
-  if (since < LIFETIME_MS) return 1;
-  return Math.max(0, 1 - (since - LIFETIME_MS) / FADE_MS);
+/** Bubble opacity — full while inflight or in the last-N trail. The fade
+ *  branch is only used when an agent is retiring (exitAt set); otherwise
+ *  the bubble stays at full opacity so the trail of recent activity
+ *  persists. `agentExitAt` is the agent's exitAt timestamp, or null. */
+function fadeAt(t: ToolCall, now: number, agentExitAt: number | null): number {
+  if (agentExitAt == null) return 1;
+  const since = now - agentExitAt;
+  if (since < 0) return 1;
+  return Math.max(0, 1 - since / FADE_MS);
 }
 
 interface Burst {
@@ -391,18 +397,20 @@ function collectBursts(
 ): Burst[] {
   const out: Burst[] = [];
   for (const a of agents.values()) {
-    if (a.exitAt != null && now - a.exitAt > 600) continue;
+    if (a.exitAt != null && now - a.exitAt > FADE_MS) continue;
     // Read position from the SAME source that feeds ReactFlow's nodes prop.
     // Reading from ReactFlow's nodeInternals (its computed mirror) lagged
     // one frame behind during layout reflows — that produced the "bursts
     // floating with no agents" state when dagre repositioned everything.
     const pos = pinned.get(a.id) ?? positions.get(a.id);
     if (!pos) continue; // no position yet — agent not laid out
-    const visible = a.tools.filter(t => {
-      if (t.endedAt == null) return true;
-      return now - t.endedAt < LIFETIME_MS + FADE_MS;
-    }).slice(-MAX_PER_AGENT);
+    // Always show the last MAX_PER_AGENT tools' bubbles as a persistent
+    // "trail" of recent activity — no time-based culling. Bubbles only
+    // leave when newer tools push them out of the window, or when the
+    // agent itself retires (exitAt set, handled via fadeAt above).
+    const visible = a.tools.slice(-MAX_PER_AGENT);
     if (visible.length === 0) continue;
+    const agentExitAt = a.exitAt ?? null;
     const size = measured.get(a.id);
     const aW = size?.width ?? 240;
     const aH = size?.height ?? 130;
@@ -415,7 +423,7 @@ function collectBursts(
       const offsetY = (idx - lastIdx / 2) * BUBBLE_VERT_GAP;
       const worldX = aX + aW + BUBBLE_OFFSET_X;
       const worldY = aY + aH / 2 + offsetY - BUBBLE_HALF_H;
-      const fade = fadeAt(t, now);
+      const fade = fadeAt(t, now, agentExitAt);
       // The delta is from the bubble's anchor point (its visual left-centre)
       // back to the agent's right edge. The bubble starts there during spawn
       // and rides outward to its resting place.

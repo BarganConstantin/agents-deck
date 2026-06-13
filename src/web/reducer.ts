@@ -280,6 +280,21 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   state.lastSeq = env.seq;
 
   const sessionId = p.session_id ?? "unknown";
+
+  // ModelObserved is a synthetic enrichment event emitted by the server
+  // after it scans the transcript file. Apply to EVERY agent in the
+  // session (including ones created before the model was resolved).
+  // Don't create an agent for it — just backfill what's there.
+  if (name === "ModelObserved") {
+    const m = typeof p.model === "string" ? p.model : null;
+    if (m) {
+      for (const a of state.agents.values()) {
+        if (a.sessionId === sessionId) a.model = m;
+      }
+    }
+    return state;
+  }
+
   const owner = resolveOwner(state, p, now);
 
   // Snapshot model whenever it shows up in the payload — we want the most

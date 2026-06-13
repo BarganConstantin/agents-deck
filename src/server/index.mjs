@@ -33,7 +33,73 @@ const sseClients = new Set();       // res handles
 
 let persistPath = null;             // absolute path to events.jsonl, or null
 
+// ─── Model enrichment ────────────────────────────────────────────────────
+// CC's hook payloads never carry the `model` field — but every hook
+// references a `transcript_path` JSONL that contains lines like
+// `"model":"claude-opus-4-7"`. We read the tail of that file once per
+// session, cache the result, and (a) inject `model` into subsequent
+// payloads for that session before broadcasting, (b) emit a synthetic
+// `ModelObserved` event so the client backfills agents created before
+// the model was resolved.
+const modelBySession = new Map();         // sessionId -> "claude-…"
+const pendingTranscriptReads = new Set(); // sessionId currently being read
+
+async function readModelFromTranscript(path) {
+  try {
+    const s = await stat(path);
+    if (s.size === 0) return null;
+    // Read up to last 128 KB — plenty for the most-recent model
+    // declaration. Reading from the tail handles sessions that switched
+    // model mid-conversation (we want the current one).
+    const TAIL = 128 * 1024;
+    const start = Math.max(0, s.size - TAIL);
+    const fh = await open(path, "r");
+    try {
+      const len = s.size - start;
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, start);
+      const text = buf.toString("utf8");
+      // Scan all matches and return the LAST one — most recent model used.
+      const re = /"model"\s*:\s*"(claude[-_][^"]+)"/gi;
+      let last = null;
+      for (const m of text.matchAll(re)) last = m[1];
+      return last;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function maybeResolveModel(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const sid = payload.session_id;
+  const tp = payload.transcript_path;
+  if (!sid || !tp) return;
+  if (modelBySession.has(sid)) return;
+  if (pendingTranscriptReads.has(sid)) return;
+  pendingTranscriptReads.add(sid);
+  readModelFromTranscript(tp)
+    .then(model => {
+      if (!model) return;
+      modelBySession.set(sid, model);
+      // Synthetic enrichment event — reducer applies to every agent in
+      // this session, including ones created before we resolved.
+      pushEvent({ hook_event_name: "ModelObserved", session_id: sid, model }, "internal");
+    })
+    .catch(() => {})
+    .finally(() => pendingTranscriptReads.delete(sid));
+}
+
 function pushEvent(raw, source, opts = {}) {
+  // Synchronous enrichment: if we already know this session's model, stamp
+  // it on the payload so the client's recursive scanner picks it up.
+  if (raw && typeof raw === "object" && raw.session_id && !raw.model) {
+    const cached = modelBySession.get(raw.session_id);
+    if (cached) raw.model = cached;
+  }
+
   const seq = nextSeq++;
   const evt = {
     seq,
@@ -53,6 +119,11 @@ function pushEvent(raw, source, opts = {}) {
     // Fire-and-forget append. JSONL = newline-delimited JSON.
     appendFile(persistPath, JSON.stringify(evt) + "\n", "utf8").catch(() => {});
   }
+
+  // Kick off async transcript scan for unknown sessions. The result lands
+  // as a synthetic ModelObserved event a few ms later that backfills any
+  // agents already on the canvas.
+  if (source === "hook" && !opts.replay) maybeResolveModel(raw);
 
   return evt;
 }
