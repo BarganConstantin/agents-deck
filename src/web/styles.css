@@ -796,14 +796,19 @@ button.btn.icon-btn {
 
 .tool-burst-wrap {
   position: absolute;
+  /* Wrap stays non-interactive — the bubble itself opts in to pointer events
+     so the canvas can still be panned where the wrap extends beyond the pill. */
   pointer-events: none;
   will-change: transform, left, top;
+  /* When a sibling fades and the index shifts, bubbles slide up smoothly.
+     Short enough not to lag agent drags noticeably. */
+  transition: top 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .tool-burst {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px 5px 8px;
+  padding: 5px 11px 5px 9px;
   border-radius: 999px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -812,14 +817,18 @@ button.btn.icon-btn {
   box-shadow: 0 4px 14px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,0,0,0.25);
   white-space: nowrap;
   color: var(--text);
-  animation: bubble-spawn 380ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  /* Default animation: bubble flies out from the agent's centre. The
+     --spawn-dx/dy custom properties are injected per-bubble in JS. */
+  animation: bubble-spawn 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 .tool-burst .tb-emoji {
   font-size: 13px;
   line-height: 1;
-  filter: saturate(1.15);
+  filter: saturate(1.2);
+  display: inline-block;
+  /* tiny continuous wobble while inflight — see .status-inflight rule */
 }
-.tool-burst .tb-name { font-weight: 600; }
+.tool-burst .tb-name { font-weight: 600; letter-spacing: 0.01em; }
 .tool-burst .tb-spin {
   width: 8px; height: 8px;
   border-radius: 50%;
@@ -829,39 +838,128 @@ button.btn.icon-btn {
 }
 .tool-burst .tb-mark {
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
-  margin-left: 1px;
+  margin-left: 2px;
+  animation: mark-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
-.tool-burst .tb-mark.done { color: var(--ok); }
-.tool-burst .tb-mark.err  { color: var(--err); }
+.tool-burst .tb-mark.done { color: var(--ok); text-shadow: 0 0 6px rgba(134,239,172,0.55); }
+.tool-burst .tb-mark.err  { color: var(--err); text-shadow: 0 0 6px rgba(252,165,165,0.55); }
 
 .tool-burst.status-inflight {
   border-color: rgba(240, 171, 252, 0.55);
   background: linear-gradient(180deg, rgba(240,171,252,0.10), rgba(125,211,252,0.05)), var(--panel);
   box-shadow: 0 0 0 1px rgba(240,171,252,0.30), 0 6px 18px rgba(240,171,252,0.25);
 }
+.tool-burst.status-inflight .tb-emoji {
+  animation: emoji-wobble 1.6s ease-in-out infinite;
+}
 .tool-burst.status-done {
-  border-color: rgba(134, 239, 172, 0.50);
-  background: linear-gradient(180deg, rgba(134,239,172,0.08), transparent), var(--panel);
+  border-color: rgba(134, 239, 172, 0.55);
+  background: linear-gradient(180deg, rgba(134,239,172,0.10), transparent), var(--panel);
+  box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15);
+  /* Spawn THEN flash. The cascade with .tool-burst gives us a single
+     animation property here that combines spawn + done-flash so neither
+     interrupts the other. */
+  animation:
+    bubble-spawn 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    bubble-done-flash 520ms 460ms ease-out;
 }
 .tool-burst.status-err {
   border-color: rgba(252, 165, 165, 0.60);
   background: linear-gradient(180deg, rgba(252,165,165,0.10), transparent), var(--panel);
   box-shadow: 0 0 0 1px rgba(252,165,165,0.35), 0 4px 12px rgba(252,165,165,0.18);
+  animation:
+    bubble-spawn 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    bubble-err-shake 380ms 460ms ease-in-out;
 }
 .tool-burst.fading {
+  /* Overrides whatever spawn/flash/shake was running — we're on the way out. */
   animation: bubble-fade 600ms ease-in forwards;
 }
 
+/* Per-category accent — recolours the emoji circle and adds a tinted left
+   stripe so categories register at a glance even at low zoom. */
+.tool-burst {
+  position: relative;
+}
+.tool-burst::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--cat-accent, transparent);
+  opacity: 0.85;
+}
+.tool-burst.cat-file  { --cat-accent: #7dd3fc; }
+.tool-burst.cat-shell { --cat-accent: #fcd34d; }
+.tool-burst.cat-web   { --cat-accent: #67e8f9; }
+.tool-burst.cat-agent { --cat-accent: #f0abfc; }
+.tool-burst.cat-task  { --cat-accent: #86efac; }
+.tool-burst.cat-plan  { --cat-accent: #c4b5fd; }
+.tool-burst.cat-mcp   { --cat-accent: #5eead4; }
+.tool-burst.cat-other { --cat-accent: #94a3b8; }
+
+/* Clickable bubble — pointer-events on, hover lift */
+.tool-burst.clickable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.tool-burst.clickable:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px var(--cat-accent, rgba(255,255,255,0.15));
+}
+.tool-burst.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @keyframes bubble-spawn {
-  0%   { opacity: 0; transform: scale(0.5) translateX(-28px); filter: blur(2px); }
-  60%  { opacity: 1; transform: scale(1.05) translateX(2px);  filter: blur(0); }
-  100% { opacity: 1; transform: scale(1)    translateX(0); }
+  0%   {
+    opacity: 0;
+    transform: translate(var(--spawn-dx, -28px), var(--spawn-dy, 0)) scale(0.35);
+    filter: blur(3px) brightness(1.4);
+  }
+  55%  {
+    opacity: 1;
+    transform: translate(0, 0) scale(1.12);
+    filter: blur(0) brightness(1.15);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+    filter: blur(0) brightness(1);
+  }
+}
+@keyframes bubble-done-flash {
+  0%   { transform: scale(1); box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15); }
+  40%  {
+    transform: scale(1.14);
+    box-shadow: 0 0 0 2px rgba(134,239,172,0.55), 0 0 22px rgba(134,239,172,0.55);
+  }
+  100% { transform: scale(1); box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15); }
+}
+@keyframes bubble-err-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-4px); }
+  35% { transform: translateX(4px); }
+  55% { transform: translateX(-3px); }
+  75% { transform: translateX(2px); }
 }
 @keyframes bubble-fade {
-  from { opacity: 1; transform: scale(1)    translateX(0); filter: blur(0); }
-  to   { opacity: 0; transform: scale(0.85) translateX(14px); filter: blur(1px); }
+  from { opacity: 1; transform: scale(1)    translate(0, 0); filter: blur(0); }
+  to   { opacity: 0; transform: scale(0.82) translate(18px, -4px); filter: blur(1.5px); }
+}
+@keyframes emoji-wobble {
+  0%, 100% { transform: rotate(-6deg) scale(1); }
+  50%      { transform: rotate(6deg)  scale(1.08); }
+}
+@keyframes mark-pop {
+  from { opacity: 0; transform: scale(0.3) rotate(-30deg); }
+  to   { opacity: 1; transform: scale(1)   rotate(0); }
 }
 
 :root[data-theme="light"] .tool-burst {

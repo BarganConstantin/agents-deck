@@ -13,7 +13,7 @@ const NODE_H = 130;
 // Vertical breathing room between two session subgraphs. Has to cover the
 // cluster's outer padding (PAD) on both sides plus its label header
 // (HEADER_H) — see SessionClusters.tsx — plus a visible gap.
-const SESSION_GAP = 140;
+const SESSION_GAP = 110;
 
 export interface LayoutOptions {
   direction?: "LR" | "TB";

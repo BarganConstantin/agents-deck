@@ -221,6 +221,34 @@ function refreshInFlight(a: AgentNodeData): void {
   a.inFlightTool = latest;
 }
 
+/** Sweep over every agent's tool list and finalise any tool that has been
+ *  "in-flight" longer than `maxMs` — usually because a hook event was lost
+ *  (session killed mid-call, PostToolUse never delivered). Without this they
+ *  pulse forever in the burst layer and pollute the in-flight counter.
+ *  Returns true when at least one tool was staled, so callers can trigger
+ *  a re-render. Mutates state in place. */
+export function sweepStaleTools(state: GraphState, now: number, maxMs: number): boolean {
+  let changed = false;
+  for (const a of state.agents.values()) {
+    let agentTouched = false;
+    for (const t of a.tools) {
+      if (t.endedAt == null && now - t.startedAt > maxMs) {
+        t.endedAt = t.startedAt + maxMs;
+        t.ok = false;
+        t.errorPreview = "stale (no PostToolUse received)";
+        // Also drop it from the live tool index so a late PostToolUse won't
+        // try to settle it after the fact.
+        state.toolIndex.delete(t.id);
+        state.toolOwner.delete(t.id);
+        agentTouched = true;
+        changed = true;
+      }
+    }
+    if (agentTouched) refreshInFlight(a);
+  }
+  return changed;
+}
+
 export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   if (env.seq <= state.lastSeq) return state;
 

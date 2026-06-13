@@ -15,7 +15,7 @@ import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
 import { autoLayout } from "./layout";
-import { applyEvent, initialState, sessionHue, type GraphState } from "./reducer";
+import { applyEvent, initialState, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -32,6 +32,7 @@ function fmtTokens(n: number): string {
 const nodeTypes = { agent: AgentNode };
 
 const EXIT_ANIM_MS = 600;
+const STALE_TOOL_MS = 90_000;
 
 function matchesQuery(a: AgentNodeData, q: string): boolean {
   if (!q) return true;
@@ -178,11 +179,18 @@ function Inner() {
     rerender();
   }, [paused, rerender]);
 
-  // Tick clock so elapsed-time fields refresh smoothly + exit animations clean up.
+  // Tick clock so elapsed-time fields refresh smoothly + exit animations
+  // clean up. Same tick also reaps in-flight tools whose PostToolUse never
+  // arrived (e.g. the session was killed mid-call) so they don't pulse
+  // forever in the burst layer.
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (sweepStaleTools(stateRef.current, t, STALE_TOOL_MS)) rerender();
+    }, 250);
     return () => clearInterval(id);
-  }, []);
+  }, [rerender]);
 
   // Auto-fit when agent count grows (debounced).
   const lastAgentCountRef = useRef(0);
@@ -311,7 +319,7 @@ function Inner() {
       <header className="topbar">
         <div className="brand">
           <span className="logo" />
-          agent-dag <span className="v">v1.0.3</span>
+          agent-dag <span className="v">v{__APP_VERSION__}</span>
         </div>
         <div className="actions">
           <div className="search">
@@ -397,7 +405,7 @@ function Inner() {
         >
           <Background gap={28} size={1} color={cssVar("--grid-line")} />
           <SessionClusters />
-          <ToolBursts agents={stateRef.current.agents.values()} now={now} />
+          <ToolBursts agents={stateRef.current.agents} now={now} onOpenTool={setOpenedToolId} />
           <Controls showInteractive={false} />
           <MiniMap
             zoomable

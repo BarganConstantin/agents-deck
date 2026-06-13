@@ -1,9 +1,7 @@
 import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
-import type { AgentNodeData, ToolCall } from "../types";
-
-const MAX_CHIPS = 3;
+import type { AgentNodeData } from "../types";
 
 function elapsed(start: number, end: number | undefined, now: number): string {
   const ms = (end ?? now) - start;
@@ -13,12 +11,6 @@ function elapsed(start: number, end: number | undefined, now: number): string {
   const m = Math.floor(s / 60);
   const rs = s % 60;
   return `${m}m ${String(rs).padStart(2, "0")}s`;
-}
-
-function chipClass(tc: ToolCall): string {
-  if (tc.endedAt == null) return "tool-chip inflight";
-  if (tc.ok === false) return "tool-chip err";
-  return "tool-chip done";
 }
 
 export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & { now: number }>) {
@@ -31,7 +23,6 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
   ].filter(Boolean).join(" ");
 
   const inflight = data.tools.filter(t => !t.endedAt).length;
-  const recent = data.tools.slice(-MAX_CHIPS);
   const hue = sessionHue(data.sessionId);
   const accent = `hsl(${hue} 70% 60%)`;
 
@@ -57,27 +48,6 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
           <span className="spawn-badge" title={`${data.childCount} subagents spawned`}>→ {data.childCount}</span>
         )}
         {data.cwdBasename && data.kind === "subagent" ? ` · ${data.cwdBasename}` : ""}
-      </div>
-
-      {data.inFlightTool && (
-        <div className="now-running" title={data.inFlightTool.inputPreview || data.inFlightTool.name}>
-          <span className="now-dot" />
-          <span className="now-label">now</span>
-          <span className="now-tool">{data.inFlightTool.name}</span>
-          <span className="now-time">{Math.max(0, now - data.inFlightTool.startedAt)}ms</span>
-        </div>
-      )}
-
-      <div className="chips">
-        {recent.length === 0 && <span className="chips-empty">no tools yet</span>}
-        {recent.map(t => (
-          <span key={t.id} className={chipClass(t)} title={`${t.name} · ${t.inputPreview}`}>
-            {t.name}
-          </span>
-        ))}
-        {data.tools.length > MAX_CHIPS && (
-          <span className="chips-more">+{data.tools.length - MAX_CHIPS}</span>
-        )}
       </div>
 
       <div className="meta">

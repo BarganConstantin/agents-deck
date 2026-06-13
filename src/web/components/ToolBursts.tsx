@@ -1,7 +1,9 @@
 // Overlay that renders a small "tool bubble" next to each agent for every
-// tool call that is in-flight or recently completed. Bubbles fade out
-// ~LIFETIME_MS after the tool finishes. They live on a layer above React
-// Flow's nodes and follow the canvas pan/zoom via useViewport().
+// tool call that is in-flight or recently completed. Bubbles literally fly
+// out FROM the agent's centre (via per-bubble --spawn-dx/dy custom
+// properties) and fade out ~LIFETIME_MS after the tool finishes. They live
+// on a layer above React Flow's nodes and follow the canvas pan/zoom via
+// useViewport().
 import React from "react";
 import { useStore, useViewport, type ReactFlowState } from "reactflow";
 import type { AgentNodeData, ToolCall } from "../types";
@@ -9,30 +11,77 @@ import type { AgentNodeData, ToolCall } from "../types";
 const LIFETIME_MS = 4000;
 const FADE_MS = 600;
 const MAX_PER_AGENT = 4;
-const BUBBLE_VERT_GAP = 46;
-const BUBBLE_HALF_H = 16; // half of the bubble's rendered height — used to centre on agent
+const BUBBLE_VERT_GAP = 44;
+const BUBBLE_HALF_H = 16;
+const BUBBLE_OFFSET_X = 52;
 
+// Group every tool into a category so we can tint its bubble accent. Picked
+// to read at a glance even at low zoom: file = blue, shell = amber, web =
+// cyan, agent = pink, tasks/todos = green, plan = violet, mcp = teal.
+type ToolCategory = "file" | "shell" | "web" | "agent" | "task" | "plan" | "mcp" | "other";
+
+const TOOL_CATEGORY: Record<string, ToolCategory> = {
+  Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
+  Glob: "file", Grep: "file", LS: "file", NotebookEdit: "file",
+  Bash: "shell", PowerShell: "shell",
+  WebFetch: "web", WebSearch: "web",
+  Task: "agent", Agent: "agent",
+  TodoWrite: "task", TaskCreate: "task", TaskUpdate: "task",
+  TaskList: "task", TaskGet: "task", TaskOutput: "task", TaskStop: "task",
+  EnterPlanMode: "plan", ExitPlanMode: "plan", AskUserQuestion: "plan",
+  Skill: "plan", Workflow: "plan",
+  ScheduleWakeup: "other", CronCreate: "other", CronList: "other",
+  CronDelete: "other", Monitor: "other", PushNotification: "other",
+  RemoteTrigger: "other", ToolSearch: "other",
+};
+
+function categoryFor(name: string): ToolCategory {
+  if (name.startsWith("mcp__")) return "mcp";
+  return TOOL_CATEGORY[name] ?? "other";
+}
+
+// Distinct emojis for every CC built-in I know about + sensible fallback.
 const TOOL_EMOJI: Record<string, string> = {
   Read: "📖",
   Write: "💾",
   Edit: "✏️",
-  MultiEdit: "✏️",
-  Glob: "🌐",
+  MultiEdit: "🔧",
+  Glob: "🗺️",
   Grep: "🔎",
   Bash: "⚡",
-  PowerShell: "⚡",
+  PowerShell: "💻",
+  LS: "📂",
   Task: "🤖",
   Agent: "🤖",
-  TodoWrite: "✅",
-  WebFetch: "🌍",
+  TodoWrite: "📋",
+  TaskCreate: "📋",
+  TaskUpdate: "📝",
+  TaskList: "🗂️",
+  TaskGet: "🗂️",
+  TaskOutput: "📤",
+  TaskStop: "🛑",
+  WebFetch: "🌐",
   WebSearch: "🔭",
-  LS: "📂",
+  ToolSearch: "🧰",
   NotebookEdit: "📓",
+  EnterPlanMode: "🧭",
+  ExitPlanMode: "🏁",
+  AskUserQuestion: "❓",
+  ScheduleWakeup: "⏰",
+  CronCreate: "⏰",
+  CronList: "📅",
+  CronDelete: "🗑️",
+  Skill: "🎯",
+  Workflow: "🎬",
+  Monitor: "📡",
+  PushNotification: "🔔",
+  RemoteTrigger: "📡",
+  WebFetch_: "🌐",
 };
 
 function emojiFor(name: string): string {
   if (name.startsWith("mcp__")) return "🔌";
-  return TOOL_EMOJI[name] ?? "⚙️";
+  return TOOL_EMOJI[name] ?? "✨";
 }
 
 type Status = "inflight" | "done" | "err";
@@ -54,52 +103,76 @@ interface Burst {
   agentId: string;
   name: string;
   status: Status;
+  category: ToolCategory;
+  inputPreview: string;
   fade: number;
   fading: boolean;
-  // World-space (pre-viewport) positions.
   worldX: number;
   worldY: number;
   anchorX: number;
   anchorY: number;
+  /** Worldspace delta from final position back to agent centre. Drives the
+   *  spawn-from-origin animation via CSS custom properties. */
+  spawnDx: number;
+  spawnDy: number;
+}
+
+interface NodeInternal {
+  width: number | null;
+  height: number | null;
+  position: { x: number; y: number };
 }
 
 function collectBursts(
-  agents: Iterable<AgentNodeData>,
-  nodeInternals: Map<string, { width: number | null; height: number | null; position: { x: number; y: number } }>,
+  agents: Map<string, AgentNodeData>,
+  nodeInternals: Map<string, NodeInternal>,
   now: number,
 ): Burst[] {
   const out: Burst[] = [];
-  for (const a of agents) {
+  for (const a of agents.values()) {
     if (a.exitAt != null && now - a.exitAt > 600) continue;
     const ni = nodeInternals.get(a.id);
-    if (!ni || ni.width == null || ni.height == null) continue;
+    if (!ni) continue;
     const visible = a.tools.filter(t => {
       if (t.endedAt == null) return true;
       return now - t.endedAt < LIFETIME_MS + FADE_MS;
     }).slice(-MAX_PER_AGENT);
     if (visible.length === 0) continue;
-    const aW = ni.width;
-    const aH = ni.height;
-    const aX = ni.position.x;
-    const aY = ni.position.y;
+    // React Flow can briefly null out width/height during re-measure cycles.
+    // Falling back to defaults (instead of skipping the agent entirely)
+    // keeps the bubble stably mounted — otherwise it remounts and re-runs
+    // the spawn animation every measurement tick, which looks like a
+    // pulsing flicker.
+    const aW = ni.width ?? 240;
+    const aH = ni.height ?? 130;
+    const aX = ni.position?.x ?? 0;
+    const aY = ni.position?.y ?? 0;
     const anchorX = aX + aW;
     const anchorY = aY + aH / 2;
     const lastIdx = visible.length - 1;
     visible.forEach((t, idx) => {
-      const offsetX = 46;
       const offsetY = (idx - lastIdx / 2) * BUBBLE_VERT_GAP;
+      const worldX = aX + aW + BUBBLE_OFFSET_X;
+      const worldY = aY + aH / 2 + offsetY - BUBBLE_HALF_H;
       const fade = fadeAt(t, now);
+      // The delta is from the bubble's anchor point (its visual left-centre)
+      // back to the agent's right edge. The bubble starts there during spawn
+      // and rides outward to its resting place.
       out.push({
         id: t.id,
         agentId: a.id,
         name: t.name,
         status: statusOf(t),
+        category: categoryFor(t.name),
+        inputPreview: t.inputPreview ?? "",
         fade,
         fading: fade < 0.999,
-        worldX: aX + aW + offsetX,
-        worldY: aY + aH / 2 + offsetY - BUBBLE_HALF_H,
+        worldX,
+        worldY,
         anchorX,
         anchorY,
+        spawnDx: anchorX - worldX,
+        spawnDy: anchorY - (worldY + BUBBLE_HALF_H),
       });
     });
   }
@@ -107,18 +180,24 @@ function collectBursts(
 }
 
 interface ToolBurstsProps {
-  agents: Iterable<AgentNodeData>;
+  /** The full agents Map. We accept the Map (not an iterator) because this
+   *  component re-renders whenever ReactFlow's internal store updates
+   *  (pan/zoom/measurement), often without the parent re-rendering — a
+   *  single-use iterator would be exhausted on the second render. */
+  agents: Map<string, AgentNodeData>;
   now: number;
+  /** Open the existing ToolModal for the given tool id. */
+  onOpenTool?: (toolId: string) => void;
 }
 
-export default function ToolBursts({ agents, now }: ToolBurstsProps) {
+export default function ToolBursts({ agents, now, onOpenTool }: ToolBurstsProps) {
   const { x, y, zoom } = useViewport();
   const nodeInternals = useStore((s: ReactFlowState) => s.nodeInternals);
-  // The selector returns the same Map identity until React Flow internally
-  // updates it (which happens on node moves / resizes / additions). That's
-  // exactly when we want to recompute.
   const bursts = collectBursts(agents, nodeInternals as never, now);
-  if (bursts.length === 0) return null;
+  // We always render the layer — even when empty — so that the bubbles'
+  // CSS spawn animations don't re-run every time the agent's tool list
+  // briefly normalises. Returning null here would unmount the entire
+  // layer (and every bubble inside) on any momentary empty state.
 
   return (
     <div className="tool-bursts-layer" aria-hidden>
@@ -142,13 +221,26 @@ export default function ToolBursts({ agents, now }: ToolBurstsProps) {
       {bursts.map(b => {
         const px = b.worldX * zoom + x;
         const py = b.worldY * zoom + y;
+        const wrapStyle: React.CSSProperties & Record<string, string> = {
+          left: `${px}px`,
+          top: `${py}px`,
+          transform: `scale(${zoom})`,
+          transformOrigin: "left top",
+          "--spawn-dx": `${b.spawnDx}px`,
+          "--spawn-dy": `${b.spawnDy}px`,
+        };
+        const title = b.inputPreview ? `${b.name} · ${b.inputPreview}` : b.name;
+        const clickable = onOpenTool != null;
         return (
-          <div
-            key={b.id}
-            className="tool-burst-wrap"
-            style={{ left: px, top: py, transform: `scale(${zoom})`, transformOrigin: "left top" }}
-          >
-            <div className={`tool-burst status-${b.status}${b.fading ? " fading" : ""}`}>
+          <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
+            <div
+              className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}`}
+              title={title}
+              role={clickable ? "button" : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              onClick={clickable ? () => onOpenTool!(b.id) : undefined}
+              onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenTool!(b.id); } } : undefined}
+            >
               <span className="tb-emoji">{emojiFor(b.name)}</span>
               <span className="tb-name">{b.name}</span>
               {b.status === "inflight" && <span className="tb-spin" />}

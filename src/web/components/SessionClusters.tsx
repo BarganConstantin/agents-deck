@@ -9,9 +9,9 @@ interface Cluster {
   x: number; y: number; w: number; h: number;
 }
 
-const PAD = 28;
-const HEADER_H = 30;
-const LABEL_LIFT = 14; // px the label tab sits above the box's top edge
+const PAD = 18;
+const HEADER_H = 26;
+const LABEL_LIFT = 12; // px the label tab sits above the box's top edge
 
 function selectClusters(s: ReactFlowState): Cluster[] {
   const bySession = new Map<string, { minX: number; minY: number; maxX: number; maxY: number; label: string }>();
@@ -42,11 +42,21 @@ function selectClusters(s: ReactFlowState): Cluster[] {
     }
   }
 
+  // When multiple sessions resolve to the same label (e.g. two Claude sessions
+  // running in the same cwd both pick the basename as their label), append a
+  // short session-id suffix so the user can tell them apart at a glance.
+  const labelCounts = new Map<string, number>();
+  for (const b of bySession.values()) {
+    labelCounts.set(b.label, (labelCounts.get(b.label) ?? 0) + 1);
+  }
+
   const out: Cluster[] = [];
   for (const [sessionId, b] of bySession) {
+    const needsSuffix = (labelCounts.get(b.label) ?? 0) > 1;
+    const label = needsSuffix ? `${b.label} · ${shortId(sessionId)}` : b.label;
     out.push({
       sessionId,
-      label: b.label,
+      label,
       x: b.minX - PAD,
       y: b.minY - PAD - HEADER_H,
       w: b.maxX - b.minX + PAD * 2,
@@ -54,6 +64,13 @@ function selectClusters(s: ReactFlowState): Cluster[] {
     });
   }
   return out;
+}
+
+function shortId(sessionId: string): string {
+  // First 4 alphanumeric chars — enough to disambiguate in practice and
+  // matches the visual weight of the rest of the label.
+  const m = sessionId.match(/[a-zA-Z0-9]{4}/);
+  return m ? m[0] : sessionId.slice(0, 4);
 }
 
 function rootLabel(d: AgentNodeData): string | undefined {

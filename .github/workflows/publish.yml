@@ -1,0 +1,59 @@
+name: publish
+
+# Triggered by pushing a semver tag (v1.1.0, v1.1.1, v2.0.0, …). Tag must
+# match the version in package.json — the workflow verifies this and aborts
+# on mismatch so you can't accidentally publish 1.1.0 from a 1.0.x branch.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  # Also allow a manual run from the Actions tab — handy for re-publishing
+  # after a transient npm outage. Picks up the version from package.json.
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for `npm publish --provenance`
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Verify tag matches package.json
+        if: github.event_name == 'push'
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "package.json: $PKG_VERSION"
+          echo "tag:          $TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "### Published agent-dag@$VERSION :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "https://www.npmjs.com/package/agent-dag/v/$VERSION" >> $GITHUB_STEP_SUMMARY
