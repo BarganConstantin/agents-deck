@@ -48,6 +48,9 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
           <span className="spawn-badge" title={`${data.childCount} subagents spawned`}>→ {data.childCount}</span>
         )}
         {data.cwdBasename && data.kind === "subagent" ? ` · ${data.cwdBasename}` : ""}
+        {data.model && (
+          <span className="model-chip" title={data.model}>{shortModel(data.model)}</span>
+        )}
       </div>
 
       <div className="meta">
@@ -74,4 +77,14 @@ function fmtTok(n: number): string {
   if (n < 1000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
   return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+/** Render "claude-opus-4-7-20250101" → "Opus 4.7", "claude-haiku-4-5" → "Haiku 4.5".
+ *  Falls back to the raw id if the shape is unfamiliar so we never hide info. */
+export function shortModel(id: string): string {
+  const m = id.match(/^claude[-_](opus|sonnet|haiku|fable)[-_](\d+(?:[-_.]\d+)*)/i);
+  if (!m) return id;
+  const family = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+  const version = m[2].replace(/[-_]/g, ".");
+  return `${family} ${version}`;
 }

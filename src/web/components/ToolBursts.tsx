@@ -84,6 +84,119 @@ function emojiFor(name: string): string {
   return TOOL_EMOJI[name] ?? "✨";
 }
 
+// ─── Shell-command introspection ──────────────────────────────────────────
+// When a tool call is Bash/PowerShell we crack open its input and surface the
+// underlying command (git/npm/grep/…) instead of just labelling the bubble
+// "Bash". The category accent stays amber for `shell` so you still know it
+// was a shell call, and the original Bash/PowerShell text + full command go
+// into the tooltip.
+
+const COMMAND_EMOJI: Record<string, string> = {
+  // VCS / forges
+  git: "🐙", gh: "🐙", glab: "🐙",
+  // Package managers
+  npm: "📦", pnpm: "📦", yarn: "📦", bun: "📦", brew: "🍺",
+  // Languages / runtimes
+  node: "🟢", deno: "🟢",
+  python: "🐍", python3: "🐍", py: "🐍", pip: "🐍", pip3: "🐍", uv: "🐍",
+  ruby: "💎", bundle: "💎", gem: "💎",
+  cargo: "🦀", rustc: "🦀", rustup: "🦀",
+  go: "🐹",
+  // Containers / orchestration
+  docker: "🐳", "docker-compose": "🐳", podman: "🐳",
+  kubectl: "☸️", helm: "☸️", k9s: "☸️",
+  // Search / files
+  grep: "🔎", rg: "🔎", ag: "🔎", ack: "🔎",
+  find: "🔍", fd: "🔍", locate: "🔍", which: "🔍",
+  ls: "📂", dir: "📂", tree: "📂",
+  cat: "📄", head: "📄", tail: "📄", less: "📄", more: "📄", bat: "📄",
+  cp: "📋", mv: "✂️", rm: "🗑️", rmdir: "🗑️", mkdir: "📁", touch: "📁",
+  sed: "✏️", awk: "✏️", tr: "✏️",
+  // Network
+  curl: "🌐", wget: "🌐", http: "🌐", httpie: "🌐",
+  ssh: "🔐", scp: "🔐", rsync: "🔐", ping: "📡",
+  // Build / make
+  make: "🔨", cmake: "🔨", ninja: "🔨", bazel: "🔨", just: "🔨",
+  // Infra / config
+  terraform: "🏗️", ansible: "📕", pulumi: "🏗️",
+  // Process / system
+  ps: "📊", top: "📊", htop: "📊", btm: "📊",
+  kill: "💀", pkill: "💀",
+  systemctl: "⚙️", service: "⚙️",
+  // Archives
+  tar: "🗜️", zip: "🗜️", unzip: "🗜️", gzip: "🗜️", "7z": "🗜️",
+  // Editors / data
+  vim: "📝", nvim: "📝", nano: "📝", emacs: "📝", code: "📝",
+  jq: "🪺", yq: "🪺",
+  // Echo-likes
+  echo: "💬", printf: "💬",
+  // Media
+  ffmpeg: "🎞️", ffprobe: "🎞️", imagemagick: "🖼️", convert: "🖼️",
+  // PowerShell cmdlets — picked the ones I see most often in actual hook
+  // payloads. Same emoji as their POSIX cousins so the eye is trained once.
+  "Get-ChildItem": "📂", "Get-Content": "📄", "Set-Content": "💾",
+  "Out-File": "💾", "Add-Content": "💾",
+  "Set-Location": "📍", "Get-Location": "📍",
+  "Get-Process": "📊", "Start-Process": "▶️", "Stop-Process": "💀",
+  "Invoke-WebRequest": "🌐", "Invoke-RestMethod": "🌐",
+  "New-Item": "📁", "Remove-Item": "🗑️", "Copy-Item": "📋", "Move-Item": "✂️",
+  "Test-Path": "🔍", "Where-Object": "🔎", "ForEach-Object": "🔁",
+  "Select-Object": "🎯", "Measure-Object": "📊",
+  "Get-Service": "⚙️", "Restart-Service": "⚙️",
+  "ConvertTo-Json": "🪺", "ConvertFrom-Json": "🪺",
+};
+
+/** Pull the primary executable name out of a shell command string. Tries
+ *  hard enough to be useful — strips `env VAR=val`, `sudo`, and unwraps a
+ *  `bash -c "..."` shell — but doesn't pretend to be a real parser. */
+function parseShellCommand(input: string): string | null {
+  if (!input) return null;
+  let s = input.trim();
+  if (!s) return null;
+
+  // bash -c "git status"  /  sh -c '...'  /  powershell -Command "..."  →
+  // recurse into the inner command so we get the real verb.
+  const wrap = s.match(/^(?:bash|sh|zsh|fish|powershell|pwsh)(?:\.exe)?\s+(?:-c|-Command|-NoProfile|-NonInteractive|\s)+["']([^"']+)["']/i);
+  if (wrap) return parseShellCommand(wrap[1]);
+
+  // env VAR=val VAR2=val2 cmd  →  strip leading var assignments.
+  while (true) {
+    const m = s.match(/^([A-Z_][A-Z0-9_]*=\S*)\s+/);
+    if (!m) break;
+    s = s.slice(m[0].length);
+  }
+
+  // sudo [-flags] cmd  →  cmd
+  s = s.replace(/^sudo(?:\s+-\S+)*\s+/, "");
+  // time / nohup / xargs wrappers
+  s = s.replace(/^(?:time|nohup|xargs)\s+/, "");
+
+  const first = s.match(/^([^\s|;&<>(]+)/);
+  if (!first) return null;
+  let cmd = first[1];
+
+  // Strip a leading path: /usr/bin/git → git, ./foo.sh → foo.sh
+  cmd = cmd.replace(/^.*[/\\]/, "");
+  // Strip a trailing .exe / .cmd on Windows
+  cmd = cmd.replace(/\.(exe|cmd|bat|ps1)$/i, "");
+
+  return cmd || null;
+}
+
+interface CommandSkin {
+  emoji: string;
+  label: string;
+}
+
+function skinForShellCall(toolName: string, inputPreview: string): CommandSkin | null {
+  if (toolName !== "Bash" && toolName !== "PowerShell") return null;
+  const cmd = parseShellCommand(inputPreview);
+  if (!cmd) return null;
+  const emoji = COMMAND_EMOJI[cmd];
+  if (!emoji) return null;
+  return { emoji, label: cmd };
+}
+
 type Status = "inflight" | "done" | "err";
 
 function statusOf(t: ToolCall): Status {
@@ -101,7 +214,13 @@ function fadeAt(t: ToolCall, now: number): number {
 interface Burst {
   id: string;
   agentId: string;
+  /** Original tool name (e.g. "Bash"). Always present; goes into the tooltip. */
+  toolName: string;
+  /** Display label — either toolName or the parsed shell command for
+   *  Bash/PowerShell when we recognised it (e.g. "git"). */
   name: string;
+  /** Display emoji — overridden for known shell sub-commands. */
+  emoji: string;
   status: Status;
   category: ToolCategory;
   inputPreview: string;
@@ -133,6 +252,11 @@ function collectBursts(
     if (a.exitAt != null && now - a.exitAt > 600) continue;
     const ni = nodeInternals.get(a.id);
     if (!ni) continue;
+    // Defensive: if the agent's geometry has been zeroed out (React Flow has
+    // started tearing it down but nodeInternals hasn't fully cleared), don't
+    // orphan its bursts in the void. This catches the "floating bubbles with
+    // no agent visible" state.
+    if (ni.width === 0 || ni.height === 0) continue;
     const visible = a.tools.filter(t => {
       if (t.endedAt == null) return true;
       return now - t.endedAt < LIFETIME_MS + FADE_MS;
@@ -158,13 +282,17 @@ function collectBursts(
       // The delta is from the bubble's anchor point (its visual left-centre)
       // back to the agent's right edge. The bubble starts there during spawn
       // and rides outward to its resting place.
+      const inputPreview = t.inputPreview ?? "";
+      const skin = skinForShellCall(t.name, inputPreview);
       out.push({
         id: t.id,
         agentId: a.id,
-        name: t.name,
+        toolName: t.name,
+        name: skin?.label ?? t.name,
+        emoji: skin?.emoji ?? emojiFor(t.name),
         status: statusOf(t),
         category: categoryFor(t.name),
-        inputPreview: t.inputPreview ?? "",
+        inputPreview,
         fade,
         fading: fade < 0.999,
         worldX,
@@ -229,7 +357,10 @@ export default function ToolBursts({ agents, now, onOpenTool }: ToolBurstsProps)
           "--spawn-dx": `${b.spawnDx}px`,
           "--spawn-dy": `${b.spawnDy}px`,
         };
-        const title = b.inputPreview ? `${b.name} · ${b.inputPreview}` : b.name;
+        // Tooltip always shows the underlying tool (Bash/PowerShell/…) so
+        // the transport is never hidden, plus the input preview when present.
+        const titleHead = b.name !== b.toolName ? `${b.toolName} · ${b.name}` : b.toolName;
+        const title = b.inputPreview ? `${titleHead} · ${b.inputPreview}` : titleHead;
         const clickable = onOpenTool != null;
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
@@ -241,7 +372,7 @@ export default function ToolBursts({ agents, now, onOpenTool }: ToolBurstsProps)
               onClick={clickable ? () => onOpenTool!(b.id) : undefined}
               onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenTool!(b.id); } } : undefined}
             >
-              <span className="tb-emoji">{emojiFor(b.name)}</span>
+              <span className="tb-emoji">{b.emoji}</span>
               <span className="tb-name">{b.name}</span>
               {b.status === "inflight" && <span className="tb-spin" />}
               {b.status === "done" && <span className="tb-mark done">✓</span>}

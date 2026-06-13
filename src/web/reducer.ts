@@ -40,6 +40,22 @@ function addUsage(into: TokenUsage, add: TokenUsage): void {
   into.cacheCreateTokens += add.cacheCreateTokens;
 }
 
+/** Recursively look for a `model` string anywhere in the payload — CC
+ *  surfaces it on Stop, PostToolUse response envelopes, message bodies, etc.,
+ *  in different keys per event. Only accept ids that look like Claude models. */
+function extractModel(node: unknown, depth = 0): string | null {
+  if (!node || typeof node !== "object" || depth > 6) return null;
+  const obj = node as Record<string, unknown>;
+  if (typeof obj.model === "string" && /^claude[-_]/i.test(obj.model)) {
+    return obj.model;
+  }
+  for (const v of Object.values(obj)) {
+    const m = extractModel(v, depth + 1);
+    if (m) return m;
+  }
+  return null;
+}
+
 export interface GraphState {
   agents: Map<string, AgentNodeData>;
   toolIndex: Map<string, ToolCall>;
@@ -265,6 +281,11 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
 
   const sessionId = p.session_id ?? "unknown";
   const owner = resolveOwner(state, p, now);
+
+  // Snapshot model whenever it shows up in the payload — we want the most
+  // recent observation per owner since CC can switch models mid-session.
+  const observedModel = extractModel(p);
+  if (observedModel) owner.model = observedModel;
 
   switch (name) {
     case "SessionStart": {

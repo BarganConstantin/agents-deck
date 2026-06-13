@@ -676,6 +676,31 @@ button.btn.icon-btn {
   font-weight: 600;
 }
 
+/* Model chip — tiny pill next to "session"/"subagent" with a family tint.
+   Picks up the family colour from a substring match in the chip text. */
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--bg-soft);
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.model-chip[title*="opus"]   { color: #f0abfc; border-color: rgba(240,171,252,0.40); background: rgba(240,171,252,0.06); }
+.model-chip[title*="sonnet"] { color: #7dd3fc; border-color: rgba(125,211,252,0.40); background: rgba(125,211,252,0.06); }
+.model-chip[title*="haiku"]  { color: #86efac; border-color: rgba(134,239,172,0.40); background: rgba(134,239,172,0.06); }
+.model-chip[title*="fable"]  { color: #fcd34d; border-color: rgba(252,211,77,0.40);  background: rgba(252,211,77,0.06); }
+:root[data-theme="light"] .model-chip[title*="opus"]   { color: #7e22ce; border-color: rgba(126,34,206,0.45);  background: rgba(126,34,206,0.06); }
+:root[data-theme="light"] .model-chip[title*="sonnet"] { color: #0369a1; border-color: rgba(3,105,161,0.45);   background: rgba(3,105,161,0.06); }
+:root[data-theme="light"] .model-chip[title*="haiku"]  { color: #15803d; border-color: rgba(21,128,61,0.45);   background: rgba(21,128,61,0.06); }
+:root[data-theme="light"] .model-chip[title*="fable"]  { color: #b45309; border-color: rgba(180,83,9,0.45);    background: rgba(180,83,9,0.06); }
+
 .now-running {
   margin-top: 8px;
   padding: 5px 8px;
