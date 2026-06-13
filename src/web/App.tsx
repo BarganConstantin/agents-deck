@@ -478,7 +478,14 @@ function Inner() {
         >
           <Background gap={28} size={1} color={cssVar("--grid-line")} />
           <SessionClusters />
-          <ToolBursts agents={stateRef.current.agents} now={now} onOpenTool={setOpenedToolId} />
+          <ToolBursts
+            agents={stateRef.current.agents}
+            positions={positionsRef.current}
+            pinned={pinnedRef.current}
+            measured={measuredRef.current}
+            now={now}
+            onOpenTool={setOpenedToolId}
+          />
           <Controls showInteractive={false} />
           <MiniMap
             zoomable

@@ -5,7 +5,7 @@
 // on a layer above React Flow's nodes and follow the canvas pan/zoom via
 // useViewport().
 import React from "react";
-import { useStore, useViewport, type ReactFlowState } from "reactflow";
+import { useViewport } from "reactflow";
 import type { AgentNodeData, ToolCall } from "../types";
 
 const LIFETIME_MS = 4000;
@@ -246,41 +246,32 @@ interface Burst {
   spawnDy: number;
 }
 
-interface NodeInternal {
-  width: number | null;
-  height: number | null;
-  position: { x: number; y: number };
-}
-
 function collectBursts(
   agents: Map<string, AgentNodeData>,
-  nodeInternals: Map<string, NodeInternal>,
+  positions: Map<string, { x: number; y: number }>,
+  pinned: Map<string, { x: number; y: number }>,
+  measured: Map<string, { width: number; height: number }>,
   now: number,
 ): Burst[] {
   const out: Burst[] = [];
   for (const a of agents.values()) {
     if (a.exitAt != null && now - a.exitAt > 600) continue;
-    const ni = nodeInternals.get(a.id);
-    if (!ni) continue;
-    // Defensive: if the agent's geometry has been zeroed out (React Flow has
-    // started tearing it down but nodeInternals hasn't fully cleared), don't
-    // orphan its bursts in the void. This catches the "floating bubbles with
-    // no agent visible" state.
-    if (ni.width === 0 || ni.height === 0) continue;
+    // Read position from the SAME source that feeds ReactFlow's nodes prop.
+    // Reading from ReactFlow's nodeInternals (its computed mirror) lagged
+    // one frame behind during layout reflows — that produced the "bursts
+    // floating with no agents" state when dagre repositioned everything.
+    const pos = pinned.get(a.id) ?? positions.get(a.id);
+    if (!pos) continue; // no position yet — agent not laid out
     const visible = a.tools.filter(t => {
       if (t.endedAt == null) return true;
       return now - t.endedAt < LIFETIME_MS + FADE_MS;
     }).slice(-MAX_PER_AGENT);
     if (visible.length === 0) continue;
-    // React Flow can briefly null out width/height during re-measure cycles.
-    // Falling back to defaults (instead of skipping the agent entirely)
-    // keeps the bubble stably mounted — otherwise it remounts and re-runs
-    // the spawn animation every measurement tick, which looks like a
-    // pulsing flicker.
-    const aW = ni.width ?? 240;
-    const aH = ni.height ?? 130;
-    const aX = ni.position?.x ?? 0;
-    const aY = ni.position?.y ?? 0;
+    const size = measured.get(a.id);
+    const aW = size?.width ?? 240;
+    const aH = size?.height ?? 130;
+    const aX = pos.x;
+    const aY = pos.y;
     const anchorX = aX + aW;
     const anchorY = aY + aH / 2;
     const lastIdx = visible.length - 1;
@@ -354,20 +345,22 @@ function collectBursts(
 }
 
 interface ToolBurstsProps {
-  /** The full agents Map. We accept the Map (not an iterator) because this
-   *  component re-renders whenever ReactFlow's internal store updates
-   *  (pan/zoom/measurement), often without the parent re-rendering — a
-   *  single-use iterator would be exhausted on the second render. */
+  /** The full agents Map. */
   agents: Map<string, AgentNodeData>;
+  /** Same maps that feed ReactFlow's `nodes` prop. Reading from these means
+   *  bursts and agents share a single source of truth for positions — they
+   *  can never disagree, even mid-reflow. */
+  positions: Map<string, { x: number; y: number }>;
+  pinned: Map<string, { x: number; y: number }>;
+  measured: Map<string, { width: number; height: number }>;
   now: number;
   /** Open the existing ToolModal for the given tool id. */
   onOpenTool?: (toolId: string) => void;
 }
 
-export default function ToolBursts({ agents, now, onOpenTool }: ToolBurstsProps) {
+export default function ToolBursts({ agents, positions, pinned, measured, now, onOpenTool }: ToolBurstsProps) {
   const { x, y, zoom } = useViewport();
-  const nodeInternals = useStore((s: ReactFlowState) => s.nodeInternals);
-  const bursts = collectBursts(agents, nodeInternals as never, now);
+  const bursts = collectBursts(agents, positions, pinned, measured, now);
   // We always render the layer — even when empty — so that the bubbles'
   // CSS spawn animations don't re-run every time the agent's tool list
   // briefly normalises. Returning null here would unmount the entire
