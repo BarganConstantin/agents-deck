@@ -192,34 +192,10 @@ function Inner() {
     return () => clearInterval(id);
   }, [rerender]);
 
-  // Auto-fit when agent count grows. Two-stage so we react fast to the
-  // first new agent in a quiet window AND still fit again ~250ms later when
-  // dagre's reflow has settled and measurements are stable.
-  const lastAgentCountRef = useRef(0);
+  // Auto-fit-related refs (see effect after layoutSig is computed below).
   const fitTimerRef = useRef<number | null>(null);
   const lastFitTimeRef = useRef(0);
-  useEffect(() => {
-    const count = stateRef.current.agents.size;
-    if (count > lastAgentCountRef.current) {
-      lastAgentCountRef.current = count;
-      const tnow = Date.now();
-      // First growth in 1.5s+ → fit immediately so existing agents stay in
-      // view while dagre repositions everything for the newcomer.
-      if (tnow - lastFitTimeRef.current > 1500) {
-        try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
-        lastFitTimeRef.current = tnow;
-      }
-      // Trailing fit covers the case where the new node only gets measured
-      // (and therefore properly positioned) on the next frame.
-      if (fitTimerRef.current) window.clearTimeout(fitTimerRef.current);
-      fitTimerRef.current = window.setTimeout(() => {
-        try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-        lastFitTimeRef.current = Date.now();
-      }, 250);
-    } else if (count < lastAgentCountRef.current) {
-      lastAgentCountRef.current = count;
-    }
-  });
+  const lastLayoutSigForFitRef = useRef("");
 
   // Auto-recover from "drifted off-screen": every 1.5s check whether ANY
   // agent's bounding box intersects the visible viewport. If none have at
@@ -308,6 +284,27 @@ function Inner() {
     return `${ids.join("|")}#sv${sizeVersion}`;
   }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion]);
 
+  // Auto-fit on layout-signature changes — the single source of truth for
+  // structural shifts: agent added/removed, parent relationship changed, or
+  // a measurement that moved a node. Catches the "14 agents in state but
+  // none visible" case where count is stable but the layout reflowed.
+  useEffect(() => {
+    if (lastLayoutSigForFitRef.current === layoutSig) return;
+    const prev = lastLayoutSigForFitRef.current;
+    lastLayoutSigForFitRef.current = layoutSig;
+    if (!prev) return; // first render — let initial fitView prop handle it
+    const tnow = Date.now();
+    if (tnow - lastFitTimeRef.current > 1200) {
+      try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
+      lastFitTimeRef.current = tnow;
+    }
+    if (fitTimerRef.current) window.clearTimeout(fitTimerRef.current);
+    fitTimerRef.current = window.setTimeout(() => {
+      try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
+      lastFitTimeRef.current = Date.now();
+    }, 280);
+  }, [layoutSig, rf]);
+
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
       stateRef.current, now, pinnedRef.current, query,
@@ -339,7 +336,18 @@ function Inner() {
     positionsRef.current.clear();
     lastLayoutSigRef.current = "";
     rerender();
-  }, [rerender]);
+    // After dagre runs on the next render, fit-view so the user sees the
+    // result. 80ms gives React + RF one paint to settle the new positions.
+    window.setTimeout(() => {
+      try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
+      lastFitTimeRef.current = Date.now();
+    }, 80);
+  }, [rerender, rf]);
+
+  const handleFit = useCallback(() => {
+    try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
+    lastFitTimeRef.current = Date.now();
+  }, [rf]);
 
   // keyboard shortcuts
   useEffect(() => {
@@ -355,11 +363,12 @@ function Inner() {
       if (e.key === " ") { e.preventDefault(); setPaused(p => !p); }
       if (e.key === "c" || e.key === "C") handleClear();
       if (e.key === "r" || e.key === "R") handleRelayout();
+      if (e.key === "f" || e.key === "F") handleFit();
       if (e.key === "t" || e.key === "T") setTheme(t => (t === "dark" ? "light" : "dark"));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleClear, handleRelayout]);
+  }, [handleClear, handleRelayout, handleFit]);
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
@@ -557,6 +566,7 @@ function EmptyDetail({ count }: { count: number }) {
         <div className="sc"><kbd>/</kbd><span>focus search</span></div>
         <div className="sc"><kbd>space</kbd><span>pause / resume</span></div>
         <div className="sc"><kbd>R</kbd><span>re-arrange</span></div>
+        <div className="sc"><kbd>F</kbd><span>fit view</span></div>
         <div className="sc"><kbd>C</kbd><span>clear canvas</span></div>
         <div className="sc"><kbd>T</kbd><span>toggle theme</span></div>
         <div className="sc"><kbd>Esc</kbd><span>deselect</span></div>
