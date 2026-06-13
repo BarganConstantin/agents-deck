@@ -193,12 +193,30 @@ interface CommandSkin {
   label: string;
 }
 
-function skinForShellCall(toolName: string, inputPreview: string): CommandSkin | null {
+/** Extract a usable command string from CC's tool_input.
+ *  - Bash:        { command: "git status", description?: string, ... }
+ *  - PowerShell:  { command: "..." } or sometimes { script: "..." }
+ *  - Fallback:    if input is a bare string, use it directly. */
+function commandStringOf(input: unknown): string | null {
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.command === "string") return obj.command;
+  if (typeof obj.cmd === "string") return obj.cmd;
+  if (typeof obj.script === "string") return obj.script;
+  return null;
+}
+
+function skinForShellCall(toolName: string, input: unknown): CommandSkin | null {
   if (toolName !== "Bash" && toolName !== "PowerShell") return null;
-  const cmd = parseShellCommand(inputPreview);
+  const raw = commandStringOf(input);
+  if (!raw) return null;
+  const cmd = parseShellCommand(raw);
   if (!cmd) return null;
-  const emoji = COMMAND_EMOJI[cmd];
-  if (!emoji) return null;
+  // Always render a sub-bubble for parseable shell calls. If the command
+  // isn't in our curated emoji map, use a generic gear so the user can
+  // still see "agent → Bash → <whatever-the-command-was>".
+  const emoji = COMMAND_EMOJI[cmd] ?? "⚙️";
   return { emoji, label: cmd };
 }
 
@@ -308,8 +326,11 @@ function collectBursts(
       });
       // Shell sub-bubble — for Bash/PowerShell calls where we recognised the
       // underlying command, render a second chained bubble (agent → Bash →
-      // git). Connector anchored on the primary's right edge.
-      const skin = skinForShellCall(t.name, inputPreview);
+      // git). Connector anchored on the primary's right edge. Note: we pass
+      // the raw t.input here, NOT inputPreview — CC's tool_input is
+      // {command, description, ...} and stringifying it confuses the
+      // parser.
+      const skin = skinForShellCall(t.name, t.input);
       if (skin) {
         const subWorldX = worldX + ESTIMATED_BUBBLE_W + SUB_GAP;
         const subWorldY = worldY;
