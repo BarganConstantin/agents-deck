@@ -336,6 +336,58 @@ button.btn.icon-btn {
   overflow: hidden;
 }
 
+/* Filter chips above the canvas — small toolbar lets you toggle entire
+   tool categories on/off when the canvas gets busy. Only appears when
+   ≥2 categories are present, so a single-tool session stays uncluttered. */
+.cat-filter-bar {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 6;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(20, 22, 27, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.30);
+}
+:root[data-theme="light"] .cat-filter-bar {
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 6px 18px rgba(15,23,42,0.10);
+}
+.cat-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 120ms, color 120ms, opacity 120ms;
+}
+.cat-filter .cat-emoji { font-size: 13px; line-height: 1; }
+.cat-filter .cat-name { text-transform: lowercase; }
+.cat-filter:hover { background: var(--bg-soft); }
+.cat-filter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cat-filter.off {
+  opacity: 0.38;
+  color: var(--muted);
+}
+.cat-filter.off .cat-emoji { filter: grayscale(0.7); }
+.cat-filter.off:hover { opacity: 0.8; }
+
 /* ---------------- detail panel ---------------- */
 
 .detail {
@@ -976,6 +1028,15 @@ button.btn.icon-btn {
 .tool-burst.cat-mcp   { --cat-accent: #5eead4; }
 .tool-burst.cat-other { --cat-accent: #94a3b8; }
 
+/* Dimmed bursts — matches the rf-dim treatment on agent nodes when /-search
+   has an active query that doesn't include this bubble's agent. */
+.tool-burst.dim {
+  opacity: 0.22;
+  filter: saturate(0.4);
+  transition: opacity 180ms ease, filter 180ms ease;
+}
+.tool-burst.dim:hover { opacity: 0.6; }
+
 /* Shell sub-bubble — slightly compressed and a touch dimmer so the eye
    parses "primary → sub" instead of "two equal bubbles". Spawn is delayed
    ~220ms so the chain reads sequentially: Bash appears, then git/grep
@@ -1083,6 +1144,161 @@ button.btn.icon-btn {
 }
 :root[data-theme="light"] .tool-conn.status-done { stroke: rgba(21,128,61,0.85); }
 :root[data-theme="light"] .tool-conn.status-err  { stroke: rgba(185,28,28,0.85); }
+
+/* ---------------- detail panel: hero + sections ---------------- */
+
+.detail-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+.detail-hero .hero-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.detail-hero .hero-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.detail-hero .hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  flex-wrap: wrap;
+}
+.detail-hero .hero-meta-item { letter-spacing: 0.03em; }
+.detail-hero .hero-sep { color: var(--muted-dim); }
+.detail-hero .hero-cost {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.detail-hero .hero-cost-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.detail-hero .hero-cost-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.detail-hero .hero-cost-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--muted);
+}
+
+/* Stacked cost-breakdown bar */
+.cost-bar {
+  display: flex;
+  height: 8px;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--line);
+  gap: 1px;
+}
+.cost-bar .cb-seg {
+  height: 100%;
+  display: block;
+  transition: filter 120ms ease;
+}
+.cost-bar .cb-seg:hover { filter: brightness(1.3); }
+.cost-bar .cb-input    { background: hsl(213 80% 65%); }
+.cost-bar .cb-output   { background: hsl(280 75% 70%); }
+.cost-bar .cb-cache-r  { background: hsl(150 60% 60%); }
+.cost-bar .cb-cache-w  { background: hsl(35 85% 65%); }
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+.detail-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.detail-section h3 .section-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Activity row — counters on the left, category chips on the right */
+.activity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.activity-counters {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.activity-counters .ac-item b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.activity-counters .ac-live { color: var(--inflight); }
+.activity-counters .ac-live b { color: var(--inflight); }
+.activity-counters .ac-err { color: var(--err); }
+.activity-counters .ac-err b { color: var(--err); }
+
+.cat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cat-chip .cat-emoji { font-size: 12px; line-height: 1; }
+.cat-chip .cat-count { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cat-chip.cat-file  { border-color: rgba(125,211,252,0.40); }
+.cat-chip.cat-shell { border-color: rgba(252,211,77,0.40); }
+.cat-chip.cat-web   { border-color: rgba(103,232,249,0.40); }
+.cat-chip.cat-agent { border-color: rgba(240,171,252,0.40); }
+.cat-chip.cat-task  { border-color: rgba(134,239,172,0.40); }
+.cat-chip.cat-plan  { border-color: rgba(196,181,253,0.40); }
+.cat-chip.cat-mcp   { border-color: rgba(94,234,212,0.40); }
 
 /* ---------------- prompt history ---------------- */
 

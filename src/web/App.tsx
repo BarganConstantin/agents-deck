@@ -10,7 +10,7 @@ import ReactFlow, {
   useStore,
   type ReactFlowState,
 } from "reactflow";
-import AgentNode from "./components/AgentNode";
+import AgentNode, { shortModel } from "./components/AgentNode";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
@@ -78,6 +78,34 @@ function clearStoredLayout(): void {
     window.localStorage.removeItem(LAYOUT_STORAGE_KEY);
     window.localStorage.removeItem(VIEWPORT_STORAGE_KEY);
   } catch {}
+}
+
+// Tool categories used both by the detail-panel strip and the canvas
+// filter chips. Same buckets ToolBursts uses internally (kept in sync
+// manually — small enough that a shared module isn't worth it).
+type DetailCategory = "file" | "shell" | "web" | "agent" | "task" | "plan" | "mcp" | "other";
+const DETAIL_CAT_EMOJI: Record<DetailCategory, string> = {
+  file: "📁", shell: "⚡", web: "🌐", agent: "🤖",
+  task: "📋", plan: "🧭", mcp: "🔌", other: "✨",
+};
+const DETAIL_CAT_LABEL: Record<DetailCategory, string> = {
+  file: "file", shell: "shell", web: "web", agent: "agent",
+  task: "task", plan: "plan", mcp: "mcp", other: "other",
+};
+const DETAIL_TOOL_CAT: Record<string, DetailCategory> = {
+  Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
+  Glob: "file", Grep: "file", LS: "file", NotebookEdit: "file",
+  Bash: "shell", PowerShell: "shell",
+  WebFetch: "web", WebSearch: "web",
+  Task: "agent", Agent: "agent",
+  TodoWrite: "task", TaskCreate: "task", TaskUpdate: "task",
+  TaskList: "task", TaskGet: "task", TaskOutput: "task", TaskStop: "task",
+  EnterPlanMode: "plan", ExitPlanMode: "plan", AskUserQuestion: "plan",
+  Skill: "plan", Workflow: "plan",
+};
+function detailCategoryFor(name: string): DetailCategory {
+  if (name.startsWith("mcp__")) return "mcp";
+  return DETAIL_TOOL_CAT[name] ?? "other";
 }
 
 function matchesQuery(a: AgentNodeData, q: string): boolean {
@@ -194,6 +222,10 @@ function Inner() {
   const pinnedRef = useRef<Map<string, { x: number; y: number }>>(new Map(loadLayout()));
   const restoredViewport = useState(() => loadViewport())[0];
   const [query, setQuery] = useState("");
+  /** Categories the user has muted via the filter chips. Bursts whose
+   *  category is in this set don't render. Reset only by toggling them
+   *  back on (R / clear don't touch it — filters are user intent). */
+  const [hiddenCats, setHiddenCats] = useState<Set<DetailCategory>>(() => new Set());
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window === "undefined") return "dark";
     return (window.localStorage.getItem("agent-dag.theme") as "dark" | "light") ?? "dark";
@@ -376,6 +408,36 @@ function Inner() {
     [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig],
   );
 
+  // Set of agent ids that match the current /-search query, or null when
+  // there's no query (= no dimming). Passed to ToolBursts so its bubbles
+  // dim in lockstep with the agent nodes — consistent visual filter.
+  const matchedAgentIds = useMemo<Set<string> | null>(() => {
+    if (!query) return null;
+    const set = new Set<string>();
+    for (const a of stateRef.current.agents.values()) if (matchesQuery(a, query)) set.add(a.id);
+    return set;
+  }, [stateRef.current, stateRef.current.lastSeq, query]);
+
+  // Which categories currently have at least one tool on the canvas — the
+  // filter row only shows chips for active categories so users aren't
+  // staring at empty toggle buttons.
+  const presentCats = useMemo<DetailCategory[]>(() => {
+    const set = new Set<DetailCategory>();
+    for (const a of stateRef.current.agents.values()) {
+      for (const t of a.tools) set.add(detailCategoryFor(t.name));
+    }
+    // Stable order: same as DETAIL_CAT_EMOJI declaration order.
+    return (Object.keys(DETAIL_CAT_EMOJI) as DetailCategory[]).filter(c => set.has(c));
+  }, [stateRef.current, stateRef.current.lastSeq]);
+
+  const toggleCat = useCallback((c: DetailCategory) => {
+    setHiddenCats(prev => {
+      const next = new Set(prev);
+      if (next.has(c)) next.delete(c); else next.add(c);
+      return next;
+    });
+  }, []);
+
   const selected = selectedId ? stateRef.current.agents.get(selectedId) : null;
   const openedTool = openedToolId
     ? Array.from(stateRef.current.agents.values())
@@ -521,6 +583,25 @@ function Inner() {
 
       <div className="canvas-wrap">
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
+        {presentCats.length > 1 && (
+          <div className="cat-filter-bar" role="toolbar" aria-label="Filter tools by category">
+            {presentCats.map(c => {
+              const off = hiddenCats.has(c);
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  className={`cat-filter${off ? " off" : ""}`}
+                  onClick={() => toggleCat(c)}
+                  title={`${off ? "Show" : "Hide"} ${DETAIL_CAT_LABEL[c]} tools`}
+                >
+                  <span className="cat-emoji">{DETAIL_CAT_EMOJI[c]}</span>
+                  <span className="cat-name">{DETAIL_CAT_LABEL[c]}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -567,6 +648,8 @@ function Inner() {
             positions={positionsRef.current}
             pinned={pinnedRef.current}
             measured={measuredRef.current}
+            dimUnmatched={matchedAgentIds}
+            hiddenCategories={hiddenCats}
             now={now}
             onOpenTool={setOpenedToolId}
           />
@@ -675,21 +758,83 @@ function Detail({
   now: number;
   onOpenTool: (toolId: string) => void;
 }) {
-  const elapsedSec = Math.max(0, Math.floor(((agent.endedAt ?? now) - agent.startedAt) / 1000));
+  const elapsedMs = (agent.endedAt ?? now) - agent.startedAt;
+  const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
+  const elapsedLabel = elapsedSec < 60
+    ? `${elapsedSec}s`
+    : `${Math.floor(elapsedSec / 60)}m ${String(elapsedSec % 60).padStart(2, "0")}s`;
+
+  const cost = costForUsage(agent.usage, agent.model);
+  const hasCost = cost.total > 0;
+  const totalTokens = agent.usage.inputTokens + agent.usage.outputTokens;
+
+  // Bucket tools by category for the activity strip
+  const catCounts = new Map<DetailCategory, number>();
+  for (const t of agent.tools) {
+    const c = detailCategoryFor(t.name);
+    catCounts.set(c, (catCounts.get(c) ?? 0) + 1);
+  }
+  const errCount = agent.tools.filter(t => t.ok === false).length;
+  const inflight = agent.tools.filter(t => !t.endedAt).length;
+  const catEntries = Array.from(catCounts.entries())
+    .sort((a, b) => b[1] - a[1]);
+
   return (
     <>
-      <h3>{agent.label}</h3>
-      <div>
-        <div className="row"><span className="k">kind</span><span className="v">{agent.kind}</span></div>
-        <div className="row"><span className="k">state</span><span className="v">{agent.state}</span></div>
-        <div className="row"><span className="k">elapsed</span><span className="v">{elapsedSec}s</span></div>
-        <div className="row"><span className="k">tools</span><span className="v">{agent.toolCount}</span></div>
-        {agent.cwd && <div className="row"><span className="k">cwd</span><span className="v" title={agent.cwd}>{agent.cwd}</span></div>}
-        <div className="row"><span className="k">session</span><span className="v">{agent.sessionId.slice(0, 8)}…</span></div>
-      </div>
+      <header className="detail-hero">
+        <div className="hero-line">
+          <span className={`state-pill state-${agent.state}`}>
+            {agent.state === "active" ? "live" : agent.state}
+          </span>
+          <h2 className="hero-title" title={agent.cwd ?? agent.label}>{agent.label}</h2>
+        </div>
+        <div className="hero-meta">
+          <span className="hero-meta-item">{agent.kind}</span>
+          <span className="hero-sep">·</span>
+          <span className="hero-meta-item" title={`started ${new Date(agent.startedAt).toLocaleString()}`}>
+            {elapsedLabel}
+          </span>
+          {agent.model && (
+            <>
+              <span className="hero-sep">·</span>
+              <span className="model-chip" title={agent.model}>{shortModel(agent.model)}</span>
+            </>
+          )}
+        </div>
+        {hasCost && (
+          <div className="hero-cost">
+            <div className="hero-cost-headline">
+              <span className="hero-cost-value">{fmtCost(cost.total)}</span>
+              <span className="hero-cost-label">spend</span>
+            </div>
+            <CostBar cost={cost} />
+          </div>
+        )}
+      </header>
 
-      {(agent.usage.inputTokens + agent.usage.outputTokens) > 0 && (
-        <>
+      {agent.tools.length > 0 && (
+        <section className="detail-section">
+          <h3>Activity</h3>
+          <div className="activity-row">
+            <div className="activity-counters">
+              <span className="ac-item"><b>{agent.toolCount}</b> calls</span>
+              {inflight > 0 && <span className="ac-item ac-live"><b>{inflight}</b> live</span>}
+              {errCount > 0 && <span className="ac-item ac-err"><b>{errCount}</b> err</span>}
+            </div>
+            <div className="cat-strip">
+              {catEntries.map(([c, n]) => (
+                <span className={`cat-chip cat-${c}`} key={c} title={`${n} ${DETAIL_CAT_LABEL[c]} call${n === 1 ? "" : "s"}`}>
+                  <span className="cat-emoji">{DETAIL_CAT_EMOJI[c]}</span>
+                  <span className="cat-count">{n}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {totalTokens > 0 && (
+        <section className="detail-section">
           <h3>Tokens</h3>
           <div className="tokens-grid">
             <div><span className="k">in</span><b>{agent.usage.inputTokens.toLocaleString()}</b></div>
@@ -697,31 +842,64 @@ function Detail({
             <div><span className="k">cache r</span><b>{agent.usage.cacheReadTokens.toLocaleString()}</b></div>
             <div><span className="k">cache c</span><b>{agent.usage.cacheCreateTokens.toLocaleString()}</b></div>
           </div>
-        </>
+        </section>
       )}
 
+      <section className="detail-section">
+        <h3>Identity</h3>
+        <div>
+          {agent.cwd && <div className="row"><span className="k">cwd</span><span className="v" title={agent.cwd}>{agent.cwd}</span></div>}
+          <div className="row"><span className="k">session</span><span className="v">{agent.sessionId.slice(0, 12)}…</span></div>
+          {agent.parentId && <div className="row"><span className="k">parent</span><span className="v">{agent.parentId.slice(0, 12)}…</span></div>}
+        </div>
+      </section>
+
       {agent.prompts.length > 0 && (
-        <>
-          <h3>Prompts ({agent.prompts.length})</h3>
+        <section className="detail-section">
+          <h3>Prompts <span className="section-count">{agent.prompts.length}</span></h3>
           <div className="prompts">
-            {agent.prompts.map((pr, i) => (
+            {agent.prompts.slice().reverse().map((pr, i) => (
               <div className="prompt-entry" key={i}>
                 <div className="prompt-time">{new Date(pr.at).toLocaleTimeString()}</div>
                 <div className="prompt-text">{pr.text}</div>
               </div>
             ))}
           </div>
-        </>
+        </section>
       )}
 
-      <h3>Tool calls ({agent.tools.length})</h3>
-      {agent.tools.length === 0 && <div className="empty">No tool calls yet.</div>}
-      <div>
-        {agent.tools.slice().reverse().map(t => (
-          <ToolRow key={t.id} t={t} now={now} onClick={() => onOpenTool(t.id)} />
-        ))}
-      </div>
+      <section className="detail-section">
+        <h3>Tool calls <span className="section-count">{agent.tools.length}</span></h3>
+        {agent.tools.length === 0 && <div className="empty">No tool calls yet.</div>}
+        <div>
+          {agent.tools.slice().reverse().map(t => (
+            <ToolRow key={t.id} t={t} now={now} onClick={() => onOpenTool(t.id)} />
+          ))}
+        </div>
+      </section>
     </>
+  );
+}
+
+/** Stacked bar showing the cost split across input / output / cache-read /
+ *  cache-write. Each segment width = its share of the total. Hides
+ *  zero-width segments. */
+function CostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
+  const total = cost.total;
+  if (total <= 0) return null;
+  const seg = (val: number, cls: string, label: string) => {
+    if (val <= 0) return null;
+    const pct = (val / total) * 100;
+    return <span key={cls} className={`cb-seg ${cls}`} style={{ width: `${pct}%` }}
+      title={`${label}: ${fmtCost(val)} (${pct.toFixed(0)}%)`} />;
+  };
+  return (
+    <div className="cost-bar" aria-label="Cost breakdown">
+      {seg(cost.input, "cb-input", "input")}
+      {seg(cost.output, "cb-output", "output")}
+      {seg(cost.cacheRead, "cb-cache-r", "cache read")}
+      {seg(cost.cacheWrite, "cb-cache-w", "cache write")}
+    </div>
   );
 }
 
