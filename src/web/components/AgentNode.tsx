@@ -1,6 +1,7 @@
 import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
+import { costForUsage, fmtCost, ratesForModel } from "../pricing";
 import type { AgentNodeData, ToolCall } from "../types";
 
 function elapsed(start: number, end: number | undefined, now: number): string {
@@ -63,6 +64,12 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
             <b>{fmtTok(data.usage.inputTokens + data.usage.outputTokens)}</b> tok
           </span>
         )}
+        {data.model && ratesForModel(data.model) && (() => {
+          const c = costForUsage(data.usage, data.model);
+          if (c.total <= 0) return null;
+          const tt = `input ${fmtCost(c.input)} + output ${fmtCost(c.output)} + cache r ${fmtCost(c.cacheRead)} + cache w ${fmtCost(c.cacheWrite)}`;
+          return <span className="cost-meta" title={tt}><b>{fmtCost(c.total)}</b></span>;
+        })()}
       </div>
 
       <Handle type="source" position={Position.Right} style={{ background: "transparent", border: "none" }} />

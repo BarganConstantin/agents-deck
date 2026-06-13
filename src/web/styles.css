@@ -661,6 +661,8 @@ button.btn.icon-btn {
 .agent-node .meta .inflight-meta b { color: var(--inflight); }
 .agent-node .meta .tokens-meta { color: var(--accent); margin-left: auto; }
 .agent-node .meta .tokens-meta b { color: var(--accent); }
+.agent-node .meta .cost-meta { color: var(--ok); }
+.agent-node .meta .cost-meta b { color: var(--ok); }
 
 .tokens-grid {
   display: grid;

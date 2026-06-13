@@ -16,6 +16,7 @@ import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
+import { costForUsage, fmtCost } from "./pricing";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -374,13 +375,20 @@ function Inner() {
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
   const totalTokens = useMemo(() => {
     let inT = 0, outT = 0, cacheR = 0, cacheC = 0;
+    let costSum = 0, costInput = 0, costOutput = 0, costCacheR = 0, costCacheW = 0;
     for (const a of stateRef.current.agents.values()) {
       inT += a.usage.inputTokens;
       outT += a.usage.outputTokens;
       cacheR += a.usage.cacheReadTokens;
       cacheC += a.usage.cacheCreateTokens;
+      const c = costForUsage(a.usage, a.model);
+      costSum += c.total;
+      costInput += c.input;
+      costOutput += c.output;
+      costCacheR += c.cacheRead;
+      costCacheW += c.cacheWrite;
     }
-    return { inT, outT, cacheR, cacheC, sum: inT + outT };
+    return { inT, outT, cacheR, cacheC, sum: inT + outT, cost: { total: costSum, input: costInput, output: costOutput, cacheRead: costCacheR, cacheWrite: costCacheW } };
   }, [stateRef.current, stateRef.current.lastSeq]);
 
   return (
@@ -416,6 +424,11 @@ function Inner() {
             {totalTokens.sum > 0 && (
               <span className="stat" title={`in:${totalTokens.inT.toLocaleString()}  out:${totalTokens.outT.toLocaleString()}  cache-r:${totalTokens.cacheR.toLocaleString()}  cache-c:${totalTokens.cacheC.toLocaleString()}`}>
                 <span className="count">{fmtTokens(totalTokens.sum)}</span><span className="lbl">tokens</span>
+              </span>
+            )}
+            {totalTokens.cost.total > 0 && (
+              <span className="stat" title={`input ${fmtCost(totalTokens.cost.input)} + output ${fmtCost(totalTokens.cost.output)} + cache r ${fmtCost(totalTokens.cost.cacheRead)} + cache w ${fmtCost(totalTokens.cost.cacheWrite)}`}>
+                <span className="count">{fmtCost(totalTokens.cost.total)}</span><span className="lbl">cost</span>
               </span>
             )}
           </span>
