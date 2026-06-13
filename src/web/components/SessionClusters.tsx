@@ -9,8 +9,9 @@ interface Cluster {
   x: number; y: number; w: number; h: number;
 }
 
-const PAD = 26;
-const HEADER_H = 22;
+const PAD = 28;
+const HEADER_H = 30;
+const LABEL_LIFT = 14; // px the label tab sits above the box's top edge
 
 function selectClusters(s: ReactFlowState): Cluster[] {
   const bySession = new Map<string, { minX: number; minY: number; maxX: number; maxY: number; label: string }>();
@@ -70,21 +71,29 @@ export default function SessionClusters() {
     <div className="session-clusters" aria-hidden>
       {clusters.map(c => {
         const hue = sessionHue(c.sessionId);
-        const style: React.CSSProperties = {
+        const boxStyle: React.CSSProperties = {
           position: "absolute",
           left: c.x * zoom + x,
           top: c.y * zoom + y,
           width: c.w * zoom,
           height: c.h * zoom,
-          borderColor: `hsl(${hue} 65% 55% / 0.45)`,
-          background: `hsl(${hue} 70% 50% / 0.05)`,
+          borderColor: `hsl(${hue} 65% 55% / 0.32)`,
+          background: `hsl(${hue} 70% 50% / 0.04)`,
+        };
+        const labelStyle: React.CSSProperties = {
+          position: "absolute",
+          left: c.x * zoom + x + 16 * zoom,
+          top: (c.y - LABEL_LIFT) * zoom + y,
+          color: `hsl(${hue} 70% 78%)`,
+          borderColor: `hsl(${hue} 65% 55% / 0.5)`,
+          transform: `scale(${Math.min(1, zoom)})`,
+          transformOrigin: "left top",
         };
         return (
-          <div className="cluster-card" key={c.sessionId} style={style}>
-            <div className="cluster-label" style={{ color: `hsl(${hue} 70% 70%)`, transform: `scale(${Math.min(1, zoom)})` }}>
-              {c.label}
-            </div>
-          </div>
+          <React.Fragment key={c.sessionId}>
+            <div className="cluster-card" style={boxStyle} />
+            <div className="cluster-label" style={labelStyle}>{c.label}</div>
+          </React.Fragment>
         );
       })}
     </div>

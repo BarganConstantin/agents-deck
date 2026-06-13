@@ -13,6 +13,7 @@ import ReactFlow, {
 import AgentNode from "./components/AgentNode";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
+import ToolBursts from "./components/ToolBursts";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, sessionHue, type GraphState } from "./reducer";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
@@ -90,11 +91,9 @@ function snapshotToFlow(
         target: a.id,
         animated: a.state === "active" && !edgeDim && !fading,
         type: "smoothstep",
-        label: a.label,
-        labelBgPadding: [6, 3],
-        labelBgBorderRadius: 4,
-        labelStyle: { fontSize: 10, fill: stroke, fontFamily: "ui-monospace, monospace", opacity: edgeDim || fading ? 0.25 : 1 },
-        labelBgStyle: { fill: "var(--bg-soft)", fillOpacity: edgeDim || fading ? 0.3 : 0.85, stroke, strokeWidth: 0.5 },
+        // No edge label — the target node already displays the agent name,
+        // and repeating it on every edge produced overlapping chips when a
+        // parent spawned several siblings of the same type.
         style: { stroke, strokeWidth: a.state === "active" ? 2 : 1.5, opacity: edgeDim || fading ? 0.2 : 1, transition: "opacity 500ms ease" },
         className: fading ? "rf-edge-exiting" : undefined,
       });
@@ -398,6 +397,7 @@ function Inner() {
         >
           <Background gap={28} size={1} color={cssVar("--grid-line")} />
           <SessionClusters />
+          <ToolBursts agents={stateRef.current.agents.values()} now={now} />
           <Controls showInteractive={false} />
           <MiniMap
             zoomable

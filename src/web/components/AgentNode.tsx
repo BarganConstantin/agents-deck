@@ -3,7 +3,7 @@ import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
 import type { AgentNodeData, ToolCall } from "../types";
 
-const MAX_CHIPS = 6;
+const MAX_CHIPS = 3;
 
 function elapsed(start: number, end: number | undefined, now: number): string {
   const ms = (end ?? now) - start;
