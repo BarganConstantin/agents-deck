@@ -334,10 +334,110 @@ function skinForFileCall(toolName: string, input: unknown): CommandSkin | null {
   return { emoji, label: name, category: "file", detail: path };
 }
 
+// ─── MCP server introspection ─────────────────────────────────────────────
+// CC names MCP tools as `mcp__<server>__<method>`. When we recognise the
+// server we use a branded emoji + name on the primary bubble; the
+// sub-bubble carries the actual method. Unknown servers still get
+// distinct treatment via a hash-based hue (so 5 unknown MCP servers each
+// look different from each other).
+
+/** Built-in server identity — emoji + display name. Keep names short. */
+const MCP_SERVERS: Record<string, { emoji: string; name: string }> = {
+  github:    { emoji: "🐙", name: "GitHub" },
+  git:       { emoji: "🐙", name: "Git" },
+  gitlab:    { emoji: "🦊", name: "GitLab" },
+  slack:     { emoji: "💬", name: "Slack" },
+  discord:   { emoji: "💬", name: "Discord" },
+  linear:    { emoji: "📐", name: "Linear" },
+  jira:      { emoji: "🅹",  name: "Jira" },
+  atlassian: { emoji: "🅰️", name: "Atlassian" },
+  notion:    { emoji: "📓", name: "Notion" },
+  asana:     { emoji: "📋", name: "Asana" },
+  intercom:  { emoji: "💬", name: "Intercom" },
+  figma:     { emoji: "🎨", name: "Figma" },
+  gmail:     { emoji: "📧", name: "Gmail" },
+  calendar:  { emoji: "📅", name: "Calendar" },
+  drive:     { emoji: "☁️", name: "Drive" },
+  zoom:      { emoji: "📹", name: "Zoom" },
+  spotify:   { emoji: "🎵", name: "Spotify" },
+  youtube:   { emoji: "📺", name: "YouTube" },
+  ccd_session:     { emoji: "📡", name: "Session" },
+  ccd_directory:   { emoji: "📂", name: "Directory" },
+  ccd_session_mgmt:{ emoji: "📡", name: "Sessions" },
+  mcp_registry:    { emoji: "🧰", name: "Registry" },
+  "computer-use":  { emoji: "🖱️", name: "Computer" },
+  "claude-in-chrome":  { emoji: "🌐", name: "Chrome" },
+  "claude-preview":    { emoji: "👀", name: "Preview" },
+  "scheduled-tasks":   { emoji: "⏰", name: "Scheduler" },
+  visualize:           { emoji: "🎨", name: "Visualize" },
+  "plugin-design-asana":    { emoji: "📋", name: "Asana" },
+  "plugin-design-atlassian":{ emoji: "🅰️", name: "Atlassian" },
+  "plugin-design-figma":    { emoji: "🎨", name: "Figma" },
+  "plugin-design-intercom": { emoji: "💬", name: "Intercom" },
+  "plugin-design-linear":   { emoji: "📐", name: "Linear" },
+  "plugin-design-notion":   { emoji: "📓", name: "Notion" },
+  "plugin-design-slack":    { emoji: "💬", name: "Slack" },
+};
+
+/** Pull `<server>` out of `mcp__<server>__<method>`. The server segment is
+ *  often a long uuid for ad-hoc MCPs — we still return it so unknown
+ *  servers get colour-tinted by hash. */
+interface McpParse { server: string; method: string }
+function parseMcpName(toolName: string): McpParse | null {
+  if (!toolName.startsWith("mcp__")) return null;
+  // After the mcp__ prefix the rest is `<server>__<method>`. Server names
+  // can contain hyphens but `__` is the separator.
+  const rest = toolName.slice(5);
+  const idx = rest.indexOf("__");
+  if (idx <= 0) return { server: rest, method: "" };
+  return { server: rest.slice(0, idx), method: rest.slice(idx + 2) };
+}
+
+/** Stable hash → 0..359 hue for unknown MCP servers. */
+function hashHue(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
+  return Math.abs(h) % 360;
+}
+
+function skinForMcpCall(toolName: string, _input: unknown): CommandSkin | null {
+  const parsed = parseMcpName(toolName);
+  if (!parsed) return null;
+  const { server, method } = parsed;
+  if (!method) return null; // not enough to chain
+  // Try a few key shapes: full server, no-prefix-hash server, etc.
+  const known = MCP_SERVERS[server.toLowerCase()];
+  return {
+    emoji: known?.emoji ?? "🔌",
+    label: method,
+    category: "mcp",
+    detail: known ? `${known.name} · ${method}` : `${server} · ${method}`,
+  };
+}
+
 /** Single entry point that picks whichever skin applies (shell first, then
- *  file). Keeps collectBursts callers from caring about tool families. */
+ *  file, then MCP). Keeps collectBursts callers from caring about tool
+ *  families. */
 function skinFor(toolName: string, input: unknown): CommandSkin | null {
-  return skinForShellCall(toolName, input) ?? skinForFileCall(toolName, input);
+  return skinForShellCall(toolName, input)
+      ?? skinForFileCall(toolName, input)
+      ?? skinForMcpCall(toolName, input);
+}
+
+/** Used by the primary bubble — for MCP calls we replace the generic
+ *  "mcp__foo__bar" with the server name so the primary reads e.g.
+ *  "🐙 GitHub" and the sub bubble reads "create_pr". Non-MCP tools fall
+ *  back to the existing emojiFor / tool name. */
+interface PrimaryDisplay { emoji: string; label: string; hue?: number }
+function primaryDisplayFor(toolName: string): PrimaryDisplay {
+  const mcp = parseMcpName(toolName);
+  if (mcp) {
+    const known = MCP_SERVERS[mcp.server.toLowerCase()];
+    if (known) return { emoji: known.emoji, label: known.name };
+    // Unknown server — keep the literal segment, tint by hash.
+    return { emoji: "🔌", label: mcp.server, hue: hashHue(mcp.server) };
+  }
+  return { emoji: emojiFor(toolName), label: toolName };
 }
 
 type Status = "inflight" | "done" | "err";
@@ -375,6 +475,9 @@ interface Burst {
   isSub?: boolean;
   status: Status;
   category: ToolCategory;
+  /** For unknown MCP servers — hash-based hue so 5 distinct servers read
+   *  as 5 distinct colors instead of all 🔌. */
+  mcpHue?: number;
   inputPreview: string;
   fade: number;
   fading: boolean;
@@ -430,16 +533,20 @@ function collectBursts(
       const inputPreview = t.inputPreview ?? "";
       const status = statusOf(t);
       const fading = fade < 0.999;
-      // Primary bubble — the actual tool name as CC reported it.
+      // Primary bubble — the actual tool name as CC reported it. For MCP
+      // calls we substitute the server name + branded emoji so the eye
+      // reads "🐙 GitHub → create_pr" instead of two identical 🔌s.
+      const primary = primaryDisplayFor(t.name);
       out.push({
         id: t.id,
         toolId: t.id,
         agentId: a.id,
         toolName: t.name,
-        name: t.name,
-        emoji: emojiFor(t.name),
+        name: primary.label,
+        emoji: primary.emoji,
         status,
         category: categoryFor(t.name),
+        mcpHue: primary.hue,
         inputPreview,
         fade,
         fading,
@@ -548,10 +655,16 @@ export default function ToolBursts({ agents, positions, pinned, measured, now, o
         const titleHead = b.isSub ? `${b.toolName} · ${b.name}` : b.toolName;
         const title = b.inputPreview ? `${titleHead} · ${b.inputPreview}` : titleHead;
         const clickable = onOpenTool != null;
+        // For unknown MCP servers we set --cat-accent inline so each one
+        // gets a distinct hue without needing a static class.
+        const innerStyle: React.CSSProperties & Record<string, string> = b.mcpHue != null
+          ? { "--cat-accent": `hsl(${b.mcpHue} 65% 65%)` }
+          : {};
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
             <div
               className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}`}
+              style={innerStyle}
               title={title}
               role={clickable ? "button" : undefined}
               tabIndex={clickable ? 0 : undefined}

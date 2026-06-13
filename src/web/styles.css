@@ -792,6 +792,8 @@ button.btn.icon-btn {
 .session-clusters {
   position: absolute;
   inset: 0;
+  /* Layer itself ignores pointer events; the clickable label inside opts
+     back in. This keeps the canvas pannable everywhere except on labels. */
   pointer-events: none;
   z-index: 0;
 }
@@ -818,6 +820,14 @@ button.btn.icon-btn {
   box-shadow: 0 2px 6px rgba(0,0,0,0.25);
   white-space: nowrap;
   line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  /* Don't transition transform — it's used inline for viewport scale. */
+  transition: box-shadow 120ms ease, filter 120ms ease;
+}
+.cluster-label:hover {
+  filter: brightness(1.25);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45), 0 0 0 1px currentColor;
 }
 :root[data-theme="light"] .cluster-label {
   background: var(--bg-soft);

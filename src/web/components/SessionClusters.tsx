@@ -1,5 +1,5 @@
 import React from "react";
-import { useStore, useViewport, type ReactFlowState } from "reactflow";
+import { useReactFlow, useStore, useViewport, type ReactFlowState } from "reactflow";
 import { sessionHue } from "../reducer";
 import type { AgentNodeData } from "../types";
 
@@ -80,12 +80,26 @@ function rootLabel(d: AgentNodeData): string | undefined {
 
 export default function SessionClusters() {
   const { x, y, zoom } = useViewport();
+  const rf = useReactFlow();
   const clusters = useStore(selectClusters, shallowEqualClusters);
 
   if (clusters.length <= 1) return null; // no need to disambiguate one tree
 
+  const focusSession = (sessionId: string) => {
+    // Build the list of nodes belonging to this session and zoom-to-fit just
+    // them. Falls back gracefully if no nodes match.
+    try {
+      const nodes = rf.getNodes().filter(n => {
+        const d = n.data as AgentNodeData | undefined;
+        return d?.sessionId === sessionId;
+      });
+      if (nodes.length === 0) return;
+      rf.fitView({ padding: 0.3, duration: 500, nodes });
+    } catch {}
+  };
+
   return (
-    <div className="session-clusters" aria-hidden>
+    <div className="session-clusters">
       {clusters.map(c => {
         const hue = sessionHue(c.sessionId);
         const boxStyle: React.CSSProperties = {
@@ -108,8 +122,14 @@ export default function SessionClusters() {
         };
         return (
           <React.Fragment key={c.sessionId}>
-            <div className="cluster-card" style={boxStyle} />
-            <div className="cluster-label" style={labelStyle}>{c.label}</div>
+            <div className="cluster-card" style={boxStyle} aria-hidden />
+            <button
+              type="button"
+              className="cluster-label"
+              style={labelStyle}
+              title={`Fit view to ${c.label}`}
+              onClick={() => focusSession(c.sessionId)}
+            >{c.label}</button>
           </React.Fragment>
         );
       })}
