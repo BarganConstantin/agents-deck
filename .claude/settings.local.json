@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(rm -f C:/Users/cbargan/.claude/ccgraph/17984.json)",
-      "Read(//c/Users/cbargan/.claude/ccgraph/**)"
-    ]
-  }
-}
