@@ -16,6 +16,7 @@ import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
 import SessionSummary from "./components/SessionSummary";
 import SessionList from "./components/SessionList";
+import TimelineStrip from "./components/TimelineStrip";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -42,6 +43,7 @@ const LAYOUT_STORAGE_KEY = "agent-dag.layout";
 const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
 const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
 const SESSION_LIST_OPEN_KEY = "agent-dag.sessionListOpen";
+const TIMELINE_OPEN_KEY = "agent-dag.timelineOpen";
 
 function loadSessionListOpen(): boolean {
   if (typeof window === "undefined") return true;
@@ -50,6 +52,14 @@ function loadSessionListOpen(): boolean {
 function saveSessionListOpen(open: boolean): void {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(SESSION_LIST_OPEN_KEY, open ? "1" : "0"); } catch {}
+}
+function loadTimelineOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  try { return window.localStorage.getItem(TIMELINE_OPEN_KEY) !== "0"; } catch { return true; }
+}
+function saveTimelineOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(TIMELINE_OPEN_KEY, open ? "1" : "0"); } catch {}
 }
 
 function loadDismissedSummaries(): Set<string> {
@@ -330,6 +340,9 @@ function Inner() {
   /** Left sidebar (session list) visibility — persisted across refresh. */
   const [sessionListOpen, setSessionListOpen] = useState<boolean>(loadSessionListOpen);
   useEffect(() => { saveSessionListOpen(sessionListOpen); }, [sessionListOpen]);
+  /** Bottom timeline strip visibility — persisted across refresh. */
+  const [timelineOpen, setTimelineOpen] = useState<boolean>(loadTimelineOpen);
+  useEffect(() => { saveTimelineOpen(timelineOpen); }, [timelineOpen]);
   const [live, setLive] = useState(false);
   const [paused, setPaused] = useState(false);
   const queueRef = useRef<HookEnvelope[]>([]);
@@ -639,6 +652,7 @@ function Inner() {
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
       if (e.key === "l" || e.key === "L") setSessionListOpen(o => !o);
+      if (e.key === "h" || e.key === "H") setTimelineOpen(o => !o);
       if (e.key === "t" || e.key === "T") setTheme(t => (t === "dark" ? "light" : "dark"));
     };
     window.addEventListener("keydown", onKey);
@@ -763,6 +777,12 @@ function Inner() {
             title={`${sessionListOpen ? "Hide" : "Show"} session list (L)`}
             aria-label="Toggle session list"
           >☰</button>
+          <button
+            className={`btn icon-btn ${timelineOpen ? "primary" : ""}`}
+            onClick={() => setTimelineOpen(o => !o)}
+            title={`${timelineOpen ? "Hide" : "Show"} activity timeline (H)`}
+            aria-label="Toggle activity timeline"
+          >⏱</button>
           <button className="btn" onClick={handleRelayout} title="Auto-arrange — clear pins (R)">Re-layout</button>
           <button className="btn" onClick={handleClear} title="Clear canvas (C)">Clear</button>
           <button
@@ -890,6 +910,15 @@ function Inner() {
             style={{ background: cssVar("--panel"), border: `1px solid ${cssVar("--line")}`, borderRadius: 8 }}
           />
         </ReactFlow>
+        {timelineOpen && agentCount > 0 && (
+          <TimelineStrip
+            agents={stateRef.current.agents}
+            now={now}
+            onSelect={(id) => selectAgent(id, false)}
+            onOpenTool={setOpenedToolId}
+            onClose={() => setTimelineOpen(false)}
+          />
+        )}
       </div>
 
       <aside className="detail">
@@ -986,6 +1015,7 @@ function EmptyDetail({ count }: { count: number }) {
         <div className="sc"><kbd>R</kbd><span>re-arrange</span></div>
         <div className="sc"><kbd>F</kbd><span>fit view</span></div>
         <div className="sc"><kbd>L</kbd><span>session list</span></div>
+        <div className="sc"><kbd>H</kbd><span>activity timeline</span></div>
         <div className="sc"><kbd>C</kbd><span>clear canvas</span></div>
         <div className="sc"><kbd>T</kbd><span>toggle theme</span></div>
         <div className="sc"><kbd>Esc</kbd><span>deselect</span></div>

@@ -1236,6 +1236,141 @@ button.btn.icon-btn {
 :root[data-theme="light"] .tool-conn.status-done { stroke: rgba(21,128,61,0.85); }
 :root[data-theme="light"] .tool-conn.status-err  { stroke: rgba(185,28,28,0.85); }
 
+/* ---------------- activity timeline strip ---------------- */
+
+.timeline-strip {
+  position: absolute;
+  /* Sit above the minimap (~200px tall) and the controls strip. */
+  bottom: 14px;
+  left: 14px;
+  right: 220px;
+  height: 72px;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px 12px;
+  background: rgba(20, 22, 27, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 8px 22px rgba(0,0,0,0.35);
+}
+:root[data-theme="light"] .timeline-strip {
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 8px 22px rgba(15,23,42,0.10);
+}
+
+.timeline-strip .ts-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.timeline-strip .ts-title {
+  font-size: 10.5px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.timeline-strip .ts-total {
+  font-size: 11px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.timeline-strip .ts-legend {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+  margin-right: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.timeline-strip .ts-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.timeline-strip .ts-legend-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--cat-color, var(--muted));
+}
+.timeline-strip .ts-close { width: 22px; height: 22px; font-size: 13px; padding: 0; }
+
+.timeline-strip .ts-track {
+  position: relative;
+  flex: 1;
+  height: 30px;
+  border-radius: 4px;
+  background: linear-gradient(to right, transparent, rgba(125,211,252,0.04));
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.timeline-strip .ts-tick {
+  position: absolute;
+  top: -14px;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--muted-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.timeline-strip .ts-now-line {
+  position: absolute;
+  right: 0;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--inflight), transparent);
+  border-radius: 1px;
+  opacity: 0.6;
+}
+
+/* Dots — one per tool call, positioned on the time axis */
+.timeline-strip .ts-dot {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.4);
+  background: var(--cat-color, var(--muted));
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.timeline-strip .ts-dot:hover {
+  transform: scale(1.6);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.10), 0 2px 8px rgba(0,0,0,0.4);
+  z-index: 1;
+}
+.timeline-strip .ts-dot.status-inflight {
+  animation: pulse 1.2s ease-in-out infinite;
+  box-shadow: 0 0 6px var(--cat-color, var(--inflight));
+}
+.timeline-strip .ts-dot.status-err {
+  background: var(--err);
+  box-shadow: 0 0 4px var(--err);
+}
+
+/* Category colors — shared across the legend dots and the timeline dots
+   via the --cat-color custom property so a single variable drives both. */
+.cat-file  { --cat-color: #7dd3fc; }
+.cat-shell { --cat-color: #fcd34d; }
+.cat-web   { --cat-color: #67e8f9; }
+.cat-agent { --cat-color: #f0abfc; }
+.cat-task  { --cat-color: #86efac; }
+.cat-plan  { --cat-color: #c4b5fd; }
+.cat-mcp   { --cat-color: #5eead4; }
+.cat-other { --cat-color: #94a3b8; }
+
 /* ---------------- session list sidebar ---------------- */
 
 .session-list {
