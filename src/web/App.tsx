@@ -15,6 +15,7 @@ import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
 import SessionSummary from "./components/SessionSummary";
+import SessionList from "./components/SessionList";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -40,6 +41,16 @@ const AGENT_GRACE_MS = 5 * 60_000;
 const LAYOUT_STORAGE_KEY = "agent-dag.layout";
 const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
 const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
+const SESSION_LIST_OPEN_KEY = "agent-dag.sessionListOpen";
+
+function loadSessionListOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  try { return window.localStorage.getItem(SESSION_LIST_OPEN_KEY) !== "0"; } catch { return true; }
+}
+function saveSessionListOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(SESSION_LIST_OPEN_KEY, open ? "1" : "0"); } catch {}
+}
 
 function loadDismissedSummaries(): Set<string> {
   if (typeof window === "undefined") return new Set();
@@ -183,7 +194,7 @@ function snapshotToFlow(
   positions: Map<string, { x: number; y: number }>,
   layoutSig: string,
   lastLayoutSigRef: { current: string },
-  selectedId: string | null,
+  selectedIds: Set<string>,
   lineage: Set<string> | null,
 ): { nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[]; edges: Edge[] } {
   const nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[] = [];
@@ -223,8 +234,8 @@ function snapshotToFlow(
       const edgeDim = query && (!matchSet.has(a.id) && !matchSet.has(a.parentId));
       const fading = exiting;
       // Selected-edge emphasis: thicker stroke + animated for edges that
-      // touch the selected agent (in either direction).
-      const isSelectedEdge = selectedId != null && (a.id === selectedId || a.parentId === selectedId);
+      // touch any selected agent (multi-select: any in the set counts).
+      const isSelectedEdge = selectedIds.size > 0 && (selectedIds.has(a.id) || selectedIds.has(a.parentId));
       // Spotlight: edges entirely outside the lineage fade too.
       const spotlitOutEdge = lineage != null && !lineage.has(a.id) && !lineage.has(a.parentId);
       const baseWidth = a.state === "active" ? 2 : 1.5;
@@ -283,13 +294,42 @@ function Inner() {
   const stateRef = useRef<GraphState>(initialState());
   const [, force] = useState(0);
   const rerender = useCallback(() => force(x => x + 1), []);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Selection model: a set of agent ids contributes to spotlight lineage.
+  // The primary selection (last clicked) drives the right-hand detail
+  // panel and the topbar ribbon — multi-select extends the spotlight but
+  // doesn't try to show N agents in the side panel at once.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [primarySelectedId, setPrimarySelectedId] = useState<string | null>(null);
   const [openedToolId, setOpenedToolId] = useState<string | null>(null);
+
+  const selectAgent = useCallback((id: string, additive: boolean) => {
+    setSelectedIds(prev => {
+      if (!additive) return new Set([id]);
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setPrimarySelectedId(prev => {
+      if (!additive) return id;
+      // Shift+click: if we just added, this becomes primary; if we just
+      // removed primary, fall back to "any other selected" or null.
+      if (prev === id) return prev;
+      return id;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setPrimarySelectedId(null);
+  }, []);
   /** Session ID for which we're showing the end-of-session recap modal,
    *  or null when no modal is open. Triggered by Stop / SessionEnd hooks
    *  (gated against dismissedSummariesRef to avoid re-opening on refresh). */
   const [summaryFor, setSummaryFor] = useState<string | null>(null);
   const dismissedSummariesRef = useRef<Set<string>>(loadDismissedSummaries());
+  /** Left sidebar (session list) visibility — persisted across refresh. */
+  const [sessionListOpen, setSessionListOpen] = useState<boolean>(loadSessionListOpen);
+  useEffect(() => { saveSessionListOpen(sessionListOpen); }, [sessionListOpen]);
   const [live, setLive] = useState(false);
   const [paused, setPaused] = useState(false);
   const queueRef = useRef<HookEnvelope[]>([]);
@@ -493,20 +533,26 @@ function Inner() {
     }, 280);
   }, [layoutSig, rf]);
 
-  // Lineage of the currently selected agent — its ancestors + descendants.
-  // Used for spotlight dimming: in-lineage stays bright, everything else fades.
-  const spotlightSet = useMemo<Set<string> | null>(
-    () => spotlightLineage(stateRef.current, selectedId),
-    [stateRef.current, stateRef.current.lastSeq, selectedId],
-  );
+  // Union spotlight set — lineage of every selected agent merged. Multi-
+  // select widens the spotlight without losing the "follow the chain"
+  // semantics for a single click.
+  const spotlightSet = useMemo<Set<string> | null>(() => {
+    if (selectedIds.size === 0) return null;
+    const union = new Set<string>();
+    for (const id of selectedIds) {
+      const l = spotlightLineage(stateRef.current, id);
+      if (l) for (const x of l) union.add(x);
+    }
+    return union.size > 0 ? union : null;
+  }, [stateRef.current, stateRef.current.lastSeq, selectedIds]);
 
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
       stateRef.current, now, pinnedRef.current, query,
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
-      selectedId, spotlightSet,
+      selectedIds, spotlightSet,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedId, spotlightSet],
+    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet],
   );
 
   // Set of agent ids that match the current /-search query, or null when
@@ -539,7 +585,7 @@ function Inner() {
     });
   }, []);
 
-  const selected = selectedId ? stateRef.current.agents.get(selectedId) : null;
+  const selected = primarySelectedId ? stateRef.current.agents.get(primarySelectedId) : null;
   const openedTool = openedToolId
     ? Array.from(stateRef.current.agents.values())
         .flatMap(a => a.tools)
@@ -554,9 +600,9 @@ function Inner() {
     positionsRef.current.clear();
     lastLayoutSigRef.current = "";
     clearStoredLayout();
-    setSelectedId(null);
+    clearSelection();
     rerender();
-  }, [rerender]);
+  }, [rerender, clearSelection]);
 
   const handleRelayout = useCallback(() => {
     pinnedRef.current.clear();
@@ -583,7 +629,7 @@ function Inner() {
       const inInput = (e.target as HTMLElement)?.tagName === "INPUT";
       if (e.key === "Escape") {
         if (inInput) (e.target as HTMLInputElement).blur();
-        else setSelectedId(null);
+        else clearSelection();
         return;
       }
       if (inInput) return;
@@ -592,11 +638,12 @@ function Inner() {
       if (e.key === "c" || e.key === "C") handleClear();
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
+      if (e.key === "l" || e.key === "L") setSessionListOpen(o => !o);
       if (e.key === "t" || e.key === "T") setTheme(t => (t === "dark" ? "light" : "dark"));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleClear, handleRelayout, handleFit]);
+  }, [handleClear, handleRelayout, handleFit, clearSelection]);
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
@@ -625,6 +672,39 @@ function Inner() {
           <span className="logo" />
           agent-dag <span className="v">v{__APP_VERSION__}</span>
         </div>
+        {selected && (() => {
+          const c = costForUsage(selected.usage, selected.model);
+          const elapsedSec = Math.max(0, ((selected.endedAt ?? now) - selected.startedAt) / 1000);
+          const rate = selected.state === "active" ? fmtCostRate(c.total, elapsedSec) : null;
+          const extra = selectedIds.size - 1;
+          return (
+            <button
+              type="button"
+              className="selected-ribbon"
+              title={`Fit view to ${selected.label}`}
+              onClick={() => {
+                try {
+                  const node = nodes.find(n => n.id === selected.id);
+                  if (node) rf.fitView({ padding: 0.35, duration: 500, nodes: [node] });
+                  lastFitTimeRef.current = Date.now();
+                } catch {}
+              }}
+            >
+              <span className={`state-pill state-${selected.state}`}>
+                {selected.state === "active" ? "live" : selected.state}
+              </span>
+              <span className="selected-label">{selected.label}</span>
+              {c.total > 0 && <span className="selected-cost">{fmtCost(c.total)}{rate ? <span className="selected-rate"> · {rate}</span> : null}</span>}
+              {extra > 0 && <span className="selected-extra">+{extra}</span>}
+              <span
+                role="button"
+                aria-label="Deselect"
+                className="selected-close"
+                onClick={(e) => { e.stopPropagation(); clearSelection(); }}
+              >×</span>
+            </button>
+          );
+        })()}
         <div className="actions">
           <div className="search">
             <span className="search-icon" aria-hidden>⌕</span>
@@ -677,6 +757,12 @@ function Inner() {
           <button className={`btn ${paused ? "warn" : ""}`} onClick={() => setPaused(p => !p)} title="Pause/resume live updates (Space)">
             {paused ? `Resume${queueRef.current.length ? ` · ${queueRef.current.length}` : ""}` : "Pause"}
           </button>
+          <button
+            className={`btn icon-btn ${sessionListOpen ? "primary" : ""}`}
+            onClick={() => setSessionListOpen(o => !o)}
+            title={`${sessionListOpen ? "Hide" : "Show"} session list (L)`}
+            aria-label="Toggle session list"
+          >☰</button>
           <button className="btn" onClick={handleRelayout} title="Auto-arrange — clear pins (R)">Re-layout</button>
           <button className="btn" onClick={handleClear} title="Clear canvas (C)">Clear</button>
           <button
@@ -697,6 +783,25 @@ function Inner() {
         </div>
       )}
 
+      {sessionListOpen && (
+        <SessionList
+          state={stateRef.current}
+          now={now}
+          selectedIds={selectedIds}
+          onSelect={(sid) => {
+            selectAgent(sid, false);
+            // After a frame so the selected node is settled, fit-view to it.
+            window.setTimeout(() => {
+              try {
+                const node = nodes.find(n => n.id === sid);
+                if (node) rf.fitView({ padding: 0.3, duration: 500, nodes: [node] });
+                lastFitTimeRef.current = Date.now();
+              } catch {}
+            }, 60);
+          }}
+          onClose={() => setSessionListOpen(false)}
+        />
+      )}
       <div className="canvas-wrap">
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
         {presentCats.length > 1 && (
@@ -730,8 +835,8 @@ function Inner() {
           nodesDraggable
           nodesConnectable={false}
           selectionOnDrag={false}
-          onNodeClick={(_, n) => setSelectedId(n.id)}
-          onPaneClick={() => setSelectedId(null)}
+          onNodeClick={(e, n) => selectAgent(n.id, e.shiftKey)}
+          onPaneClick={() => clearSelection()}
           onMove={(_, vp) => {
             markInteract();
             // Debounce viewport persistence — pan/zoom fires many times
@@ -789,7 +894,18 @@ function Inner() {
 
       <aside className="detail">
         {selected
-          ? <Detail agent={selected} now={now} onOpenTool={setOpenedToolId} />
+          ? <Detail
+              agent={selected}
+              now={now}
+              onOpenTool={setOpenedToolId}
+              onShowSummary={(sid) => {
+                if (dismissedSummariesRef.current.has(sid)) {
+                  dismissedSummariesRef.current.delete(sid);
+                  saveDismissedSummaries(dismissedSummariesRef.current);
+                }
+                setSummaryFor(sid);
+              }}
+            />
           : <EmptyDetail count={agentCount} />}
       </aside>
 
@@ -869,6 +985,7 @@ function EmptyDetail({ count }: { count: number }) {
         <div className="sc"><kbd>space</kbd><span>pause / resume</span></div>
         <div className="sc"><kbd>R</kbd><span>re-arrange</span></div>
         <div className="sc"><kbd>F</kbd><span>fit view</span></div>
+        <div className="sc"><kbd>L</kbd><span>session list</span></div>
         <div className="sc"><kbd>C</kbd><span>clear canvas</span></div>
         <div className="sc"><kbd>T</kbd><span>toggle theme</span></div>
         <div className="sc"><kbd>Esc</kbd><span>deselect</span></div>
@@ -881,10 +998,12 @@ function Detail({
   agent,
   now,
   onOpenTool,
+  onShowSummary,
 }: {
   agent: AgentNodeData;
   now: number;
   onOpenTool: (toolId: string) => void;
+  onShowSummary?: (sessionId: string) => void;
 }) {
   const elapsedMs = (agent.endedAt ?? now) - agent.startedAt;
   const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
@@ -937,6 +1056,14 @@ function Detail({
             </div>
             <CostBar cost={cost} />
           </div>
+        )}
+        {agent.kind === "root" && agent.state === "done" && onShowSummary && (
+          <button
+            type="button"
+            className="btn hero-recap-btn"
+            onClick={() => onShowSummary(agent.sessionId)}
+            title="Reopen the end-of-session recap modal"
+          >Show recap</button>
         )}
       </header>
 

@@ -88,8 +88,17 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   grid-template-rows: 52px auto 1fr;
   height: 100vh;
 }
+/* When the session-list sidebar is open, add a 240px left column. The
+   .app:has() check keeps everything declarative — no extra body class
+   plumbing needed. */
+.app:has(.session-list) {
+  grid-template-columns: 240px 1fr 360px;
+}
+.app:has(.session-list) .canvas-wrap { grid-column: 2; }
+.app:has(.session-list) .conn-banner { grid-column: 2; }
 .canvas-wrap { grid-column: 1; grid-row: 3; }
 .detail { grid-column: 2; grid-row: 2 / -1; }
+.app:has(.session-list) .detail { grid-column: 3; }
 
 /* ---------------- topbar ---------------- */
 
@@ -127,6 +136,68 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
 .topbar .actions {
   display: flex; gap: 8px; align-items: center;
 }
+
+/* Selected-agent ribbon — context chip that follows you across the canvas
+   when an agent is selected. Click → fit-view to that agent. The × on
+   the right clears selection without leaving the topbar. */
+.selected-ribbon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  margin: 0 12px 0 4px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 380px;
+  min-width: 0;
+  transition: border-color 120ms, background 120ms;
+}
+.selected-ribbon:hover { border-color: var(--accent-dim); background: var(--bg); }
+.selected-ribbon:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.selected-ribbon .selected-label {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.selected-ribbon .selected-cost {
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.selected-ribbon .selected-rate { color: var(--muted); font-size: 10.5px; }
+.selected-ribbon .selected-extra {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.selected-ribbon .selected-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.selected-ribbon .selected-close:hover { background: var(--line); color: var(--text); }
 .topbar .status {
   color: var(--muted);
   font-size: 12px;
@@ -1165,6 +1236,142 @@ button.btn.icon-btn {
 :root[data-theme="light"] .tool-conn.status-done { stroke: rgba(21,128,61,0.85); }
 :root[data-theme="light"] .tool-conn.status-err  { stroke: rgba(185,28,28,0.85); }
 
+/* ---------------- session list sidebar ---------------- */
+
+.session-list {
+  grid-column: 1;
+  grid-row: 2 / -1;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.session-list .sl-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.session-list .sl-header h3 {
+  margin: 0;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.session-list .sl-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.session-list .sl-live-count {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--inflight);
+  font-weight: 600;
+}
+.session-list .sl-close { width: 26px; height: 26px; font-size: 15px; }
+
+.session-list .sl-rows {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-list .sl-empty {
+  padding: 16px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.session-list .sl-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  transition: background 120ms, border-color 120ms;
+  min-width: 0;
+}
+.session-list .sl-row:hover { background: var(--bg-soft); }
+.session-list .sl-row.selected {
+  background: var(--bg-soft);
+  border-color: var(--accent-dim);
+}
+.session-list .sl-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.session-list .sl-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  margin-top: 6px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--muted-dim);
+}
+.session-list .sl-dot.state-active {
+  background: var(--inflight);
+  box-shadow: 0 0 8px var(--inflight);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.session-list .sl-dot.state-done { background: var(--ok); }
+.session-list .sl-dot.state-err { background: var(--err); }
+
+.session-list .sl-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-list .sl-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.session-list .sl-label {
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+.session-list .sl-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.session-list .sl-row-meta b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.session-list .sl-cost b { color: var(--ok); }
+.session-list .sl-elapsed { margin-left: auto; }
+
 /* ---------------- detail panel: hero + sections ---------------- */
 
 .detail-hero {
@@ -1208,6 +1415,12 @@ button.btn.icon-btn {
   background: var(--bg-soft);
   border: 1px solid var(--line);
   border-radius: 10px;
+}
+.detail-hero .hero-recap-btn {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 5px 12px;
+  font-size: 11px;
 }
 .detail-hero .hero-cost-headline {
   display: flex;
