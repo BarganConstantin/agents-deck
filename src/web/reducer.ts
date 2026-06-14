@@ -237,6 +237,29 @@ function refreshInFlight(a: AgentNodeData): void {
   a.inFlightTool = latest;
 }
 
+/** Evict the oldest "done" agents when the agents map exceeds `cap`. Only
+ *  considers agents whose endedAt is older than `graceMs` so freshly-done
+ *  agents (still in fade-out) aren't yanked from under the user. Mutates
+ *  state in place. Returns true when at least one agent was removed. */
+export function pruneOldAgents(state: GraphState, now: number, cap: number, graceMs: number): boolean {
+  if (state.agents.size <= cap) return false;
+  const stale: Array<{ id: string; endedAt: number }> = [];
+  for (const [id, a] of state.agents) {
+    if (a.state === "done" && a.endedAt != null && now - a.endedAt > graceMs) {
+      stale.push({ id, endedAt: a.endedAt });
+    }
+  }
+  if (stale.length === 0) return false;
+  stale.sort((x, y) => x.endedAt - y.endedAt); // oldest first
+  let removed = 0;
+  for (const c of stale) {
+    if (state.agents.size <= cap) break;
+    state.agents.delete(c.id);
+    removed++;
+  }
+  return removed > 0;
+}
+
 /** Sweep over every agent's tool list and finalise any tool that has been
  *  "in-flight" longer than `maxMs` — usually because a hook event was lost
  *  (session killed mid-call, PostToolUse never delivered). Without this they
@@ -356,23 +379,40 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     case "PostToolUse":
     case "PostToolUseFailure": {
       const id = p.tool_use_id;
-      const tc = id ? state.toolIndex.get(id) : undefined;
-      if (tc) {
-        tc.endedAt = now;
-        tc.ok = name === "PostToolUse";
-        tc.response = p.tool_response;
-        if (name === "PostToolUseFailure") tc.errorPreview = shortPreview(p.tool_response);
-        const usage = extractUsage(p.tool_response);
-        if (usage) tc.usage = usage;
-        state.toolIndex.delete(id!);
-        const ownerId = state.toolOwner.get(id!);
-        state.toolOwner.delete(id!);
-        if (ownerId) {
-          const oa = state.agents.get(ownerId);
-          if (oa) {
-            if (usage) addUsage(oa.usage, usage);
-            refreshInFlight(oa);
-          }
+      if (!id) break;
+      let tc = state.toolIndex.get(id);
+      let resurrected = false;
+      // If the tool isn't in the live index it may have been swept stale
+      // — look it up in its owner's tools array and resurrect it. Without
+      // this, a slow PostToolUse arriving after the 90s stale cutoff was
+      // silently dropped and the tool stayed marked failed forever even
+      // when it actually completed.
+      if (!tc) {
+        for (const a of state.agents.values()) {
+          const found = a.tools.find(x => x.id === id);
+          if (found) { tc = found; resurrected = true; break; }
+        }
+      }
+      if (!tc) break;
+      tc.endedAt = now;
+      tc.ok = name === "PostToolUse";
+      tc.response = p.tool_response;
+      if (name === "PostToolUseFailure") {
+        tc.errorPreview = shortPreview(p.tool_response);
+      } else if (resurrected) {
+        // A late success — clear the "stale" marker the sweep wrote.
+        tc.errorPreview = undefined;
+      }
+      const usage = extractUsage(p.tool_response);
+      if (usage) tc.usage = usage;
+      state.toolIndex.delete(id);
+      const ownerId = state.toolOwner.get(id) ?? tc.agentId;
+      state.toolOwner.delete(id);
+      if (ownerId) {
+        const oa = state.agents.get(ownerId);
+        if (oa) {
+          if (usage) addUsage(oa.usage, usage);
+          refreshInFlight(oa);
         }
       }
       break;

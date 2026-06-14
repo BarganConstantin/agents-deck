@@ -15,7 +15,7 @@ import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
 import { autoLayout } from "./layout";
-import { applyEvent, initialState, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
+import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { costForUsage, fmtCost } from "./pricing";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
@@ -34,6 +34,8 @@ const nodeTypes = { agent: AgentNode };
 
 const EXIT_ANIM_MS = 600;
 const STALE_TOOL_MS = 90_000;
+const AGENT_CAP = 200;
+const AGENT_GRACE_MS = 5 * 60_000;
 const LAYOUT_STORAGE_KEY = "agent-dag.layout";
 const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
 
@@ -74,10 +76,10 @@ function saveViewport(vp: { x: number; y: number; zoom: number }): void {
 
 function clearStoredLayout(): void {
   if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(LAYOUT_STORAGE_KEY);
-    window.localStorage.removeItem(VIEWPORT_STORAGE_KEY);
-  } catch {}
+  // Per-key try/catch so a failure removing one (quota / locked store)
+  // doesn't strand the other.
+  try { window.localStorage.removeItem(LAYOUT_STORAGE_KEY); } catch {}
+  try { window.localStorage.removeItem(VIEWPORT_STORAGE_KEY); } catch {}
 }
 
 // Tool categories used both by the detail-panel strip and the canvas
@@ -280,7 +282,11 @@ function Inner() {
     const id = setInterval(() => {
       const t = Date.now();
       setNow(t);
-      if (sweepStaleTools(stateRef.current, t, STALE_TOOL_MS)) rerender();
+      let changed = sweepStaleTools(stateRef.current, t, STALE_TOOL_MS);
+      // Prune long-finished agents so memory doesn't grow over multi-day
+      // sessions. Keeps most-recent AGENT_CAP — past 5 minutes since done.
+      if (pruneOldAgents(stateRef.current, t, AGENT_CAP, AGENT_GRACE_MS)) changed = true;
+      if (changed) rerender();
     }, 250);
     return () => clearInterval(id);
   }, [rerender]);

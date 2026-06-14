@@ -786,10 +786,11 @@ button.btn.icon-btn {
 .model-chip[title*="sonnet"] { color: #7dd3fc; border-color: rgba(125,211,252,0.40); background: rgba(125,211,252,0.06); }
 .model-chip[title*="haiku"]  { color: #86efac; border-color: rgba(134,239,172,0.40); background: rgba(134,239,172,0.06); }
 .model-chip[title*="fable"]  { color: #fcd34d; border-color: rgba(252,211,77,0.40);  background: rgba(252,211,77,0.06); }
-:root[data-theme="light"] .model-chip[title*="opus"]   { color: #7e22ce; border-color: rgba(126,34,206,0.45);  background: rgba(126,34,206,0.06); }
-:root[data-theme="light"] .model-chip[title*="sonnet"] { color: #0369a1; border-color: rgba(3,105,161,0.45);   background: rgba(3,105,161,0.06); }
-:root[data-theme="light"] .model-chip[title*="haiku"]  { color: #15803d; border-color: rgba(21,128,61,0.45);   background: rgba(21,128,61,0.06); }
-:root[data-theme="light"] .model-chip[title*="fable"]  { color: #b45309; border-color: rgba(180,83,9,0.45);    background: rgba(180,83,9,0.06); }
+/* Bumped alpha from 0.06 → 0.14 to clear WCAG AA contrast on white. */
+:root[data-theme="light"] .model-chip[title*="opus"]   { color: #6b21a8; border-color: rgba(126,34,206,0.55);  background: rgba(126,34,206,0.14); }
+:root[data-theme="light"] .model-chip[title*="sonnet"] { color: #075985; border-color: rgba(3,105,161,0.55);   background: rgba(3,105,161,0.14); }
+:root[data-theme="light"] .model-chip[title*="haiku"]  { color: #166534; border-color: rgba(21,128,61,0.55);   background: rgba(21,128,61,0.14); }
+:root[data-theme="light"] .model-chip[title*="fable"]  { color: #92400e; border-color: rgba(180,83,9,0.55);    background: rgba(180,83,9,0.14); }
 
 .now-running {
   margin-top: 8px;
@@ -1626,13 +1627,19 @@ button.tool.clickable:last-child { border-bottom: none; }
 
 :root[data-theme="light"] .tool-chip { background: #f4f6fa; }
 :root[data-theme="light"] .tool-chip.inflight {
-  border-color: rgba(126,34,206,0.55);
-  background: rgba(126,34,206,0.08);
+  border-color: rgba(126,34,206,0.65);
+  background: rgba(126,34,206,0.16);
+  color: #6b21a8;
 }
-:root[data-theme="light"] .tool-chip.done { border-color: rgba(21,128,61,0.40); }
+:root[data-theme="light"] .tool-chip.done {
+  border-color: rgba(21,128,61,0.55);
+  background: rgba(21,128,61,0.12);
+  color: #166534;
+}
 :root[data-theme="light"] .tool-chip.err {
-  border-color: rgba(185,28,28,0.55);
-  background: rgba(185,28,28,0.08);
+  border-color: rgba(185,28,28,0.65);
+  background: rgba(185,28,28,0.16);
+  color: #991b1b;
 }
 
 :root[data-theme="light"] .modal-section .err-tag {

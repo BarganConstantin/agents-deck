@@ -83,7 +83,6 @@ const TOOL_EMOJI: Record<string, string> = {
   Monitor: "📡",
   PushNotification: "🔔",
   RemoteTrigger: "📡",
-  WebFetch_: "🌐",
 };
 
 function emojiFor(name: string): string {
@@ -680,6 +679,7 @@ export default function ToolBursts({ agents, positions, pinned, measured, dimUnm
               title={title}
               role={clickable ? "button" : undefined}
               tabIndex={clickable ? 0 : undefined}
+              aria-label={clickable ? `Open ${b.toolName} ${b.status === "inflight" ? "in flight" : b.status} — click for details` : undefined}
               onClick={clickable ? () => onOpenTool!(b.toolId) : undefined}
               onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenTool!(b.toolId); } } : undefined}
             >
