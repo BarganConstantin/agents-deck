@@ -83,3 +83,16 @@ export function fmtCost(usd: number): string {
   if (usd < 10_000) return `$${usd.toFixed(0)}`;
   return `$${(usd / 1000).toFixed(1)}k`;
 }
+
+/** Burn rate — total cost over elapsed seconds. Auto-picks /min vs /hr
+ *  scale so the number reads naturally (always 0.01 - 99 in chosen unit).
+ *  Returns null when there's no meaningful rate yet (<10s of activity
+ *  or zero cost) so callers can hide the chip. */
+export function fmtCostRate(totalUsd: number, elapsedSec: number): string | null {
+  if (totalUsd <= 0 || elapsedSec < 10) return null;
+  const perSec = totalUsd / elapsedSec;
+  const perMin = perSec * 60;
+  // Prefer /min when it reads ≥ 1¢; otherwise switch to /hr.
+  if (perMin >= 0.01) return `${fmtCost(perMin)}/min`;
+  return `${fmtCost(perSec * 3600)}/hr`;
+}

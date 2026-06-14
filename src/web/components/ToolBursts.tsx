@@ -620,6 +620,10 @@ interface ToolBurstsProps {
   /** When set, bursts whose agent isn't in this set get dimmed (matches the
    *  /-search behaviour applied to nodes). null = no filter. */
   dimUnmatched?: Set<string> | null;
+  /** Spotlight: when an agent is selected, this set contains its lineage
+   *  (ancestors + descendants). Bursts outside the lineage fade hard.
+   *  null = no selection, full brightness everywhere. */
+  spotlight?: Set<string> | null;
   /** Bursts whose category is in this set are skipped entirely (user
    *  toggled the category off via the filter chips). */
   hiddenCategories?: Set<ToolCategory>;
@@ -628,7 +632,7 @@ interface ToolBurstsProps {
   onOpenTool?: (toolId: string) => void;
 }
 
-export default function ToolBursts({ agents, positions, pinned, measured, dimUnmatched, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
+export default function ToolBursts({ agents, positions, pinned, measured, dimUnmatched, spotlight, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
   const { x, y, zoom } = useViewport();
   const all = collectBursts(agents, positions, pinned, measured, now);
   const bursts = hiddenCategories && hiddenCategories.size > 0
@@ -649,7 +653,8 @@ export default function ToolBursts({ agents, positions, pinned, measured, dimUnm
           const ty = (b.worldY + BUBBLE_HALF_H) * zoom + y;
           const cx = sx + (tx - sx) * 0.55;
           const isDim = dimUnmatched != null && !dimUnmatched.has(b.agentId);
-          const opacity = b.fade * (isDim ? 0.18 : 1);
+          const isSpotOut = spotlight != null && !spotlight.has(b.agentId);
+          const opacity = b.fade * (isDim || isSpotOut ? 0.14 : 1);
           return (
             <path
               key={`l:${b.id}`}
@@ -682,10 +687,12 @@ export default function ToolBursts({ agents, positions, pinned, measured, dimUnm
           ? { "--cat-accent": `hsl(${b.mcpHue} 65% 65%)` }
           : {};
         const isDimmed = dimUnmatched != null && !dimUnmatched.has(b.agentId);
+        const isSpotOut = spotlight != null && !spotlight.has(b.agentId);
+        const dimClass = isDimmed || isSpotOut ? " dim" : "";
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
             <div
-              className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}${isDimmed ? " dim" : ""}`}
+              className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}${dimClass}`}
               style={innerStyle}
               title={title}
               role={clickable ? "button" : undefined}

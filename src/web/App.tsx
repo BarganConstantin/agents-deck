@@ -14,9 +14,10 @@ import AgentNode, { shortModel } from "./components/AgentNode";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import ToolBursts from "./components/ToolBursts";
+import SessionSummary from "./components/SessionSummary";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
-import { costForUsage, fmtCost } from "./pricing";
+import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -38,6 +39,28 @@ const AGENT_CAP = 200;
 const AGENT_GRACE_MS = 5 * 60_000;
 const LAYOUT_STORAGE_KEY = "agent-dag.layout";
 const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
+const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
+
+function loadDismissedSummaries(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(SUMMARY_DISMISSED_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === "string") : []);
+  } catch { return new Set(); }
+}
+
+function saveDismissedSummaries(set: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    // Cap at 200 entries so this localStorage value can't grow unbounded
+    // across thousands of sessions.
+    const arr = Array.from(set);
+    const trimmed = arr.length > 200 ? arr.slice(-200) : arr;
+    window.localStorage.setItem(SUMMARY_DISMISSED_KEY, JSON.stringify(trimmed));
+  } catch {}
+}
 
 function loadLayout(): Array<[string, { x: number; y: number }]> {
   if (typeof window === "undefined") return [];
@@ -122,6 +145,35 @@ function matchesQuery(a: AgentNodeData, q: string): boolean {
   return false;
 }
 
+/** Compute the spotlight lineage for an agent — itself plus every ancestor
+ *  (chain of parentIds) and every descendant (transitive). When no agent
+ *  is selected this returns null (no spotlight). */
+function spotlightLineage(state: GraphState, selectedId: string | null): Set<string> | null {
+  if (!selectedId) return null;
+  const set = new Set<string>([selectedId]);
+  // Walk up ancestors
+  let cursor: string | undefined = selectedId;
+  while (cursor) {
+    const a = state.agents.get(cursor);
+    if (!a?.parentId) break;
+    if (set.has(a.parentId)) break;
+    set.add(a.parentId);
+    cursor = a.parentId;
+  }
+  // Walk down descendants (BFS over parentId)
+  let added = true;
+  while (added) {
+    added = false;
+    for (const a of state.agents.values()) {
+      if (a.parentId && set.has(a.parentId) && !set.has(a.id)) {
+        set.add(a.id);
+        added = true;
+      }
+    }
+  }
+  return set;
+}
+
 function snapshotToFlow(
   state: GraphState,
   now: number,
@@ -131,6 +183,8 @@ function snapshotToFlow(
   positions: Map<string, { x: number; y: number }>,
   layoutSig: string,
   lastLayoutSigRef: { current: string },
+  selectedId: string | null,
+  lineage: Set<string> | null,
 ): { nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[]; edges: Edge[] } {
   const nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[] = [];
   const edges: Edge[] = [];
@@ -149,7 +203,13 @@ function snapshotToFlow(
     if (!visibleIds.has(a.id)) continue;
     const dim = query ? !matchSet.has(a.id) : false;
     const exiting = a.exitAt != null;
-    const cls = [dim ? "rf-dim" : "", exiting ? "rf-exiting" : ""].filter(Boolean).join(" ") || undefined;
+    // Spotlight: out-of-lineage agents fade hard when a selection is active.
+    const spotlitOut = lineage != null && !lineage.has(a.id);
+    const cls = [
+      dim ? "rf-dim" : "",
+      exiting ? "rf-exiting" : "",
+      spotlitOut ? "rf-spotlit-out" : "",
+    ].filter(Boolean).join(" ") || undefined;
     nodes.push({
       id: a.id,
       type: "agent",
@@ -162,17 +222,29 @@ function snapshotToFlow(
       const stroke = a.state === "active" ? `hsl(${hue} 80% 72%)` : `hsl(${hue} 50% 55%)`;
       const edgeDim = query && (!matchSet.has(a.id) && !matchSet.has(a.parentId));
       const fading = exiting;
+      // Selected-edge emphasis: thicker stroke + animated for edges that
+      // touch the selected agent (in either direction).
+      const isSelectedEdge = selectedId != null && (a.id === selectedId || a.parentId === selectedId);
+      // Spotlight: edges entirely outside the lineage fade too.
+      const spotlitOutEdge = lineage != null && !lineage.has(a.id) && !lineage.has(a.parentId);
+      const baseWidth = a.state === "active" ? 2 : 1.5;
+      const selectedWidth = isSelectedEdge ? baseWidth + 1.5 : baseWidth;
+      const effectiveOpacity = edgeDim || fading
+        ? 0.2
+        : spotlitOutEdge ? 0.12 : 1;
+      const cls = [
+        fading ? "rf-edge-exiting" : "",
+        isSelectedEdge ? "rf-edge-selected" : "",
+      ].filter(Boolean).join(" ") || undefined;
       edges.push({
         id: `e:${a.parentId}->${a.id}`,
         source: a.parentId,
         target: a.id,
-        animated: a.state === "active" && !edgeDim && !fading,
+        animated: (a.state === "active" || isSelectedEdge) && !edgeDim && !fading,
         type: "smoothstep",
-        // No edge label — the target node already displays the agent name,
-        // and repeating it on every edge produced overlapping chips when a
-        // parent spawned several siblings of the same type.
-        style: { stroke, strokeWidth: a.state === "active" ? 2 : 1.5, opacity: edgeDim || fading ? 0.2 : 1, transition: "opacity 500ms ease" },
-        className: fading ? "rf-edge-exiting" : undefined,
+        // No edge label — the target node already displays the agent name.
+        style: { stroke, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "opacity 500ms ease, stroke-width 200ms ease" },
+        className: cls,
       });
     }
   }
@@ -213,6 +285,11 @@ function Inner() {
   const rerender = useCallback(() => force(x => x + 1), []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openedToolId, setOpenedToolId] = useState<string | null>(null);
+  /** Session ID for which we're showing the end-of-session recap modal,
+   *  or null when no modal is open. Triggered by Stop / SessionEnd hooks
+   *  (gated against dismissedSummariesRef to avoid re-opening on refresh). */
+  const [summaryFor, setSummaryFor] = useState<string | null>(null);
+  const dismissedSummariesRef = useRef<Set<string>>(loadDismissedSummaries());
   const [live, setLive] = useState(false);
   const [paused, setPaused] = useState(false);
   const queueRef = useRef<HookEnvelope[]>([]);
@@ -259,6 +336,16 @@ function Inner() {
         const env: HookEnvelope = JSON.parse((e as MessageEvent).data);
         if (paused) { queueRef.current.push(env); return; }
         stateRef.current = applyEvent(stateRef.current, env);
+        // Trigger the session recap modal on natural session end — only
+        // for live (non-replay) events and only if the user hasn't already
+        // dismissed this session's summary.
+        if (env.source !== "replay") {
+          const name = env.payload?.hook_event_name;
+          const sid = env.payload?.session_id;
+          if ((name === "Stop" || name === "SessionEnd") && sid && !dismissedSummariesRef.current.has(sid)) {
+            setSummaryFor(prev => prev ?? sid);
+          }
+        }
         rerender();
       } catch { /* ignore */ }
     });
@@ -406,12 +493,20 @@ function Inner() {
     }, 280);
   }, [layoutSig, rf]);
 
+  // Lineage of the currently selected agent — its ancestors + descendants.
+  // Used for spotlight dimming: in-lineage stays bright, everything else fades.
+  const spotlightSet = useMemo<Set<string> | null>(
+    () => spotlightLineage(stateRef.current, selectedId),
+    [stateRef.current, stateRef.current.lastSeq, selectedId],
+  );
+
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
       stateRef.current, now, pinnedRef.current, query,
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
+      selectedId, spotlightSet,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig],
+    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedId, spotlightSet],
   );
 
   // Set of agent ids that match the current /-search query, or null when
@@ -558,11 +653,26 @@ function Inner() {
                 <span className="count">{fmtTokens(totalTokens.sum)}</span><span className="lbl">tokens</span>
               </span>
             )}
-            {totalTokens.cost.total > 0 && (
-              <span className="stat" title={`input ${fmtCost(totalTokens.cost.input)} + output ${fmtCost(totalTokens.cost.output)} + cache r ${fmtCost(totalTokens.cost.cacheRead)} + cache w ${fmtCost(totalTokens.cost.cacheWrite)}`}>
-                <span className="count">{fmtCost(totalTokens.cost.total)}</span><span className="lbl">cost</span>
-              </span>
-            )}
+            {totalTokens.cost.total > 0 && (() => {
+              // Active-agent aggregate burn rate — only counts agents whose
+              // state is "active" so finished sessions don't dilute the
+              // current ticker. Falls back to overall avg if nothing's live.
+              let liveCost = 0, liveSec = 0;
+              for (const a of stateRef.current.agents.values()) {
+                if (a.state !== "active") continue;
+                const c = costForUsage(a.usage, a.model);
+                liveCost += c.total;
+                liveSec = Math.max(liveSec, ((a.endedAt ?? now) - a.startedAt) / 1000);
+              }
+              const rate = liveSec > 0 ? fmtCostRate(liveCost, liveSec) : null;
+              const tt = `input ${fmtCost(totalTokens.cost.input)} + output ${fmtCost(totalTokens.cost.output)} + cache r ${fmtCost(totalTokens.cost.cacheRead)} + cache w ${fmtCost(totalTokens.cost.cacheWrite)}${rate ? `\nactive burn: ${rate}` : ""}`;
+              return (
+                <span className="stat" title={tt}>
+                  <span className="count">{fmtCost(totalTokens.cost.total)}</span>
+                  <span className="lbl">cost{rate ? ` · ${rate}` : ""}</span>
+                </span>
+              );
+            })()}
           </span>
           <button className={`btn ${paused ? "warn" : ""}`} onClick={() => setPaused(p => !p)} title="Pause/resume live updates (Space)">
             {paused ? `Resume${queueRef.current.length ? ` · ${queueRef.current.length}` : ""}` : "Pause"}
@@ -655,6 +765,7 @@ function Inner() {
             pinned={pinnedRef.current}
             measured={measuredRef.current}
             dimUnmatched={matchedAgentIds}
+            spotlight={spotlightSet}
             hiddenCategories={hiddenCats}
             now={now}
             onOpenTool={setOpenedToolId}
@@ -683,6 +794,17 @@ function Inner() {
       </aside>
 
       {openedTool && <ToolModal tool={openedTool} onClose={() => setOpenedToolId(null)} />}
+      {summaryFor && (
+        <SessionSummary
+          state={stateRef.current}
+          sessionId={summaryFor}
+          onClose={() => {
+            dismissedSummariesRef.current.add(summaryFor);
+            saveDismissedSummaries(dismissedSummariesRef.current);
+            setSummaryFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }

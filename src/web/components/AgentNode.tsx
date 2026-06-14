@@ -1,7 +1,7 @@
 import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
-import { costForUsage, fmtCost, ratesForModel } from "../pricing";
+import { costForUsage, fmtCost, fmtCostRate, ratesForModel } from "../pricing";
 import type { AgentNodeData, ToolCall } from "../types";
 
 function elapsed(start: number, end: number | undefined, now: number): string {
@@ -67,8 +67,15 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
         {data.model && ratesForModel(data.model) && (() => {
           const c = costForUsage(data.usage, data.model);
           if (c.total <= 0) return null;
-          const tt = `input ${fmtCost(c.input)} + output ${fmtCost(c.output)} + cache r ${fmtCost(c.cacheRead)} + cache w ${fmtCost(c.cacheWrite)}`;
-          return <span className="cost-meta" title={tt}><b>{fmtCost(c.total)}</b></span>;
+          const elapsedSec = Math.max(0, ((data.endedAt ?? now) - data.startedAt) / 1000);
+          const rate = data.state === "active" ? fmtCostRate(c.total, elapsedSec) : null;
+          const tt = `input ${fmtCost(c.input)} + output ${fmtCost(c.output)} + cache r ${fmtCost(c.cacheRead)} + cache w ${fmtCost(c.cacheWrite)}${rate ? `\nburn: ${rate}` : ""}`;
+          return (
+            <span className="cost-meta" title={tt}>
+              <b>{fmtCost(c.total)}</b>
+              {rate && <span className="cost-rate">{rate}</span>}
+            </span>
+          );
         })()}
       </div>
 

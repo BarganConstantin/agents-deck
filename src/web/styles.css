@@ -306,6 +306,19 @@ button.btn.icon-btn {
 .react-flow__node.rf-dim { opacity: 0.22; filter: saturate(0.4); }
 .react-flow__node.rf-dim:hover { opacity: 0.6; }
 
+/* Spotlight: when an agent is selected, non-lineage nodes fade further.
+   Reinforces "follow the chain you clicked" attention. Restores on hover. */
+.react-flow__node.rf-spotlit-out { opacity: 0.16; filter: saturate(0.3) blur(0.3px); transition: opacity 200ms ease, filter 200ms ease; }
+.react-flow__node.rf-spotlit-out:hover { opacity: 0.55; filter: saturate(0.7); }
+
+/* Selected edge: thicker, with a flowing dash so the connection stands
+   out even when the edge is far away on a busy canvas. */
+.react-flow__edge.rf-edge-selected .react-flow__edge-path {
+  stroke-dasharray: 6 3;
+  animation: dashflow 0.8s linear infinite;
+  filter: drop-shadow(0 0 4px var(--accent-dim));
+}
+
 /* exit animation when a done subagent is being retired for a new turn.
    Apply on inner .agent-node so React Flow's translate transform on the
    outer .react-flow__node element is not clobbered. */
@@ -713,8 +726,14 @@ button.btn.icon-btn {
 .agent-node .meta .inflight-meta b { color: var(--inflight); }
 .agent-node .meta .tokens-meta { color: var(--accent); margin-left: auto; }
 .agent-node .meta .tokens-meta b { color: var(--accent); }
-.agent-node .meta .cost-meta { color: var(--ok); }
+.agent-node .meta .cost-meta { color: var(--ok); display: inline-flex; align-items: baseline; gap: 4px; }
 .agent-node .meta .cost-meta b { color: var(--ok); }
+.agent-node .meta .cost-meta .cost-rate {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+}
 
 .tokens-grid {
   display: grid;
@@ -1499,6 +1518,143 @@ button.tool.clickable:last-child { border-bottom: none; }
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes popIn  { from { opacity: 0; transform: translateY(4px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+/* ---------------- session-end summary modal ---------------- */
+
+.session-summary { width: min(720px, 92vw); }
+
+.session-summary .ss-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 22px;
+  padding: 18px 18px 20px;
+  background: linear-gradient(180deg, rgba(134,239,172,0.05), transparent);
+  border-bottom: 1px solid var(--line);
+}
+.session-summary .ss-hero-left { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.session-summary .ss-cost-label {
+  font-size: 10.5px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.session-summary .ss-cost {
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.session-summary .ss-models { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.session-summary .ss-hero-right { display: flex; flex-direction: column; justify-content: center; gap: 10px; min-width: 0; }
+.cost-bar.cost-bar-lg { height: 14px; border-radius: 7px; }
+.session-summary .ss-cost-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.session-summary .ssl { display: inline-flex; align-items: baseline; gap: 5px; }
+.session-summary .ssl b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.session-summary .ssl::before {
+  content: "";
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  margin-right: 1px;
+}
+.session-summary .ssl-in::before  { background: hsl(213 80% 65%); }
+.session-summary .ssl-out::before { background: hsl(280 75% 70%); }
+.session-summary .ssl-cr::before  { background: hsl(150 60% 60%); }
+.session-summary .ssl-cw::before  { background: hsl(35 85% 65%); }
+
+.session-summary .ss-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.session-summary .ss-stat {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 10px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.session-summary .ss-stat-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+.session-summary .ss-stat-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.session-summary .ss-stat.tone-err .ss-stat-value { color: var(--err); }
+
+@media (max-width: 640px) {
+  .session-summary .ss-hero { grid-template-columns: 1fr; }
+  .session-summary .ss-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+.session-summary .ss-top-tools { display: flex; flex-direction: column; gap: 6px; }
+.session-summary .ss-tt {
+  display: grid;
+  grid-template-columns: 130px 1fr 36px;
+  gap: 10px;
+  align-items: center;
+}
+.session-summary .ss-tt-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-summary .ss-tt-bar {
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.session-summary .ss-tt-bar-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--inflight));
+  border-radius: 3px;
+}
+.session-summary .ss-tt-count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.session-summary .ss-prompt {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
 
 /* ---------------- empty-state hero ---------------- */
 
