@@ -195,6 +195,31 @@ function spotlightLineage(state: GraphState, selectedId: string | null): Set<str
   return set;
 }
 
+/** Single source of truth for "is this agent allowed on the canvas right
+ *  now". Used by both snapshotToFlow (drives ReactFlow nodes) and
+ *  ToolBursts (drives the burst overlay). Previously each had its own
+ *  inline check and they could disagree — most notably leaving orphan
+ *  bursts when an agent was excluded by one path but not the other. */
+function isAgentVisible(a: AgentNodeData, now: number): boolean {
+  // Past the exit animation — fully retired subagent from a prior turn.
+  if (a.exitAt != null && now - a.exitAt > EXIT_ANIM_MS) return false;
+  // Ghost session: a done root with 0 tools and <3s lifespan is a hook
+  // test / aborted invocation, not real work.
+  if (
+    a.kind === "root" && a.state === "done" && a.tools.length === 0 &&
+    a.endedAt != null && (a.endedAt - a.startedAt) < 3000
+  ) return false;
+  return true;
+}
+
+function computeVisibleIds(state: GraphState, now: number): Set<string> {
+  const set = new Set<string>();
+  for (const a of state.agents.values()) {
+    if (isAgentVisible(a, now)) set.add(a.id);
+  }
+  return set;
+}
+
 function snapshotToFlow(
   state: GraphState,
   now: number,
@@ -206,26 +231,13 @@ function snapshotToFlow(
   lastLayoutSigRef: { current: string },
   selectedIds: Set<string>,
   lineage: Set<string> | null,
+  visibleIds: Set<string>,
 ): { nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[]; edges: Edge[] } {
   const nodes: Node<AgentNodeData & { now: number; dim?: boolean }>[] = [];
   const edges: Edge[] = [];
   const matchSet = new Set<string>();
   if (query) {
     for (const a of state.agents.values()) if (matchesQuery(a, query)) matchSet.add(a.id);
-  }
-
-  const visibleIds = new Set<string>();
-  for (const a of state.agents.values()) {
-    if (a.exitAt != null && now - a.exitAt > EXIT_ANIM_MS) continue;
-    // Ghost-session filter: a done root with 0 tools that lived less than
-    // 3 seconds is almost certainly a hook test or aborted invocation —
-    // CC fires SessionStart + Stop in rapid succession without ever
-    // running a tool. Hiding them keeps the canvas focused on real work.
-    if (
-      a.kind === "root" && a.state === "done" && a.tools.length === 0 &&
-      a.endedAt != null && (a.endedAt - a.startedAt) < 3000
-    ) continue;
-    visibleIds.add(a.id);
   }
 
   for (const a of state.agents.values()) {
@@ -291,6 +303,13 @@ function snapshotToFlow(
       const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
     }
+  }
+  // Evict cached positions for agents that aren't visible anymore. Stale
+  // positions in the cache were the root cause of orphan bursts — bursts
+  // would render at the agent's last known spot even after the agent
+  // itself was filtered out of the canvas.
+  for (const id of Array.from(positions.keys())) {
+    if (!visibleIds.has(id)) positions.delete(id);
   }
   const finalNodes = nodes.map(n => {
     const p = pinned.get(n.id) ?? positions.get(n.id) ?? { x: 0, y: 0 };
@@ -584,13 +603,22 @@ function Inner() {
     return union.size > 0 ? union : null;
   }, [stateRef.current, stateRef.current.lastSeq, selectedIds]);
 
+  // The visibility set drives BOTH the React Flow nodes prop and the
+  // burst overlay's render gate — single source of truth so the two
+  // can never disagree (which previously left orphan bursts on screen
+  // when an agent was filtered out via one path but not the other).
+  const visibleAgentIds = useMemo<Set<string>>(
+    () => computeVisibleIds(stateRef.current, now),
+    [stateRef.current, stateRef.current.lastSeq, now],
+  );
+
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
       stateRef.current, now, pinnedRef.current, query,
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
-      selectedIds, spotlightSet,
+      selectedIds, spotlightSet, visibleAgentIds,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet],
+    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds],
   );
 
   // Set of agent ids that match the current /-search query, or null when
@@ -911,6 +939,7 @@ function Inner() {
           <SessionClusters />
           <ToolBursts
             agents={stateRef.current.agents}
+            visibleAgentIds={visibleAgentIds}
             positions={positionsRef.current}
             pinned={pinnedRef.current}
             measured={measuredRef.current}

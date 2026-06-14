@@ -502,6 +502,7 @@ interface Burst {
 
 function collectBursts(
   agents: Map<string, AgentNodeData>,
+  visibleAgentIds: Set<string>,
   positions: Map<string, { x: number; y: number }>,
   pinned: Map<string, { x: number; y: number }>,
   measured: Map<string, { width: number; height: number }>,
@@ -509,11 +510,12 @@ function collectBursts(
 ): Burst[] {
   const out: Burst[] = [];
   for (const a of agents.values()) {
+    // HARD gate: if the agent isn't on the canvas, no bursts for it either.
+    // This is the single source of truth shared with snapshotToFlow so
+    // bursts can never linger after their owning card has been filtered out
+    // (the classic "orphan bursts floating with no agent card" bug).
+    if (!visibleAgentIds.has(a.id)) continue;
     if (a.exitAt != null && now - a.exitAt > FADE_MS) continue;
-    // Read position from the SAME source that feeds ReactFlow's nodes prop.
-    // Reading from ReactFlow's nodeInternals (its computed mirror) lagged
-    // one frame behind during layout reflows — that produced the "bursts
-    // floating with no agents" state when dagre repositioned everything.
     const pos = pinned.get(a.id) ?? positions.get(a.id);
     if (!pos) continue; // no position yet — agent not laid out
     // Always show the last MAX_PER_AGENT tools' bubbles as a persistent
@@ -611,6 +613,10 @@ function collectBursts(
 interface ToolBurstsProps {
   /** The full agents Map. */
   agents: Map<string, AgentNodeData>;
+  /** The exact set of agent ids currently on the canvas (computed in
+   *  App.tsx via computeVisibleIds). Bursts only render for agents in this
+   *  set — guarantees burst visibility matches card visibility. */
+  visibleAgentIds: Set<string>;
   /** Same maps that feed ReactFlow's `nodes` prop. Reading from these means
    *  bursts and agents share a single source of truth for positions — they
    *  can never disagree, even mid-reflow. */
@@ -632,9 +638,9 @@ interface ToolBurstsProps {
   onOpenTool?: (toolId: string) => void;
 }
 
-export default function ToolBursts({ agents, positions, pinned, measured, dimUnmatched, spotlight, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
+export default function ToolBursts({ agents, visibleAgentIds, positions, pinned, measured, dimUnmatched, spotlight, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
   const { x, y, zoom } = useViewport();
-  const all = collectBursts(agents, positions, pinned, measured, now);
+  const all = collectBursts(agents, visibleAgentIds, positions, pinned, measured, now);
   const bursts = hiddenCategories && hiddenCategories.size > 0
     ? all.filter(b => !hiddenCategories.has(b.category))
     : all;
