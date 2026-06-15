@@ -21,6 +21,7 @@ import SessionList from "./components/SessionList";
 import TimelineStrip from "./components/TimelineStrip";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
+import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
@@ -37,7 +38,6 @@ function fmtTokens(n: number): string {
 
 const nodeTypes = { agent: AgentNode };
 
-const EXIT_ANIM_MS = 600;
 const STALE_TOOL_MS = 90_000;
 const AGENT_CAP = 200;
 const AGENT_GRACE_MS = 5 * 60_000;
@@ -255,31 +255,6 @@ function spotlightLineage(state: GraphState, selectedId: string | null): Set<str
   return set;
 }
 
-/** Single source of truth for "is this agent allowed on the canvas right
- *  now". Used by both snapshotToFlow (drives ReactFlow nodes) and
- *  ToolBursts (drives the burst overlay). Previously each had its own
- *  inline check and they could disagree — most notably leaving orphan
- *  bursts when an agent was excluded by one path but not the other. */
-function isAgentVisible(a: AgentNodeData, now: number): boolean {
-  // Past the exit animation — fully retired subagent from a prior turn.
-  if (a.exitAt != null && now - a.exitAt > EXIT_ANIM_MS) return false;
-  // Ghost session: a done root with 0 tools and <3s lifespan is a hook
-  // test / aborted invocation, not real work.
-  if (
-    a.kind === "root" && a.state === "done" && a.tools.length === 0 &&
-    a.endedAt != null && (a.endedAt - a.startedAt) < 3000
-  ) return false;
-  return true;
-}
-
-function computeVisibleIds(state: GraphState, now: number): Set<string> {
-  const set = new Set<string>();
-  for (const a of state.agents.values()) {
-    if (isAgentVisible(a, now)) set.add(a.id);
-  }
-  return set;
-}
-
 function snapshotToFlow(
   state: GraphState,
   now: number,
@@ -312,12 +287,21 @@ function snapshotToFlow(
       exiting ? "rf-exiting" : "",
       spotlitOut ? "rf-spotlit-out" : "",
     ].filter(Boolean).join(" ") || undefined;
+    // ReactFlow's createNodeInternals wipes width/height from internals on
+    // every setNodes call — and we re-pass `nodes` on every `now` tick.
+    // Without supplying them on the node prop, RF flips `initialized=false`
+    // → `visibility:hidden` until ResizeObserver re-fires. Under live event
+    // storms RO lags multiple frames → nodes persistently invisible while
+    // tool bursts (which read positions directly) keep rendering. Pull
+    // cached measurements through so internals survive the rewrite.
+    const m = measured.get(a.id);
     nodes.push({
       id: a.id,
       type: "agent",
       position: { x: 0, y: 0 },
       data: { ...a, now, dim, onOpenContext },
       className: cls,
+      ...(m ? { width: m.width, height: m.height } : null),
     });
     if (a.parentId && visibleIds.has(a.parentId)) {
       const hue = sessionHue(a.sessionId);
@@ -776,6 +760,7 @@ function Inner() {
     ),
     [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext],
   );
+
 
   // Set of agent ids that match the current /-search query, or null when
   // there's no query (= no dimming). Passed to ToolBursts so its bubbles

@@ -408,39 +408,12 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       break;
     }
     case "UserPromptSubmit": {
-      // New turn for this session. Any subagent that's already done AND has
-      // ended at least EXIT_GRACE_MS ago belongs to the previous turn — mark
-      // for exit so the canvas stays focused on what's relevant to the new
-      // request. Recently-finished subagents are spared so a fast follow-up
-      // prompt while bursts are still settling doesn't yank them.
-      //
-      // Skip the exit-stamp entirely when processing a replayed event:
-      // exitAt would be set to event time (minutes/hours old), and the
-      // visibility gate compares to wall-clock Date.now() — `now - exitAt >>
-      // EXIT_ANIM_MS` instantly hides every subagent that wrapped before its
-      // turn's UserPromptSubmit. On refresh the user saw subagents appear
-      // (after SubagentStop applied) then vanish (after the trailing
-      // UserPromptSubmit). The intent of this block — "focus on current
-      // turn" — only makes sense for live events; replayed ones are
-      // reconstructing the past, where prior turns should stay on canvas.
-      //
-      // Server tags ring-buffer events with `replay: true`; we also fall
-      // back to a stale-timestamp heuristic in case the flag is ever
-      // missing (older server, custom ingest path).
-      const isReplay = env.replay === true || Date.now() - now > 30_000;
-      const EXIT_GRACE_MS = 1500;
-      if (!isReplay) {
-        for (const other of state.agents.values()) {
-          if (
-            other.sessionId === sessionId && other.kind === "subagent" &&
-            other.state === "done" && other.exitAt == null &&
-            other.endedAt != null && (now - other.endedAt) > EXIT_GRACE_MS
-          ) {
-            other.exitAt = now;
-          }
-        }
-      }
-      // Also reset session root back to active for the new request.
+      // New turn — prior-turn subagents stay on canvas. The previously-
+      // suspected "exitAt stamping" cause of the vanish bug turned out to be
+      // ReactFlow's createNodeInternals wiping width/height every setNodes
+      // and flipping `initialized=false` → `visibility:hidden`. Fix is in
+      // snapshotToFlow (passes measured w/h through). Retirement-on-prompt
+      // can be reintroduced later if focus-on-current-turn UX is wanted.
       const root = ensureRoot(state, sessionId, now, false);
       root.state = "active";
       root.endedAt = undefined;
