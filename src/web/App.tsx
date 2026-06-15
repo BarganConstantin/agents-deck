@@ -374,15 +374,28 @@ function snapshotToFlow(
   for (const id of Array.from(positions.keys())) {
     if (!state.agents.has(id)) positions.delete(id);
   }
-  // For brand-new visible agents that ended up at {0,0} (no measurement yet,
-  // dagre placed at origin), defer rendering them until the next frame when
-  // measurements / layout settle. Returning them at {0,0} caused the
-  // overlap-at-origin visual where many nodes piled at the canvas corner.
+  // Never silently drop a visible node — if its position is missing, place
+  // it at {0,0} for THIS frame and force a fresh dagre pass on the next
+  // frame by invalidating lastLayoutSigRef. The previous skip-this-frame
+  // strategy caused the catastrophic "every node vanished while bursts
+  // remained" symptom when, for whatever reason, positions got out of sync
+  // with state.agents (the bursts gate on visibleAgentIds + positions; the
+  // node renderer gated on positions only, so the two halves disagreed).
   const finalNodes: typeof nodes = [];
+  let missingPosition = false;
   for (const n of nodes) {
-    const p = pinned.get(n.id) ?? positions.get(n.id);
-    if (!p) continue; // skip this frame — node will appear once laid out
+    let p = pinned.get(n.id) ?? positions.get(n.id);
+    if (!p) {
+      p = { x: 0, y: 0 };
+      positions.set(n.id, p);
+      missingPosition = true;
+    }
     finalNodes.push({ ...n, position: p });
+  }
+  if (missingPosition) {
+    // Force a re-layout on the next render — clearing the sig cache makes
+    // line 356 re-run dagre even if nothing else changed.
+    lastLayoutSigRef.current = "";
   }
   return { nodes: finalNodes, edges };
 }

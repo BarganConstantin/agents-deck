@@ -98,17 +98,20 @@ async function readModelFromTranscript(path) {
     }
     let rootModel = null;
     const subagentModels = {};
+    let anyModelSeen = null; // regex-style fallback — the last claude-* model
+                             // we encountered, regardless of sidechain flag.
+                             // Keeps the old behavior alive when the JSONL
+                             // schema doesn't expose `isSidechain`.
     for (const line of text.split("\n")) {
       if (!line) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
       const msg = obj && obj.message;
-      // Assistant model entries live on either obj.model or obj.message.model
-      // depending on CC schema version. Accept either.
       const model = (msg && typeof msg.model === "string" && /^claude[-_]/i.test(msg.model)) ? msg.model
                   : (typeof obj.model === "string" && /^claude[-_]/i.test(obj.model))         ? obj.model
                   : null;
       if (!model) continue;
+      anyModelSeen = model;
       const isSide = obj.isSidechain === true || obj.is_sidechain === true;
       const ptid = obj.parentToolUseID || obj.parent_tool_use_id || obj.parentToolUseId || null;
       if (isSide && ptid) {
@@ -117,6 +120,10 @@ async function readModelFromTranscript(path) {
         rootModel = model;
       }
     }
+    // Fallback: if no `isSidechain:false` entry was found (older schema, or
+    // a transcript that only contains sidechain blocks), use the last-seen
+    // model so the root card still shows SOMETHING instead of going blank.
+    if (!rootModel) rootModel = anyModelSeen;
     if (!rootModel && Object.keys(subagentModels).length === 0) return null;
     return { rootModel, subagentModels };
   } catch {
