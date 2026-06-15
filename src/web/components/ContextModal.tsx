@@ -5,20 +5,13 @@
 // counts come from a regex scan of the transcript JSONL on the server.
 import React from "react";
 import type { AgentNodeData } from "../types";
-import { fmtCost, costForUsage } from "../pricing";
-
-const CONTEXT_WINDOW_DEFAULT = 200_000;
-const CONTEXT_WINDOW_BIG = 1_000_000;
+import { fmtCost, costForUsage, contextWindowForModel } from "../pricing";
 
 function fmtN(n: number): string { return n.toLocaleString(); }
 function fmtKB(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-}
-
-export function contextWindowFor(currentContextTokens: number): number {
-  return currentContextTokens > CONTEXT_WINDOW_DEFAULT ? CONTEXT_WINDOW_BIG : CONTEXT_WINDOW_DEFAULT;
 }
 
 interface Props {
@@ -30,7 +23,7 @@ export default function ContextModal({ agent, onClose }: Props) {
   const ctx = agent.context;
   const usage = agent.usage;
   const current = ctx?.currentContextTokens ?? 0;
-  const window = contextWindowFor(current);
+  const window = contextWindowForModel(agent.model);
   const pct = Math.min(100, (current / window) * 100);
   const cost = costForUsage(usage, agent.model);
   const cumulative = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
@@ -105,12 +98,13 @@ function Row({ label, val, accent }: { label: string; val: string; accent?: bool
 /** Compact donut indicator — used on the root agent's node header. */
 interface DonutProps {
   currentContextTokens: number;
+  modelId?: string;
   size?: number;
   onClick?: () => void;
   title?: string;
 }
-export function ContextDonut({ currentContextTokens, size = 26, onClick, title }: DonutProps) {
-  const window = contextWindowFor(currentContextTokens);
+export function ContextDonut({ currentContextTokens, modelId, size = 26, onClick, title }: DonutProps) {
+  const window = contextWindowForModel(modelId);
   const pct = Math.min(1, currentContextTokens / window);
   const r = size / 2 - 3;
   const c = size / 2;

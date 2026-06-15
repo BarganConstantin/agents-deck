@@ -75,6 +75,27 @@ export function costForUsage(usage: TokenUsage, modelId: string | undefined): Co
   return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
+// ─── Context window ──────────────────────────────────────────────────────
+// Source: LiteLLM model_prices_and_context_window.json. Opus 4.7 and
+// Sonnet 4.6 ship with 1M-token windows; older tiers and Haiku stay at
+// 200K. The model id sometimes has a `[1m]` suffix (CC's UI banner uses
+// it) — treat that as an explicit override regardless of family.
+const CONTEXT_WINDOW_DEFAULT = 200_000;
+const CONTEXT_WINDOW_BIG = 1_000_000;
+
+const BIG_CONTEXT_PATTERNS: RegExp[] = [
+  /\[1m\]/i,                                  // explicit suffix
+  /^claude[-_]opus[-_]4[-_.](?:5|6|7|8)\b/i,  // Opus 4.5+
+  /^claude[-_]sonnet[-_]4[-_.]6\b/i,          // Sonnet 4.6
+  /^claude[-_](fable|mythos)[-_]5\b/i,        // Fable/Mythos 5
+];
+
+export function contextWindowForModel(modelId: string | undefined): number {
+  if (!modelId) return CONTEXT_WINDOW_DEFAULT;
+  for (const p of BIG_CONTEXT_PATTERNS) if (p.test(modelId)) return CONTEXT_WINDOW_BIG;
+  return CONTEXT_WINDOW_DEFAULT;
+}
+
 export function fmtCost(usd: number): string {
   if (usd <= 0) return "—";
   if (usd < 0.005) return "<1¢";
