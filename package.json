@@ -1,6 +1,6 @@
 {
   "name": "agent-dag",
-  "version": "1.12.2",
+  "version": "1.12.3",
   "description": "Live DAG of Claude Code agents — watch parallel subagents fork, call tools, and return on one calm canvas.",
   "type": "module",
   "bin": {

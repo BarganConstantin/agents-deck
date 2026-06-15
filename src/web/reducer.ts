@@ -132,22 +132,43 @@ function ensureRoot(state: GraphState, sessionId: string, now: number, synthetic
   return a;
 }
 
+/** Look up an existing subagent without creating one. Returns null if the
+ *  subagent has never been announced via SubagentStart. Used by resolveOwner
+ *  so a stray `parent_tool_use_id` on a Stop / PostToolUse / Notification
+ *  payload can't manufacture a phantom node at end-of-life. */
+function lookupSubagent(state: GraphState, sessionId: string, key: string, p: HookPayload): AgentNodeData | null {
+  const id = subagentIdFor(sessionId, key);
+  const a = state.agents.get(id);
+  if (!a) return null;
+  if (!a.cwd && p.cwd) { a.cwd = p.cwd; a.cwdBasename = basename(p.cwd); }
+  const lbl = subagentLabel(p);
+  if (lbl && (a.label === "subagent" || !a.label)) a.label = lbl;
+  return a;
+}
+
 /** Resolve which agent owns this event:
- *  - If the payload explicitly names a subagent (agent_id / parent_tool_use_id),
- *    that subagent is the owner.
- *  - Otherwise, for PreToolUse-style events that don't identify a subagent, we
- *    attribute to the deepest currently-active subagent of this session if any,
- *    else to the root session.
+ *  - If the payload explicitly names a subagent (agent_id / parent_tool_use_id)
+ *    AND that subagent already exists, that subagent is the owner.
+ *  - Otherwise, attribute to the deepest currently-active subagent of this
+ *    session if any, else to the root session.
+ *
+ *  Critically, this never CREATES a subagent — only SubagentStart does.
+ *  Earlier versions auto-created on first sight of any explicit key, which
+ *  manufactured a phantom subagent every time CC included a stray
+ *  parent_tool_use_id on a terminal event (Stop, PostToolUse, Notification).
  */
 function resolveOwner(state: GraphState, p: HookPayload, now: number): AgentNodeData {
   const sessionId = p.session_id ?? "unknown";
   const explicit = explicitSubagentKey(p);
 
   if (explicit) {
-    return ensureSubagent(state, sessionId, explicit, p, now);
+    const sub = lookupSubagent(state, sessionId, explicit, p);
+    if (sub) return sub;
+    // Explicit key but no matching subagent — fall through to stack/root
+    // attribution rather than fabricating one.
   }
 
-  // No explicit subagent. Attribute to top of active stack if one is live.
+  // No (resolvable) explicit subagent. Attribute to top of active stack.
   const stack = state.activeSubagentStack.get(sessionId);
   const topKey = stack && stack.length > 0 ? stack[stack.length - 1] : null;
   if (topKey) {
@@ -466,7 +487,10 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     case "SubagentStop": {
       const key = explicitSubagentKey(p);
       if (!key) break;
-      const sub = ensureSubagent(state, sessionId, key, p, now);
+      // Lookup, don't create — a Stop without a prior Start is a no-op,
+      // not a reason to manifest a phantom node.
+      const sub = lookupSubagent(state, sessionId, key, p);
+      if (!sub) break;
       sub.state = "done";
       sub.endedAt = now;
       refreshInFlight(sub);
