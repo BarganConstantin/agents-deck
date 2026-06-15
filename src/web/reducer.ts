@@ -408,12 +408,24 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       break;
     }
     case "UserPromptSubmit": {
-      // New turn — prior-turn subagents stay on canvas. The previously-
-      // suspected "exitAt stamping" cause of the vanish bug turned out to be
-      // ReactFlow's createNodeInternals wiping width/height every setNodes
-      // and flipping `initialized=false` → `visibility:hidden`. Fix is in
-      // snapshotToFlow (passes measured w/h through). Retirement-on-prompt
-      // can be reintroduced later if focus-on-current-turn UX is wanted.
+      // New turn — retire done subagents from prior turns so canvas focuses
+      // on the current request. Same logic works for live AND replay:
+      //   - live: exitAt = wall-clock now → 600ms fade-out animation
+      //   - replay: exitAt = event time (old) → already past EXIT_ANIM_MS
+      //     window when first render hits → prior turns never visually
+      //     appear on refresh (no flash-then-vanish)
+      // The previous "exitAt-stamping causes vanish" suspicion was wrong;
+      // real cause was ReactFlow wiping width/height on every setNodes (fix
+      // in snapshotToFlow). With that fixed, retirement is safe.
+      for (const other of state.agents.values()) {
+        if (
+          other.sessionId === sessionId && other.kind === "subagent" &&
+          other.state === "done" && other.exitAt == null &&
+          other.endedAt != null && other.endedAt < now
+        ) {
+          other.exitAt = now;
+        }
+      }
       const root = ensureRoot(state, sessionId, now, false);
       root.state = "active";
       root.endedAt = undefined;

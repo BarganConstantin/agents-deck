@@ -34,13 +34,15 @@ const SESSION = "sess-A";
 const SUB1 = "tool-use-aaaaaaaaaaaaaaaa";
 const SUB2 = "tool-use-bbbbbbbbbbbbbbbb";
 
-// Anchor every simulated timestamp near wall-clock now. The reducer's
-// replay heuristic (`Date.now() - receivedAt > 30s` at reducer.ts:430)
-// treats tiny epoch timestamps as replay and silently skips the
-// turn-cleanup branch — exactly the codepath this regression must cover —
-// so the simulated timeline has to look like live "recent" events.
+// Anchor the simulated timeline 60s in the past. That way replay-flagged
+// events (T(0) … T(20_000) → 60s … 40s ago) are already far outside the
+// EXIT_ANIM_MS window at refresh-render time (Date.now()), so retired
+// subagents stay invisible from the first frame. Live tests compute
+// visibility relative to their own promptAt + offset, so the shift doesn't
+// affect them.
 const NOW = Date.now();
-const T = (ms: number): number => NOW + ms;
+const TIMELINE_START = NOW - 60_000;
+const T = (ms: number): number => TIMELINE_START + ms;
 
 function liveTimeline(): HookEnvelope[] {
   seq = 1;
@@ -93,11 +95,9 @@ describe("regression — nodes must not vanish from live incremental updates", (
     expect(sub2.tools.map(t => t.id)).toEqual(["tu-grep-1", "tu-cd-1", "tu-agent-1"]);
   });
 
-  it("keeps every rendered node visible after a live UserPromptSubmit (no silent retirement)", () => {
+  it("retires prior-turn subagents 600ms after a live UserPromptSubmit", () => {
     let state = feed(initialState(), liveTimeline());
 
-    // A new live turn arrives 10s after the last subagent finished — well
-    // outside EXIT_GRACE_MS but still a normal in-session interaction.
     const promptAt = T(20_000);
     state = applyEvent(state, envelope({
       hook_event_name: "UserPromptSubmit",
@@ -105,27 +105,27 @@ describe("regression — nodes must not vanish from live incremental updates", (
       prompt: "next turn",
     }, promptAt));
 
-    // Sanity: data is still there.
+    // Data MUST stay in state — retirement is visual only, not a delete.
     expect(state.agents.has(SUB1_ID)).toBe(true);
     expect(state.agents.has(SUB2_ID)).toBe(true);
 
-    // Clock advances past the exit animation window. Subagents from the
-    // previous turn must still be on canvas — the user never asked to
-    // retire them.
-    const now = promptAt + EXIT_ANIM_MS + 100;
-    const visible = computeVisibleIds(state, now);
+    // Mid-animation: subagents still visible (rf-exiting fade-out running).
+    const mid = promptAt + 200;
+    const visMid = computeVisibleIds(state, mid);
+    expect(visMid.has(SUB1_ID)).toBe(true);
+    expect(visMid.has(SUB2_ID)).toBe(true);
 
-    expect(visible.has(ROOT_ID)).toBe(true);
-    expect(visible.has(SUB1_ID)).toBe(true);
-    expect(visible.has(SUB2_ID)).toBe(true);
+    // After EXIT_ANIM_MS: prior-turn subagents filtered out.
+    const after = promptAt + EXIT_ANIM_MS + 100;
+    const visAfter = computeVisibleIds(state, after);
+    expect(visAfter.has(ROOT_ID)).toBe(true);
+    expect(visAfter.has(SUB1_ID)).toBe(false);
+    expect(visAfter.has(SUB2_ID)).toBe(false);
   });
 
-  it("survives repeated live UserPromptSubmit + SubagentStart cycles without flicker", () => {
+  it("repeated live UserPromptSubmit cycles consistently retire each prior turn", () => {
     let state = feed(initialState(), liveTimeline());
 
-    // Several new turns in quick succession — each one used to re-stamp
-    // exitAt on every done subagent, producing visible flicker as
-    // SubagentStart cleared exitAt and the next UserPromptSubmit set it again.
     for (let turn = 0; turn < 3; turn++) {
       const t = T(20_000 + turn * 5_000);
       state = applyEvent(state, envelope({
@@ -134,30 +134,53 @@ describe("regression — nodes must not vanish from live incremental updates", (
         prompt: `turn ${turn}`,
       }, t));
 
-      // Mid-turn: check visibility at every point in time the UI would tick.
+      // Root stays visible across every turn.
       for (const offset of [0, 100, EXIT_ANIM_MS - 1, EXIT_ANIM_MS + 1, 1_000, 4_000]) {
         const visible = computeVisibleIds(state, t + offset);
-        expect(visible.has(ROOT_ID), `root vanished at turn=${turn} offset=${offset}`).toBe(true);
-        expect(visible.has(SUB1_ID), `sub1 vanished at turn=${turn} offset=${offset}`).toBe(true);
-        expect(visible.has(SUB2_ID), `sub2 vanished at turn=${turn} offset=${offset}`).toBe(true);
+        expect(visible.has(ROOT_ID), `root at turn=${turn} offset=${offset}`).toBe(true);
       }
+      // After this turn's exit animation, prior subagents must be gone.
+      const visAfter = computeVisibleIds(state, t + EXIT_ANIM_MS + 100);
+      expect(visAfter.has(SUB1_ID), `sub1 retired by turn=${turn}`).toBe(false);
+      expect(visAfter.has(SUB2_ID), `sub2 retired by turn=${turn}`).toBe(false);
     }
   });
 
-  it("keeps state stable when the same events arrive flagged as replay (refresh path)", () => {
+  it("refresh (replay) does not re-show prior-turn subagents (no flash-then-vanish)", () => {
     seq = 1;
     let state = initialState();
     for (const e of liveTimeline()) {
       state = applyEvent(state, { ...e, replay: true });
     }
-    // The promot that triggered the bug on live also arrives in replay.
+    // A new prompt closed out that prior turn — also replayed.
     state = applyEvent(state, envelope({
       hook_event_name: "UserPromptSubmit",
       session_id: SESSION,
       prompt: "replayed turn",
     }, T(20_000), { replay: true }));
 
-    const visible = computeVisibleIds(state, T(20_000) + EXIT_ANIM_MS + 100);
+    // Data stays in state for inspection / history.
+    expect(state.agents.has(SUB1_ID)).toBe(true);
+    expect(state.agents.has(SUB2_ID)).toBe(true);
+
+    // First render after replay uses wall-clock now; replayed exitAt
+    // timestamps are far in the past → already past EXIT_ANIM_MS → prior
+    // subagents are invisible from the very first frame (no flash).
+    const visible = computeVisibleIds(state, Date.now());
+    expect(visible.has(ROOT_ID)).toBe(true);
+    expect(visible.has(SUB1_ID)).toBe(false);
+    expect(visible.has(SUB2_ID)).toBe(false);
+  });
+
+  it("refresh without a closing UserPromptSubmit keeps the in-flight turn's subagents", () => {
+    // No UserPromptSubmit after the timeline = still in the same turn the
+    // subagents belong to. They should remain visible.
+    seq = 1;
+    let state = initialState();
+    for (const e of liveTimeline()) {
+      state = applyEvent(state, { ...e, replay: true });
+    }
+    const visible = computeVisibleIds(state, Date.now());
     expect(visible.has(ROOT_ID)).toBe(true);
     expect(visible.has(SUB1_ID)).toBe(true);
     expect(visible.has(SUB2_ID)).toBe(true);
