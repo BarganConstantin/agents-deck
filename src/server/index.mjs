@@ -256,7 +256,21 @@ async function readContextFromTranscript(path) {
     let buf;
     try { buf = Buffer.alloc(s.size); await fh.read(buf, 0, s.size, 0); }
     finally { await fh.close(); }
-    const text = buf.toString("utf8");
+    const fullText = buf.toString("utf8");
+    // CC `/clear` writes a user message `<command-name>/clear</command-name>`
+    // into the same transcript file and resets its in-memory context window
+    // to ~0, but the JSONL keeps growing — every usage block before the
+    // clear marker is stale (pre-reset) and reading the LAST one made the
+    // donut report ~100% even though CC's actual context was empty. Same
+    // applies to `/compact`: it writes a summary and starts a fresh context.
+    // Slice the transcript to the segment AFTER the most recent reset so
+    // counts/usage reflect what CC is actually carrying forward.
+    const resetRe = /<command-name>\s*\/(?:clear|compact)\s*<\/command-name>/g;
+    let lastResetIdx = -1;
+    for (const m of fullText.matchAll(resetRe)) {
+      lastResetIdx = (m.index ?? -1) + m[0].length;
+    }
+    const text = lastResetIdx >= 0 ? fullText.slice(lastResetIdx) : fullText;
     const breakdown = {
       msgsUser: 0,
       msgsAssistant: 0,
@@ -271,9 +285,9 @@ async function readContextFromTranscript(path) {
     breakdown.toolResults    = (text.match(/"type"\s*:\s*"tool_result"/g) ?? []).length;
     breakdown.systemReminders = (text.match(/<system-reminder>/g) ?? []).length;
     // Current context size = input + cache_read + cache_create on the LAST
-    // usage block. Each assistant message's usage describes the context
-    // window for THAT call; summing across calls double-counts cached
-    // prefixes and explodes past the real ceiling. Take the most recent.
+    // usage block in the post-reset slice. If the user just ran /clear and
+    // hasn't sent a new prompt yet, this stays 0 (no usage blocks yet) —
+    // matches what CC's own `/context` would report.
     const re = /"usage"\s*:\s*\{([^}]+)\}/g;
     const grab = (blob, key) => {
       const km = blob.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
