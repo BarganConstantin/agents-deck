@@ -355,6 +355,7 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
           toolUses: Number(ctx.toolUses ?? 0),
           toolResults: Number(ctx.toolResults ?? 0),
           systemReminders: Number(ctx.systemReminders ?? 0),
+          currentContextTokens: Number(ctx.currentContextTokens ?? 0),
           claudeMdFiles: Array.isArray(ctx.claudeMdFiles)
             ? (ctx.claudeMdFiles as Array<{ path: string; bytes: number }>)
             : [],

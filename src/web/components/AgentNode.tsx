@@ -47,8 +47,8 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
   const inflight = data.tools.filter(t => !t.endedAt).length;
   const hue = sessionHue(data.sessionId);
   const accent = `hsl(${hue} 70% 60%)`;
-  const hasContextSignal = data.kind === "root"
-    && (data.usage.inputTokens + data.usage.cacheReadTokens + data.usage.cacheCreateTokens) > 0;
+  const currentContextTokens = data.context?.currentContextTokens ?? 0;
+  const hasContextSignal = data.kind === "root" && currentContextTokens > 0;
 
   return (
     <div className={cls} style={{ "--accent": accent } as React.CSSProperties}>
@@ -64,7 +64,7 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
         <div className="head-right">
           {hasContextSignal && data.onOpenContext && (
             <ContextDonut
-              usage={data.usage}
+              currentContextTokens={currentContextTokens}
               onClick={() => data.onOpenContext!(data.sessionId)}
             />
           )}

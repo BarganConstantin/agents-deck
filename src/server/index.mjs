@@ -223,16 +223,42 @@ async function readContextFromTranscript(path) {
       toolUses: 0,
       toolResults: 0,
       systemReminders: 0,
+      currentContextTokens: 0,
     };
-    // Cheap regex counters — transcript is line-delimited JSON, but we
-    // don't need structure to count occurrences of these specific keys.
     breakdown.msgsUser       = (text.match(/"type"\s*:\s*"user"/g) ?? []).length;
     breakdown.msgsAssistant  = (text.match(/"type"\s*:\s*"assistant"/g) ?? []).length;
     breakdown.toolUses       = (text.match(/"type"\s*:\s*"tool_use"/g) ?? []).length;
     breakdown.toolResults    = (text.match(/"type"\s*:\s*"tool_result"/g) ?? []).length;
     breakdown.systemReminders = (text.match(/<system-reminder>/g) ?? []).length;
+    // Current context size = input + cache_read + cache_create on the LAST
+    // usage block. Each assistant message's usage describes the context
+    // window for THAT call; summing across calls double-counts cached
+    // prefixes and explodes past the real ceiling. Take the most recent.
+    const re = /"usage"\s*:\s*\{([^}]+)\}/g;
+    const grab = (blob, key) => {
+      const km = blob.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
+      return km ? Number(km[1]) : 0;
+    };
+    let lastBlob = null;
+    for (const m of text.matchAll(re)) lastBlob = m[1];
+    if (lastBlob) {
+      breakdown.currentContextTokens =
+        grab(lastBlob, "input_tokens") +
+        grab(lastBlob, "cache_read_input_tokens") +
+        grab(lastBlob, "cache_creation_input_tokens");
+    }
     return breakdown;
   } catch { return null; }
+}
+
+/** Encode an absolute path the way CC stores it under
+ *  ~/.claude/projects/<slug>/. Drive letters, colons, and path separators
+ *  are flattened to "-" so the slug survives as a single directory name. */
+function ccProjectSlug(cwd) {
+  if (!cwd) return "";
+  // Replace path separators and the Windows drive colon. Match CC's own
+  // encoding: every \\ /  :  →  -  (no collapsing of adjacent dashes).
+  return resolve(cwd).replace(/[\\/:]/g, "-");
 }
 
 async function scanClaudeMdFiles(cwd) {
@@ -240,32 +266,46 @@ async function scanClaudeMdFiles(cwd) {
   const found = [];
   const seen = new Set();
   const home = homedir();
-  // Walk up from cwd to home (or root). At each dir, check for CLAUDE.md
-  // and .claude/CLAUDE.md.
+  const push = async (p) => {
+    if (seen.has(p)) return;
+    seen.add(p);
+    try {
+      const s = await stat(p);
+      if (s.isFile() && s.size > 0) found.push({ path: p, bytes: s.size });
+    } catch {}
+  };
+  // Walk up from cwd to filesystem root. At each dir, check for the
+  // canonical CC memory filenames plus CLAUDE.local.md (user-private).
   let dir = resolve(cwd);
-  for (let depth = 0; depth < 12; depth++) {
-    for (const rel of ["CLAUDE.md", join(".claude", "CLAUDE.md")]) {
-      const p = join(dir, rel);
-      if (seen.has(p)) continue;
-      seen.add(p);
-      try {
-        const s = await stat(p);
-        if (s.isFile()) found.push({ path: p, bytes: s.size });
-      } catch {}
+  for (let depth = 0; depth < 16; depth++) {
+    for (const rel of [
+      "CLAUDE.md",
+      "CLAUDE.local.md",
+      join(".claude", "CLAUDE.md"),
+      join(".claude", "CLAUDE.local.md"),
+    ]) {
+      await push(join(dir, rel));
     }
     const parent = pdirname(dir);
     if (parent === dir) break;
-    if (dir === home) break;
     dir = parent;
   }
-  // Also check ~/.claude/CLAUDE.md (user-global memory).
-  try {
-    const p = join(home, ".claude", "CLAUDE.md");
-    if (!seen.has(p)) {
-      const s = await stat(p);
-      if (s.isFile()) found.push({ path: p, bytes: s.size });
-    }
-  } catch {}
+  // User-global memory.
+  await push(join(home, ".claude", "CLAUDE.md"));
+  await push(join(home, ".claude", "CLAUDE.local.md"));
+  // Per-project auto-memory: ~/.claude/projects/<slug>/memory/*.md
+  // (plus MEMORY.md index). CC injects these into context for sessions
+  // whose cwd matches the slug.
+  const slug = ccProjectSlug(cwd);
+  if (slug) {
+    const memDir = join(home, ".claude", "projects", slug, "memory");
+    try {
+      const entries = await readdir(memDir);
+      for (const f of entries) {
+        if (f.toLowerCase().endsWith(".md")) await push(join(memDir, f));
+      }
+    } catch {}
+  }
   return found;
 }
 

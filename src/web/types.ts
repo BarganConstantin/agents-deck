@@ -35,6 +35,10 @@ export interface ContextBreakdown {
   toolUses: number;
   toolResults: number;
   systemReminders: number;
+  /** Tokens loaded into the model on the most recent assistant turn —
+   *  the actual current context size. Sum-across-calls double-counts the
+   *  cached prefix every turn, so we read the LAST usage block instead. */
+  currentContextTokens: number;
   claudeMdFiles: Array<{ path: string; bytes: number }>;
 }
 

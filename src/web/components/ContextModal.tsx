@@ -17,9 +17,8 @@ function fmtKB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-export function contextWindowFor(usage: AgentNodeData["usage"]): number {
-  const consumed = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
-  return consumed > CONTEXT_WINDOW_DEFAULT ? CONTEXT_WINDOW_BIG : CONTEXT_WINDOW_DEFAULT;
+export function contextWindowFor(currentContextTokens: number): number {
+  return currentContextTokens > CONTEXT_WINDOW_DEFAULT ? CONTEXT_WINDOW_BIG : CONTEXT_WINDOW_DEFAULT;
 }
 
 interface Props {
@@ -30,10 +29,11 @@ interface Props {
 export default function ContextModal({ agent, onClose }: Props) {
   const ctx = agent.context;
   const usage = agent.usage;
-  const window = contextWindowFor(usage);
-  const consumed = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
-  const pct = Math.min(100, (consumed / window) * 100);
+  const current = ctx?.currentContextTokens ?? 0;
+  const window = contextWindowFor(current);
+  const pct = Math.min(100, (current / window) * 100);
   const cost = costForUsage(usage, agent.model);
+  const cumulative = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
 
   return (
     <div className="ctx-modal-backdrop" onClick={onClose} role="presentation">
@@ -52,15 +52,17 @@ export default function ContextModal({ agent, onClose }: Props) {
           </div>
           <div className="ctx-window-meta">
             <span className="ctx-window-pct">{pct.toFixed(1)}%</span>
-            <span className="ctx-window-num">{fmtN(consumed)} / {fmtN(window)} tok</span>
+            <span className="ctx-window-num">{fmtN(current)} / {fmtN(window)} tok (current turn)</span>
           </div>
         </section>
 
+        <h3 className="ctx-section-title">Cumulative usage · whole session</h3>
         <div className="ctx-grid">
           <Row label="input tokens"        val={fmtN(usage.inputTokens)} />
           <Row label="output tokens"       val={fmtN(usage.outputTokens)} />
           <Row label="cache reads"         val={fmtN(usage.cacheReadTokens)} />
           <Row label="cache writes"        val={fmtN(usage.cacheCreateTokens)} />
+          <Row label="cumulative total"    val={fmtN(cumulative)} />
           <Row label="estimated cost"      val={fmtCost(cost.total)} accent />
         </div>
 
@@ -102,15 +104,14 @@ function Row({ label, val, accent }: { label: string; val: string; accent?: bool
 
 /** Compact donut indicator — used on the root agent's node header. */
 interface DonutProps {
-  usage: AgentNodeData["usage"];
+  currentContextTokens: number;
   size?: number;
   onClick?: () => void;
   title?: string;
 }
-export function ContextDonut({ usage, size = 26, onClick, title }: DonutProps) {
-  const window = contextWindowFor(usage);
-  const consumed = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
-  const pct = Math.min(1, consumed / window);
+export function ContextDonut({ currentContextTokens, size = 26, onClick, title }: DonutProps) {
+  const window = contextWindowFor(currentContextTokens);
+  const pct = Math.min(1, currentContextTokens / window);
   const r = size / 2 - 3;
   const c = size / 2;
   const circ = 2 * Math.PI * r;
@@ -122,7 +123,7 @@ export function ContextDonut({ usage, size = 26, onClick, title }: DonutProps) {
       type="button"
       className="ctx-donut"
       onClick={onClick}
-      title={title ?? `context: ${(pct * 100).toFixed(1)}% of ${window.toLocaleString()}`}
+      title={title ?? `context: ${currentContextTokens.toLocaleString()} / ${window.toLocaleString()} (${(pct * 100).toFixed(1)}%)`}
       aria-label="Show context breakdown"
     >
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
