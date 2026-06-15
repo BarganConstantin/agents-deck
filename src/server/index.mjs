@@ -502,12 +502,21 @@ function handleSse(req, res) {
   });
   res.write(`retry: 1500\n\n`);
 
-  // Resume: replay events after Last-Event-ID
+  // Resume: replay events after Last-Event-ID. Marked with `replay:true`
+  // on the envelope so the client can suppress turn-cleanup side effects
+  // (exitAt stamping, autofit churn) until the live stream takes over.
+  // Without this the reducer's UserPromptSubmit handler treats replayed
+  // events as a real new turn — hiding prior-turn subagents using the
+  // event's stale receivedAt, which collides with wall-clock visibility
+  // gates and yields the "nodes appear then vanish" symptom on refresh.
   const lastId = Number(req.headers["last-event-id"] ?? 0);
   for (const e of events) {
     if (e.seq <= lastId) continue;
-    res.write(`id: ${e.seq}\nevent: hook\ndata: ${JSON.stringify(e)}\n\n`);
+    const tagged = { ...e, replay: true };
+    res.write(`id: ${e.seq}\nevent: hook\ndata: ${JSON.stringify(tagged)}\n\n`);
   }
+  // Sentinel: tells client "ring buffer drained, live stream starts now".
+  res.write(`event: replay-end\ndata: {}\n\n`);
 
   sseClients.add(res);
   const ping = setInterval(() => {

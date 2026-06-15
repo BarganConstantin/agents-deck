@@ -84,6 +84,11 @@ export interface HookEnvelope {
   receivedAt: number;
   source: string;
   payload: HookPayload;
+  /** Server stamps `true` on events re-sent during the SSE-connect ring-
+   *  buffer drain. The reducer uses this to suppress turn-cleanup logic
+   *  (e.g. retiring prior-turn subagents on UserPromptSubmit) so refreshing
+   *  the page doesn't make every past subagent vanish. */
+  replay?: boolean;
 }
 
 /** Loose shape - different Claude Code hook events deliver different keys. */

@@ -492,35 +492,44 @@ function Inner() {
     return () => window.clearTimeout(id);
   }, [rf, restoredViewport]);
 
-  // SSE subscription
+  // SSE subscription.
   //
-  // Replay handling: the server replays its ring buffer on connect. Each
-  // event carries its ORIGINAL receivedAt timestamp — minutes/hours old.
-  // The reducer treats `now = env.receivedAt`, so on a replayed
-  // UserPromptSubmit it stamps `exitAt` on prior-turn subagents with that
-  // stale time. Visibility (isAgentVisible) compares to wall-clock
-  // Date.now(), so `now - exitAt >> EXIT_ANIM_MS` immediately → those
-  // subagents get filtered out on the very next render.
+  // Replay handling: on connect the server drains its ring buffer over the
+  // same SSE channel before live events. Each replayed envelope is tagged
+  // `replay: true`; a `replay-end` sentinel marks the boundary. We do two
+  // things differently for replay traffic:
+  //   1) the reducer sees the flag and skips turn-cleanup side effects
+  //      (UserPromptSubmit stamping exitAt with a stale receivedAt, which
+  //      collided with the wall-clock visibility gate and made prior-turn
+  //      subagents flash visible then vanish);
+  //   2) the SSE handler coalesces renders during replay — one render at
+  //      replay-end, then live events render synchronously as before.
   //
-  // The intended end-state (stale subagents hidden) is correct. The bug
-  // is purely visual: rerender() runs after EVERY event during replay, so
-  // the user sees subagents flash visible (after SubagentStop applied,
-  // before the trailing UserPromptSubmit stamps exitAt), then vanish.
-  // Fix: for stale events (receivedAt much older than wall clock), skip
-  // immediate rerender and coalesce into one debounced render once the
-  // stream goes quiet. Live events render synchronously as before.
+  // Fallback heuristic (`Date.now() - receivedAt > 30s`) covers older
+  // servers without the replay flag.
+  const replayActiveRef = useRef<boolean>(true);
   const replayRenderTimerRef = useRef<number | null>(null);
   useEffect(() => {
     const es = new EventSource("/events");
     es.addEventListener("open", () => { setLive(true); setEverConnected(true); });
     es.addEventListener("error", () => setLive(false));
+    es.addEventListener("replay-end", () => {
+      replayActiveRef.current = false;
+      if (replayRenderTimerRef.current != null) {
+        window.clearTimeout(replayRenderTimerRef.current);
+        replayRenderTimerRef.current = null;
+      }
+      rerender();
+    });
     es.addEventListener("hook", (e) => {
       try {
         const env: HookEnvelope = JSON.parse((e as MessageEvent).data);
         if (paused) { queueRef.current.push(env); return; }
         stateRef.current = applyEvent(stateRef.current, env);
-        const isStale = Date.now() - env.receivedAt > 30_000;
-        if (isStale) {
+        const isReplay = env.replay === true
+          || replayActiveRef.current
+          || Date.now() - env.receivedAt > 30_000;
+        if (isReplay) {
           if (replayRenderTimerRef.current != null) {
             window.clearTimeout(replayRenderTimerRef.current);
           }
@@ -529,7 +538,6 @@ function Inner() {
             rerender();
           }, 120);
         } else {
-          // Live event — flush any pending replay render and render now.
           if (replayRenderTimerRef.current != null) {
             window.clearTimeout(replayRenderTimerRef.current);
             replayRenderTimerRef.current = null;

@@ -414,7 +414,7 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       // request. Recently-finished subagents are spared so a fast follow-up
       // prompt while bursts are still settling doesn't yank them.
       //
-      // Skip the exit-stamp entirely when processing a stale (replayed) event:
+      // Skip the exit-stamp entirely when processing a replayed event:
       // exitAt would be set to event time (minutes/hours old), and the
       // visibility gate compares to wall-clock Date.now() — `now - exitAt >>
       // EXIT_ANIM_MS` instantly hides every subagent that wrapped before its
@@ -423,9 +423,13 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       // UserPromptSubmit). The intent of this block — "focus on current
       // turn" — only makes sense for live events; replayed ones are
       // reconstructing the past, where prior turns should stay on canvas.
-      const isStaleReplay = Date.now() - now > 30_000;
+      //
+      // Server tags ring-buffer events with `replay: true`; we also fall
+      // back to a stale-timestamp heuristic in case the flag is ever
+      // missing (older server, custom ingest path).
+      const isReplay = env.replay === true || Date.now() - now > 30_000;
       const EXIT_GRACE_MS = 1500;
-      if (!isStaleReplay) {
+      if (!isReplay) {
         for (const other of state.agents.values()) {
           if (
             other.sessionId === sessionId && other.kind === "subagent" &&
