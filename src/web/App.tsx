@@ -482,16 +482,9 @@ function Inner() {
         const env: HookEnvelope = JSON.parse((e as MessageEvent).data);
         if (paused) { queueRef.current.push(env); return; }
         stateRef.current = applyEvent(stateRef.current, env);
-        // Trigger the session recap modal on natural session end — only
-        // for live (non-replay) events and only if the user hasn't already
-        // dismissed this session's summary.
-        if (env.source !== "replay") {
-          const name = env.payload?.hook_event_name;
-          const sid = env.payload?.session_id;
-          if ((name === "Stop" || name === "SessionEnd") && sid && !dismissedSummariesRef.current.has(sid)) {
-            setSummaryFor(prev => prev ?? sid);
-          }
-        }
+        // Session recap modal is opt-in only — user opens it by clicking
+        // the "summary" button on a done root node. Auto-opening on
+        // Stop/SessionEnd interrupted live work too aggressively.
         rerender();
       } catch { /* ignore */ }
     });
