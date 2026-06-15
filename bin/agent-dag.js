@@ -3,10 +3,14 @@
 import { resolve, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..");
+const PKG_VERSION = (() => {
+  try { return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ?? "0.0.0"; }
+  catch { return "0.0.0"; }
+})();
 
 const argv = process.argv.slice(2);
 const flags = parseArgs(argv);
@@ -70,7 +74,7 @@ async function printBanner() {
 
   // Each entry: [rendered string with ANSI, visible char count, left-border color, right-border color]
   const rows = [
-    { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agent-dag${C.reset}  ${C.dim}v1.0.4${C.reset}`, vis: 22, lc: C.blue,    rc: C.blue    },
+    { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agent-dag${C.reset}  ${C.dim}v${PKG_VERSION}${C.reset}`, vis: 17 + PKG_VERSION.length, lc: C.blue,    rc: C.blue    },
     { l: `  ${C.dim}live DAG · Claude Code agents${C.reset}`,                                                   vis: 31, lc: C.magenta, rc: C.magenta },
     { l: `  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}`,               vis: 34, lc: C.bMag,    rc: C.bMag    },
   ];
