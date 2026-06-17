@@ -175,12 +175,23 @@ function ToolRateSpark({ tools, now }: { tools: ToolCall[]; now: number }) {
   );
 }
 
-/** Render "claude-opus-4-7-20250101" → "Opus 4.7", "claude-haiku-4-5" → "Haiku 4.5".
+/** Render model ids into compact display labels:
+ *    "claude-opus-4-7-20250101" → "Opus 4.7"
+ *    "claude-haiku-4-5"         → "Haiku 4.5"
+ *    "gpt-5.3-codex"            → "GPT-5.3 Codex"
+ *    "gpt-5"                    → "GPT-5"
+ *    "o3-mini"                  → "o3-mini"
  *  Falls back to the raw id if the shape is unfamiliar so we never hide info. */
 export function shortModel(id: string): string {
-  const m = id.match(/^claude[-_](opus|sonnet|haiku|fable)[-_](\d+(?:[-_.]\d+)*)/i);
-  if (!m) return id;
-  const family = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
-  const version = m[2].replace(/[-_]/g, ".");
-  return `${family} ${version}`;
+  const claude = id.match(/^claude[-_](opus|sonnet|haiku|fable|mythos)[-_](\d+(?:[-_.]\d+)*)/i);
+  if (claude) {
+    const family = claude[1][0].toUpperCase() + claude[1].slice(1).toLowerCase();
+    const version = claude[2].replace(/[-_]/g, ".");
+    return `${family} ${version}`;
+  }
+  const gptCodex = id.match(/^gpt[-_](\d+(?:[-_.]\d+)*)[-_]codex\b/i);
+  if (gptCodex) return `GPT-${gptCodex[1].replace(/[-_]/g, ".")} Codex`;
+  const gpt = id.match(/^gpt[-_](\d+(?:[-_.]\d+)*)/i);
+  if (gpt) return `GPT-${gpt[1].replace(/[-_]/g, ".")}`;
+  return id;
 }

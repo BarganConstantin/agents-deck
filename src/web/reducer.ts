@@ -40,13 +40,18 @@ function addUsage(into: TokenUsage, add: TokenUsage): void {
   into.cacheCreateTokens += add.cacheCreateTokens;
 }
 
-/** Recursively look for a `model` string anywhere in the payload — CC
- *  surfaces it on Stop, PostToolUse response envelopes, message bodies, etc.,
- *  in different keys per event. Only accept ids that look like Claude models. */
+/** Model ids we recognise. Claude family: claude-* . Codex family: gpt-*,
+ *  o*-, codex-* . The regex is permissive on purpose — Codex publishes new
+ *  slugs frequently and we'd rather pick up an unknown gpt variant than
+ *  miss it. */
+const MODEL_PATTERN = /^(?:claude[-_]|gpt[-_]|o\d|codex[-_])/i;
+
+/** Recursively look for a `model` string anywhere in the payload — both
+ *  CCs surface it on different keys per event. Accept Claude or Codex ids. */
 function extractModel(node: unknown, depth = 0): string | null {
   if (!node || typeof node !== "object" || depth > 6) return null;
   const obj = node as Record<string, unknown>;
-  if (typeof obj.model === "string" && /^claude[-_]/i.test(obj.model)) {
+  if (typeof obj.model === "string" && MODEL_PATTERN.test(obj.model)) {
     return obj.model;
   }
   for (const v of Object.values(obj)) {
@@ -381,10 +386,18 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     if (u) {
       const root = state.agents.get(sessionId);
       if (root) {
+        // Codex emits `cached_input_tokens` (single underscore); Claude
+        // transcripts use `cache_read_input_tokens` / `cache_creation_…`.
+        // Accept both shapes — whichever provider's reader emitted this.
         root.usage.inputTokens = Number(u.input_tokens ?? 0);
         root.usage.outputTokens = Number(u.output_tokens ?? 0);
-        root.usage.cacheReadTokens = Number(u.cache_read_input_tokens ?? 0);
+        root.usage.cacheReadTokens = Number(
+          u.cache_read_input_tokens ?? u.cached_input_tokens ?? 0,
+        );
         root.usage.cacheCreateTokens = Number(u.cache_creation_input_tokens ?? 0);
+        if (typeof u.reasoning_output_tokens === "number") {
+          root.usage.reasoningOutputTokens = Number(u.reasoning_output_tokens);
+        }
       }
     }
     return state;
@@ -392,8 +405,20 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
 
   const owner = resolveOwner(state, p, now);
 
+  // Stamp provider on first observation. Defaults to "claude" for legacy
+  // events recorded before multi-provider support.
+  if (!owner.provider) {
+    owner.provider = p.provider === "codex" ? "codex" : "claude";
+  }
+
+  // Codex passes the actual context window in session_meta-derived payloads;
+  // when present, prefer it over pricing.ts's static table.
+  if (typeof p.model_context_window === "number" && p.model_context_window > 0) {
+    owner.contextWindow = p.model_context_window;
+  }
+
   // Snapshot model whenever it shows up in the payload — we want the most
-  // recent observation per owner since CC can switch models mid-session.
+  // recent observation per owner since either CLI can switch models mid-session.
   const observedModel = extractModel(p);
   if (observedModel) owner.model = observedModel;
 

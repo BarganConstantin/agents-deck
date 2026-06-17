@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// agent-dag hook forwarder. Claude Code invokes this as a command hook.
-// It reads stdin (CC event JSON), finds the matching agent-dag server via
-// per-workspace discovery files in ~/.claude/agent-dag/, and forwards the
-// payload to it via HTTP POST. Dead instances are cleaned up.
+// agent-dag hook forwarder. Invoked by Claude Code or Codex CLI as a command
+// hook. Reads stdin (event JSON), tags it with the provider passed via
+// `--provider <name>`, finds the matching agent-dag server via per-workspace
+// discovery files in ~/.claude/agent-dag/, and POSTs the payload. Dead
+// instances are cleaned up.
 "use strict";
 
 const fs = require("fs");
@@ -10,11 +11,20 @@ const path = require("path");
 const http = require("http");
 const os = require("os");
 
-// Hard cap so a stuck server can never wedge Claude Code.
+// Hard cap so a stuck server can never wedge the host CLI.
 setTimeout(() => process.exit(0), 1500);
 
+// Single shared discovery dir — Claude Code and Codex CLI both register here
+// via the installer. Lets one running agent-dag server receive both providers.
 const DIR = path.join(os.homedir(), ".claude", "agent-dag");
-const IS_WIN = process.platform === "win32";
+
+function parseProvider(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--provider" && i + 1 < argv.length) return argv[i + 1];
+  }
+  return "claude";
+}
+const PROVIDER = parseProvider(process.argv.slice(2));
 
 function normPath(p) {
   let r = path.resolve(p);
@@ -23,8 +33,6 @@ function normPath(p) {
 }
 
 function isAlive(pid) {
-  // process.kill(pid, 0) works on Windows in Node 18+:
-  //   ESRCH => no such process, EPERM => exists but not ours (still alive).
   try { process.kill(pid, 0); return true; }
   catch (e) { return e && e.code === "EPERM"; }
 }
@@ -33,9 +41,17 @@ let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", c => { input += c; });
 process.stdin.on("end", () => {
-  let cwd;
-  try { cwd = JSON.parse(input).cwd; } catch { return process.exit(0); }
+  let parsed;
+  try { parsed = JSON.parse(input); } catch { return process.exit(0); }
+  const cwd = parsed && parsed.cwd;
   if (!cwd) return process.exit(0);
+
+  // Stamp provider so the server / reducer can branch on it without
+  // re-sniffing payload shape.
+  if (parsed && typeof parsed === "object" && !parsed.provider) {
+    parsed.provider = PROVIDER;
+  }
+  const taggedInput = JSON.stringify(parsed);
 
   const resolvedCwd = normPath(cwd);
 
@@ -56,7 +72,6 @@ process.stdin.on("end", () => {
       continue;
     }
 
-    // Empty workspace = match-all (used by `agent-dag --all`).
     if (d.workspace === "") {
       matches.push({ d, wsLen: 0 });
       continue;
@@ -69,7 +84,6 @@ process.stdin.on("end", () => {
 
   if (!matches.length) return process.exit(0);
 
-  // Most specific workspace wins.
   matches.sort((a, b) => b.wsLen - a.wsLen);
   const bestLen = matches[0].wsLen;
   const targets = matches.filter(m => m.wsLen === bestLen);
@@ -90,7 +104,7 @@ process.stdin.on("end", () => {
     }, res => { res.resume(); res.on("end", finish); });
     req.on("error", finish);
     req.on("timeout", () => req.destroy());
-    req.write(input);
+    req.write(taggedInput);
     req.end();
   }
 });

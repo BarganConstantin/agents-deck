@@ -47,7 +47,19 @@ const RATES: Array<{ match: RegExp; rates: ModelRates }> = [
   // Haiku 3.5 (retired except Bedrock/Vertex) — $0.80 / $4
   { match: /^claude[-_]haiku[-_]3[-_.]5\b/i,
     rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
+
+  // Codex / GPT-5 family — pricing intentionally null. Token tracking
+  // works (server reads ~/.codex/sessions/...), but the agent-dag UI hides
+  // the $ pill for Codex sessions until we wire OpenAI pricing in.
+  // null rates short-circuits costForUsage → returns zeros, hiding cost UI.
 ];
+
+/** Recognise Codex / OpenAI model ids so the UI can tag the model display
+ *  without inventing a price. Returns true for gpt-*, codex-*, o-series. */
+export function isCodexModel(modelId: string | undefined): boolean {
+  if (!modelId) return false;
+  return /^(?:gpt[-_]|codex[-_]|o\d)/i.test(modelId);
+}
 
 export function ratesForModel(modelId: string | undefined): ModelRates | null {
   if (!modelId) return null;
@@ -90,9 +102,21 @@ const BIG_CONTEXT_PATTERNS: RegExp[] = [
   /^claude[-_](fable|mythos)[-_]5\b/i,        // Fable/Mythos 5
 ];
 
+// Codex context-window defaults when the live `model_context_window` value
+// from session_meta isn't on the agent node yet. The CLI emits the real
+// number on task_started — these are only a first-paint guess.
+const CODEX_CONTEXT_DEFAULTS: Array<{ match: RegExp; window: number }> = [
+  { match: /^gpt[-_]5[-_.]3[-_.]codex/i, window: 256_000 },
+  { match: /^gpt[-_]5[-_.]2[-_.]codex/i, window: 256_000 },
+  { match: /^gpt[-_]5[-_.]\d+[-_.]codex/i, window: 256_000 },
+  { match: /^gpt[-_]5/i,                  window: 200_000 },
+  { match: /^o\d/i,                       window: 200_000 },
+];
+
 export function contextWindowForModel(modelId: string | undefined): number {
   if (!modelId) return CONTEXT_WINDOW_DEFAULT;
   for (const p of BIG_CONTEXT_PATTERNS) if (p.test(modelId)) return CONTEXT_WINDOW_BIG;
+  for (const e of CODEX_CONTEXT_DEFAULTS) if (e.match.test(modelId)) return e.window;
   return CONTEXT_WINDOW_DEFAULT;
 }
 

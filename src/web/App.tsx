@@ -1281,15 +1281,17 @@ function EmptyHero({ live, everConnected }: { live: boolean; everConnected: bool
 function agentNoneCopy() {
   return (
     <>
-      <h2>Waiting for Claude Code</h2>
+      <h2>Waiting for Claude Code or Codex</h2>
       <p>
-        Run <code>claude</code> in any folder. As soon as a session sends an
-        event, a node appears here and grows as subagents fork and tools are
-        called.
+        Run <code>claude</code> or <code>codex</code> in any folder. As soon as
+        a session sends an event, a node appears here and grows as subagents
+        fork and tools are called.
       </p>
       <p className="hint-row">
         Not seeing anything? Make sure <code>agent-dag</code> is running and that
-        the hook is installed in <code>~/.claude/settings.json</code>.
+        hooks are installed in <code>~/.claude/settings.json</code> and{" "}
+        <code>~/.codex/hooks.json</code>. (Codex requires{" "}
+        <code>/hooks</code> trust on first run.)
       </p>
     </>
   );
@@ -1301,8 +1303,9 @@ function EmptyDetail({ count }: { count: number }) {
       <h3>Detail</h3>
       {count === 0 ? (
         <div className="hint">
-          No data yet. Start a Claude Code session anywhere on this machine —
-          agent-dag is in <code>--all</code> mode and listens to every workspace.
+          No data yet. Start a Claude Code or Codex session anywhere on this
+          machine — agent-dag is in <code>--all</code> mode and listens to every
+          workspace.
         </div>
       ) : (
         <div className="empty">Click an agent to see its tools.</div>

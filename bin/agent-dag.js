@@ -21,9 +21,17 @@ if (flags.help) {
 }
 
 if (flags.uninstall) {
-  const { uninstallHooks } = await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-  const r = await uninstallHooks();
-  console.log(r.changed ? "agent-dag: hooks removed from ~/.claude/settings.json" : "agent-dag: no hooks to remove");
+  const { uninstallHooks, hasCodexInstalled } = await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
+  const claude = await uninstallHooks({ provider: "claude" });
+  console.log(claude.changed
+    ? `agent-dag: hooks removed from ${claude.settingsPath}`
+    : "agent-dag: no Claude hooks to remove");
+  if (hasCodexInstalled()) {
+    const codex = await uninstallHooks({ provider: "codex" });
+    console.log(codex.changed
+      ? `agent-dag: hooks removed from ${codex.settingsPath}`
+      : "agent-dag: no Codex hooks to remove");
+  }
   process.exit(0);
 }
 
@@ -38,10 +46,16 @@ const persist = flags.noPersist
   ? null
   : (flags.history ?? join(homedir(), ".claude", "agent-dag", "events.jsonl"));
 
-const { installHooks, writeDiscovery, removeDiscovery } =
+const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
 const { startServer } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
+
+// Codex hooks install when ~/.codex/ exists, unless --no-codex was passed.
+// --codex forces install even if the dir is missing (creates it).
+const wantCodex = flags.noCodex
+  ? false
+  : (flags.codex === true || hasCodexInstalled());
 
 const WEB_DIST = join(PKG_ROOT, "dist", "web", "index.html");
 if (!existsSync(WEB_DIST)) {
@@ -75,7 +89,7 @@ async function printBanner() {
   // Each entry: [rendered string with ANSI, visible char count, left-border color, right-border color]
   const rows = [
     { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agent-dag${C.reset}  ${C.dim}v${PKG_VERSION}${C.reset}`, vis: 17 + PKG_VERSION.length, lc: C.blue,    rc: C.blue    },
-    { l: `  ${C.dim}live DAG · Claude Code agents${C.reset}`,                                                   vis: 31, lc: C.magenta, rc: C.magenta },
+    { l: `  ${C.dim}live DAG · Claude Code + Codex${C.reset}`,                                                  vis: 32, lc: C.magenta, rc: C.magenta },
     { l: `  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}`,               vis: 34, lc: C.bMag,    rc: C.bMag    },
   ];
 
@@ -114,12 +128,22 @@ await printBanner();
 // ── Startup steps ─────────────────────────────────────────────────────────────
 process.stdout.write(`  ${C.dim}workspace :${C.reset} ${workspace === "" ? C.yellow + "(all)" + C.reset : workspace}\n`);
 
-let sp = spinner("installing hooks…");
-const { settingsPath, hookPath } = await installHooks();
-sp.stop(true, `hooks installed  ${C.dim}→ ${hookPath}${C.reset}`);
+let sp = spinner("installing Claude hooks…");
+const claudeInstall = await installHooks({ provider: "claude" });
+sp.stop(true, `Claude hooks     ${C.dim}→ ${claudeInstall.hookPath}${C.reset}`);
+
+// Codex CLI hooks never fire on Windows (sandbox refuses to spawn the hook
+// command). Instead the server tails Codex's rollout JSONL files directly, so
+// there's nothing to install and no /hooks trust step. We just confirm Codex
+// is present and let the watcher pick up sessions.
+if (wantCodex) {
+  process.stdout.write(`  ${C.green}✓${C.reset} Codex sessions    ${C.dim}→ watching ${join(homedir(), ".codex", "sessions")}${C.reset}\n`);
+} else {
+  process.stdout.write(`  ${C.dim}Codex watch skipped (no ~/.codex/, or --no-codex)${C.reset}\n`);
+}
 
 sp = spinner("starting server…");
-const server = await startServer({ port, persist }).catch(err => {
+const server = await startServer({ port, persist, workspace, codex: wantCodex }).catch(err => {
   sp.stop(false, `server failed: ${err.message}`);
   process.exit(1);
 });
@@ -175,12 +199,14 @@ function parseArgs(args) {
     else if (a === "--all") out.all = true; // legacy no-op (now default)
     else if (a === "--no-persist") out.noPersist = true;
     else if (a === "--history") out.history = args[++i];
+    else if (a === "--codex") out.codex = true;
+    else if (a === "--no-codex") out.noCodex = true;
   }
   return out;
 }
 
 function printHelp() {
-  process.stdout.write(`agent-dag — live DAG of Claude Code agents
+  process.stdout.write(`agent-dag — live DAG of Claude Code + Codex agents
 
 Usage:
   agent-dag [options]
@@ -190,10 +216,12 @@ Options:
       --no-open            Don't open the browser automatically
       --workspace <path>   Only capture sessions whose cwd is inside <path>
       --scope              Restrict to current working directory
-      --all                Capture every Claude Code session (default)
+      --all                Capture every session (default)
       --history <path>     Override events log file (default: ~/.claude/agent-dag/events.jsonl)
       --no-persist         Don't write or replay events log (RAM-only)
-      --uninstall          Remove agent-dag hook entries from ~/.claude/settings.json
+      --codex              Force-install Codex hooks even if ~/.codex/ missing
+      --no-codex           Skip Codex hook install (Claude only)
+      --uninstall          Remove agent-dag hook entries (both providers)
   -h, --help               Show this help
 `);
 }

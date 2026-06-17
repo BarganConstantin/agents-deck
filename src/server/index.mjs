@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { readFile, stat, mkdir, appendFile, open, truncate, readdir, unlink } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { extname, join, resolve, dirname as pdirname } from "node:path";
+import { extname, join, resolve, dirname as pdirname, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -78,12 +78,12 @@ const pendingTranscriptReads = new Set(); // sessionId currently being read
 const modelLastReadAt = new Map();        // sessionId -> ms timestamp (re-read throttle)
 const MODEL_READ_THROTTLE_MS = 2500;
 
+/** Read the main session JSONL. Returns the root model and any
+ *  legacy-schema subagent models (older CC versions kept subagent blocks
+ *  inline with `isSidechain:true` + `parentToolUseID`). Current CC versions
+ *  store subagents in `<sessionDir>/subagents/agent-<id>.jsonl` — those are
+ *  handled by `readSubagentModelsFromDir` below. */
 async function readModelFromTranscript(path) {
-  // Returns { rootModel, subagentModels } — root is the most recent
-  // non-sidechain assistant model, subagents are attributed by the Task
-  // tool_use id that owns them. CC transcripts mark subagent messages
-  // with `isSidechain:true` and (for current schemas) a `parentToolUseID`
-  // or `parent_tool_use_id` referencing the Task invocation.
   try {
     const s = await stat(path);
     if (s.size === 0) return null;
@@ -98,10 +98,7 @@ async function readModelFromTranscript(path) {
     }
     let rootModel = null;
     const subagentModels = {};
-    let anyModelSeen = null; // regex-style fallback — the last claude-* model
-                             // we encountered, regardless of sidechain flag.
-                             // Keeps the old behavior alive when the JSONL
-                             // schema doesn't expose `isSidechain`.
+    let anyModelSeen = null;
     for (const line of text.split("\n")) {
       if (!line) continue;
       let obj;
@@ -120,15 +117,65 @@ async function readModelFromTranscript(path) {
         rootModel = model;
       }
     }
-    // Fallback: if no `isSidechain:false` entry was found (older schema, or
-    // a transcript that only contains sidechain blocks), use the last-seen
-    // model so the root card still shows SOMETHING instead of going blank.
     if (!rootModel) rootModel = anyModelSeen;
     if (!rootModel && Object.keys(subagentModels).length === 0) return null;
     return { rootModel, subagentModels };
   } catch {
     return null;
   }
+}
+
+/** Newer CC schema (~2026-06): each subagent turn writes its OWN file at
+ *  `<projects>/<slug>/<sessionId>/subagents/agent-<agentId>.jsonl` with a
+ *  sidecar `.meta.json` carrying `{agentType, description}`. The hook
+ *  payload's `agent_id` matches the file's <agentId>, so the reducer can
+ *  attribute via the existing `subagentModels` map (it keys by parentToolUseId
+ *  but the reducer looks up `${sessionId}::${key}` and the subagent node id
+ *  is built from `agent_id` — identical lookup either way).
+ *
+ *  Returns { [agentId]: model } scanning every agent-*.jsonl file in dir. */
+async function readSubagentModelsFromDir(transcriptPath) {
+  // Subagent dir sits next to the main jsonl: <dir>/<sessionId>/subagents/
+  // Derive from transcript_path by stripping the .jsonl suffix.
+  if (!transcriptPath || typeof transcriptPath !== "string") return null;
+  const sessionDir = transcriptPath.replace(/\.jsonl$/i, "");
+  const subDir = join(sessionDir, "subagents");
+  let entries;
+  try { entries = await readdir(subDir); } catch { return null; }
+  const models = {};
+  for (const f of entries) {
+    if (!/^agent-([0-9a-f]+)\.jsonl$/i.test(f)) continue;
+    const agentId = f.replace(/^agent-/, "").replace(/\.jsonl$/i, "");
+    const full = join(subDir, f);
+    try {
+      const s = await stat(full);
+      if (s.size === 0) continue;
+      const fh = await open(full, "r");
+      let text;
+      try {
+        const buf = Buffer.alloc(s.size);
+        await fh.read(buf, 0, s.size, 0);
+        text = buf.toString("utf8");
+      } finally {
+        await fh.close();
+      }
+      // Last-seen claude-* model wins — subagents may switch model mid-turn
+      // (Sonnet → Haiku for tool-call fallback etc.).
+      let last = null;
+      for (const line of text.split("\n")) {
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        const msg = obj && obj.message;
+        const m = (msg && typeof msg.model === "string" && /^claude[-_]/i.test(msg.model)) ? msg.model
+                : (typeof obj.model === "string" && /^claude[-_]/i.test(obj.model))         ? obj.model
+                : null;
+        if (m) last = m;
+      }
+      if (last) models[agentId] = last;
+    } catch { /* skip unreadable file */ }
+  }
+  return Object.keys(models).length ? models : null;
 }
 
 function maybeResolveModel(payload) {
@@ -145,10 +192,13 @@ function maybeResolveModel(payload) {
   if (now - last < MODEL_READ_THROTTLE_MS) return;
   modelLastReadAt.set(sid, now);
   pendingTranscriptReads.add(sid);
-  readModelFromTranscript(tp)
-    .then(result => {
-      if (!result) return;
-      const { rootModel, subagentModels } = result;
+  Promise.all([readModelFromTranscript(tp), readSubagentModelsFromDir(tp)])
+    .then(([result, dirSubs]) => {
+      const rootModel = result?.rootModel ?? null;
+      // Merge legacy (inline isSidechain) + new (subagents/ dir) maps. Dir
+      // wins on conflict since current CC only writes to the dir.
+      const subagentModels = { ...(result?.subagentModels ?? {}), ...(dirSubs ?? {}) };
+      if (!rootModel && Object.keys(subagentModels).length === 0) return;
       const prev = modelBySession.get(sid);
       const subsSig = JSON.stringify(subagentModels);
       if (prev && prev.rootModel === rootModel && prev.subsSig === subsSig) return;
@@ -391,6 +441,385 @@ function maybeResolveContext(payload) {
     .finally(() => pendingContextReads.delete(sid));
 }
 
+// ─── Codex transcript enrichment ──────────────────────────────────────────
+// Codex CLI hook payloads carry `session_id` but no transcript path. Sessions
+// are persisted to ~/.codex/sessions/YYYY/MM/DD/rollout-<sid>.jsonl with one
+// JSON object per line: {type, payload}. Token usage shows up in
+//   {type:"event_msg", payload:{type:"token_count",
+//     info:{total_token_usage:{input_tokens, cached_input_tokens,
+//                              output_tokens, reasoning_output_tokens,
+//                              total_tokens}}}}
+// We resolve the rollout path lazily (cache sid→path), then read the tail
+// for usage + model. CODEX_HOME overrides ~/.codex.
+const CODEX_HOME = process.env.CODEX_HOME
+  ? resolve(process.env.CODEX_HOME)
+  : join(homedir(), ".codex");
+const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
+const codexRolloutPathBySid = new Map();
+const lastCodexUsageReadAt = new Map();
+const pendingCodexUsageReads = new Set();
+const CODEX_READ_THROTTLE_MS = 2500;
+
+async function findCodexRolloutPath(sid) {
+  const cached = codexRolloutPathBySid.get(sid);
+  if (cached) return cached;
+  // Walk year → month → day → files. Codex includes the sid in the filename
+  // (rollout-...-<sid>.jsonl) so a directory-scoped match is enough.
+  const tryYears = async () => {
+    try { return await readdir(CODEX_SESSIONS_DIR); } catch { return []; }
+  };
+  const years = (await tryYears()).sort().reverse(); // newest first
+  for (const y of years) {
+    let months;
+    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); }
+    catch { continue; }
+    for (const m of months) {
+      let days;
+      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); }
+      catch { continue; }
+      for (const d of days) {
+        const dayDir = join(CODEX_SESSIONS_DIR, y, m, d);
+        let files;
+        try { files = await readdir(dayDir); } catch { continue; }
+        const hit = files.find(f => f.includes(sid) && f.endsWith(".jsonl"));
+        if (hit) {
+          const full = join(dayDir, hit);
+          codexRolloutPathBySid.set(sid, full);
+          return full;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Tail-read a Codex rollout JSONL. Returns the last token_count info block
+ *  plus the most recent observed model + the session's model_context_window
+ *  (set once from task_started). */
+async function readCodexRollout(path) {
+  try {
+    const s = await stat(path);
+    if (s.size === 0) return null;
+    const fh = await open(path, "r");
+    let text;
+    try {
+      const buf = Buffer.alloc(s.size);
+      await fh.read(buf, 0, s.size, 0);
+      text = buf.toString("utf8");
+    } finally {
+      await fh.close();
+    }
+    let lastUsage = null;
+    let model = null;
+    let contextWindow = null;
+    let cwd = null;
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      const type = obj && obj.type;
+      const pl = obj && obj.payload;
+      if (type === "session_meta" && pl) {
+        if (typeof pl.cwd === "string") cwd = pl.cwd;
+        // session_meta sometimes carries the model in newer Codex versions.
+        if (typeof pl.model === "string") model = pl.model;
+      } else if (type === "event_msg" && pl) {
+        if (pl.type === "token_count" && pl.info && pl.info.total_token_usage) {
+          lastUsage = pl.info.total_token_usage;
+        } else if (pl.type === "task_started" && typeof pl.model_context_window === "number") {
+          contextWindow = pl.model_context_window;
+        }
+      } else if (type === "response_item" && pl && typeof pl.model === "string") {
+        // Fallback model source — response items carry the model id.
+        model = pl.model;
+      }
+    }
+    if (!lastUsage && !model && !contextWindow) return null;
+    return { usage: lastUsage, model, contextWindow, cwd };
+  } catch {
+    return null;
+  }
+}
+
+function maybeResolveCodex(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (payload.provider !== "codex") return;
+  const sid = payload.session_id;
+  if (!sid) return;
+  if (pendingCodexUsageReads.has(sid)) return;
+  const now = Date.now();
+  const last = lastCodexUsageReadAt.get(sid) ?? 0;
+  if (now - last < CODEX_READ_THROTTLE_MS) return;
+  lastCodexUsageReadAt.set(sid, now);
+  pendingCodexUsageReads.add(sid);
+  (async () => {
+    const path = await findCodexRolloutPath(sid);
+    if (!path) return;
+    const r = await readCodexRollout(path);
+    if (!r) return;
+    if (r.usage) {
+      pushEvent({
+        hook_event_name: "UsageObserved",
+        session_id: sid,
+        usage: r.usage,
+      }, "internal");
+    }
+    if (r.model) {
+      pushEvent({
+        hook_event_name: "ModelObserved",
+        session_id: sid,
+        model: r.model,
+      }, "internal");
+    }
+    if (r.contextWindow) {
+      // Piggy-back on the model event with the window — reducer reads
+      // model_context_window directly off any payload.
+      pushEvent({
+        hook_event_name: "ModelObserved",
+        session_id: sid,
+        model: r.model ?? undefined,
+        model_context_window: r.contextWindow,
+      }, "internal");
+    }
+  })()
+    .catch(() => {})
+    .finally(() => pendingCodexUsageReads.delete(sid));
+}
+
+// ─── Codex rollout watcher ────────────────────────────────────────────────
+// Codex CLI hooks never fire on Windows — the elevated/unelevated sandbox
+// refuses to spawn the hook command (exit 1, child never runs). So instead of
+// relying on hooks, we tail the rollout JSONL files Codex writes to
+// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl and reconstruct the
+// agent-dag event stream from them. Each rollout line is one append-only JSON
+// object {timestamp, type, payload}; we map the relevant ones to the same
+// synthetic hook payloads the reducer already understands:
+//   session_meta                       → SessionStart
+//   event_msg/user_message             → UserPromptSubmit
+//   response_item/function_call        → PreToolUse
+//   response_item/function_call_output → PostToolUse
+//   event_msg/token_count              → UsageObserved
+//   event_msg/task_started (+window)   → ModelObserved (context window)
+//   turn_context / response_item.model → model snapshot (ModelObserved on change)
+// Events are emitted with source "codex" so pushEvent skips the Claude-only
+// transcript enrichment (which needs transcript_path / hook events) but still
+// persists + broadcasts them exactly like a hook event. This path is entirely
+// additive — the Claude hook flow is untouched.
+const codexFileState = new Map();      // path -> { offset, sid, cwd, skip }
+const codexSessionModel = new Map();   // sid -> last model string
+let codexScanRunning = false;
+let codexWatchTimer = null;
+let codexWorkspace = "";
+
+function codexCwdInWorkspace(cwd) {
+  if (!codexWorkspace) return true;
+  if (!cwd || typeof cwd !== "string") return false;
+  const a = resolve(cwd).toLowerCase();
+  const b = resolve(codexWorkspace).toLowerCase();
+  return a === b || a.startsWith(b + sep.toLowerCase());
+}
+
+// List rollout files from the newest 2 day-directories. New sessions always
+// land in today's dir, so this captures live activity without scanning years
+// of history every tick.
+async function listRecentCodexRollouts() {
+  const out = [];
+  let years;
+  try { years = (await readdir(CODEX_SESSIONS_DIR)).filter(d => /^\d{4}$/.test(d)).sort().reverse(); }
+  catch { return out; }
+  let dayDirs = 0;
+  for (const y of years) {
+    let months;
+    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); } catch { continue; }
+    for (const m of months) {
+      let days;
+      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); } catch { continue; }
+      for (const d of days) {
+        const dir = join(CODEX_SESSIONS_DIR, y, m, d);
+        let files;
+        try { files = await readdir(dir); } catch { continue; }
+        for (const f of files) if (f.endsWith(".jsonl")) out.push(join(dir, f));
+        if (++dayDirs >= 2) return out;
+      }
+    }
+  }
+  return out;
+}
+
+async function readByteRange(path, from, to) {
+  const fh = await open(path, "r");
+  try {
+    const len = to - from;
+    if (len <= 0) return "";
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, from);
+    return buf.toString("utf8");
+  } finally {
+    await fh.close();
+  }
+}
+
+// Read the first complete JSON line of a rollout (the session_meta header)
+// to learn sid + cwd before we start streaming. The header line can be large
+// (base_instructions text runs tens of KB), so we read in growing chunks until
+// we hit the first newline rather than guessing a fixed window.
+async function readCodexHeader(path) {
+  try {
+    const size = (await stat(path)).size;
+    if (size === 0) return null;
+    const CHUNK = 65536;
+    let upto = Math.min(CHUNK, size);
+    let text = "";
+    for (;;) {
+      text = await readByteRange(path, 0, upto);
+      const nl = text.indexOf("\n");
+      if (nl >= 0) {
+        const obj = JSON.parse(text.slice(0, nl));
+        if (obj && obj.type === "session_meta" && obj.payload) {
+          return { sid: obj.payload.id, cwd: typeof obj.payload.cwd === "string" ? obj.payload.cwd : null };
+        }
+        return null;
+      }
+      if (upto >= size) return null;       // no newline in the whole file yet
+      upto = Math.min(upto + CHUNK, size);  // grow and retry
+      if (upto > 4 * 1024 * 1024) return null; // 4MB sanity cap on a single line
+    }
+  } catch {}
+  return null;
+}
+
+// Map one parsed rollout object to a synthetic hook payload (or null to skip).
+// Mutates codexSessionModel and returns { payload, modelEvent } where
+// modelEvent is an optional ModelObserved to emit first when the model changed.
+function codexObjToPayload(obj, sid, cwd) {
+  const type = obj && obj.type;
+  const pl = (obj && obj.payload) || {};
+  const base = { session_id: sid, cwd, provider: "codex" };
+  const model = codexSessionModel.get(sid);
+
+  // Track model from turn_context / response_item before mapping events.
+  if (type === "turn_context" && typeof pl.model === "string") {
+    codexSessionModel.set(sid, pl.model);
+    return null;
+  }
+  if (type === "response_item" && typeof pl.model === "string") {
+    codexSessionModel.set(sid, pl.model);
+  }
+
+  if (type === "event_msg") {
+    if (pl.type === "user_message") {
+      const prompt = typeof pl.message === "string" ? pl.message : "";
+      return { ...base, hook_event_name: "UserPromptSubmit", prompt, model };
+    }
+    if (pl.type === "token_count" && pl.info && pl.info.total_token_usage) {
+      return { ...base, hook_event_name: "UsageObserved", usage: pl.info.total_token_usage, model };
+    }
+    if (pl.type === "task_started" && typeof pl.model_context_window === "number") {
+      return { ...base, hook_event_name: "ModelObserved", model, model_context_window: pl.model_context_window };
+    }
+    return null;
+  }
+  if (type === "response_item") {
+    if (pl.type === "function_call") {
+      let input = pl.arguments;
+      try { input = JSON.parse(pl.arguments); } catch {}
+      return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: input, tool_use_id: pl.call_id, model };
+    }
+    if (pl.type === "function_call_output") {
+      return { ...base, hook_event_name: "PostToolUse", tool_use_id: pl.call_id, model };
+    }
+  }
+  return null;
+}
+
+function emitCodexEvent(payload) {
+  pushEvent(payload, "codex");
+}
+
+// Emit the SessionStart root exactly once per file, lazily — only when the
+// session actually produces an event. This keeps long-dead sessions that were
+// merely on disk at startup from cluttering the canvas with empty roots.
+function ensureCodexRoot(state) {
+  if (state.rootEmitted) return;
+  state.rootEmitted = true;
+  emitCodexEvent({ session_id: state.sid, cwd: state.cwd, provider: "codex", hook_event_name: "SessionStart" });
+}
+
+async function codexScanOnce(firstRun) {
+  if (codexScanRunning) return;
+  codexScanRunning = true;
+  try {
+    const files = await listRecentCodexRollouts();
+    for (const path of files) {
+      let st;
+      try { st = await stat(path); } catch { continue; }
+      let state = codexFileState.get(path);
+
+      if (!state) {
+        // New file — read the header for sid + cwd, then decide whether to
+        // capture it. Skip files outside our workspace.
+        const header = await readCodexHeader(path);
+        if (!header || !header.sid) continue; // not ready yet — retry next tick
+        if (!codexCwdInWorkspace(header.cwd)) {
+          codexFileState.set(path, { offset: st.size, sid: header.sid, cwd: header.cwd, skip: true, rootEmitted: false });
+          continue;
+        }
+        state = { offset: 0, sid: header.sid, cwd: header.cwd, skip: false, rootEmitted: false };
+        codexFileState.set(path, state);
+        if (firstRun) {
+          // On startup, skip a pre-existing session's history entirely — no
+          // root, no replay. Only future appends (a live session that keeps
+          // going) will lazily create the root via ensureCodexRoot.
+          state.offset = st.size;
+          continue;
+        }
+      }
+
+      if (state.skip) { state.offset = st.size; continue; }
+      if (st.size <= state.offset) continue;
+
+      const text = await readByteRange(path, state.offset, st.size);
+      const lastNl = text.lastIndexOf("\n");
+      if (lastNl < 0) continue; // no complete line yet
+      const consume = text.slice(0, lastNl);
+      state.offset += Buffer.byteLength(consume, "utf8") + 1; // +1 for the \n
+
+      for (const line of consume.split("\n")) {
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        const prevModel = codexSessionModel.get(state.sid);
+        const payload = codexObjToPayload(obj, state.sid, state.cwd);
+        // If the model changed (turn_context/response_item), surface it.
+        const nowModel = codexSessionModel.get(state.sid);
+        if (nowModel && nowModel !== prevModel) {
+          ensureCodexRoot(state);
+          emitCodexEvent({ session_id: state.sid, cwd: state.cwd, provider: "codex", hook_event_name: "ModelObserved", model: nowModel });
+        }
+        if (payload) {
+          ensureCodexRoot(state);
+          emitCodexEvent(payload);
+        }
+      }
+    }
+  } catch {
+    /* swallow — watcher must never crash the server */
+  } finally {
+    codexScanRunning = false;
+  }
+}
+
+function startCodexWatcher(workspace) {
+  codexWorkspace = workspace ?? "";
+  if (!existsSync(CODEX_SESSIONS_DIR)) return null;
+  // Initial catalog: create roots for in-progress sessions, skip their
+  // history, then poll for new lines.
+  codexScanOnce(true).catch(() => {});
+  codexWatchTimer = setInterval(() => { codexScanOnce(false).catch(() => {}); }, 1500);
+  if (codexWatchTimer.unref) codexWatchTimer.unref();
+  return codexWatchTimer;
+}
+
 function pushEvent(raw, source, opts = {}) {
   // Synchronous enrichment: if we already know this session's model, stamp
   // it on the payload so the client's recursive scanner picks it up.
@@ -425,10 +854,17 @@ function pushEvent(raw, source, opts = {}) {
   // ModelObserved; usage is re-read periodically (throttled to 2.5s per
   // session) so the cost columns track running totals as the session
   // progresses. Both result in synthetic events.
+  // Provider gates the path: Claude reads transcript_path; Codex reads its
+  // rollout JSONL under ~/.codex/sessions/. The Claude scanners short-circuit
+  // when transcript_path is absent (always the case for Codex hooks).
   if (source === "hook" && !opts.replay) {
-    maybeResolveModel(raw);
-    maybeResolveUsage(raw);
-    maybeResolveContext(raw);
+    if (raw && raw.provider === "codex") {
+      maybeResolveCodex(raw);
+    } else {
+      maybeResolveModel(raw);
+      maybeResolveUsage(raw);
+      maybeResolveContext(raw);
+    }
   }
 
   return evt;
@@ -591,7 +1027,7 @@ async function tryListen(server, port, host) {
   });
 }
 
-export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400] } = {}) {
+export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true } = {}) {
   const removed = await sweepStaleDiscovery();
   if (removed > 0) console.log(`  swept ${removed} stale discovery file(s)`);
   if (persist) {
@@ -634,6 +1070,8 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
   for (const candidate of candidates) {
     try {
       await tryListen(server, candidate, host);
+      // Codex has no working hooks on Windows — tail its rollout files instead.
+      if (codex) startCodexWatcher(workspace);
       return server;
     } catch (err) {
       if (err && err.code === "EADDRINUSE") continue;
