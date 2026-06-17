@@ -219,9 +219,9 @@ Options:
       --all                Capture every session (default)
       --history <path>     Override events log file (default: ~/.claude/agent-dag/events.jsonl)
       --no-persist         Don't write or replay events log (RAM-only)
-      --codex              Force-install Codex hooks even if ~/.codex/ missing
-      --no-codex           Skip Codex hook install (Claude only)
-      --uninstall          Remove agent-dag hook entries (both providers)
+      --codex              Force-enable Codex capture even if ~/.codex/ missing
+      --no-codex           Skip Codex capture (Claude only)
+      --uninstall          Remove agent-dag Claude hook entries
   -h, --help               Show this help
 `);
 }
