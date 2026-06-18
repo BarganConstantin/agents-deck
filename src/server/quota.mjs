@@ -1,20 +1,19 @@
-// Fetches Claude rate-limit quota by running `claude --print "/usage"`.
-// Caches the result for 2 minutes so the UI can poll without hammering the CLI.
-// Degrades gracefully — returns {ok:false} if claude isn't in PATH or the
-// non-interactive flag doesn't surface quota data (older CLI versions).
+// Fetches Claude rate-limit quota by running `claude --print /usage`.
+// On Windows the binary is a .cmd wrapper — we run it via cmd.exe.
+// Caches the result for 2 minutes.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 
 const execFileAsync = promisify(execFile);
+const IS_WIN = platform() === "win32";
 
 let _cache = null;
 let _cacheAt = 0;
-const CACHE_MS = 120_000; // 2 min — quota resets are not sub-second
+const CACHE_MS = 120_000;
 
-// Strip ANSI escape sequences so regexes work on raw text.
 function stripAnsi(s) {
   return s
     .replace(/\x1B\[[0-9;]*[A-Za-z]/g, "")
@@ -23,110 +22,100 @@ function stripAnsi(s) {
 }
 
 /**
- * Parse Claude `/usage` output.
- * Handles both the compact single-line format and the table format.
+ * Parse `claude --print /usage` output.
  *
- * Patterns seen across Claude Code versions:
- *   "Session (5h)   ██████░░  60%  resets in 1h 20m"
- *   "session_5h: 60%  resets in 1h 20m"
- *   "5-hour: 60%"
- *   "Weekly (7d)    ████░░░░  40%  resets Thu"
- *   "week_all: 40%"
+ * Observed format (Claude Code ≥ 1.x):
+ *   "Current session: 84% used · resets Jun 18, 4:09pm (Europe/Chisinau)"
+ *   "Current week (all models): 85% used · resets Jun 21, 8:59am (Europe/Chisinau)"
+ *   "Current week (Sonnet only): 48% used · resets Jun 21, 9am (Europe/Chisinau)"
+ *   "Current week (Opus only): ..."   (if present)
  */
 function parseUsageText(raw) {
   const text = stripAnsi(raw);
   const result = {};
 
-  // ── 5-hour window ───────────────────────────────────────────────────────
-  const fh = text.match(
-    /(?:session(?:_5h)?|5.?h(?:our)?)[^\n]*?(\d{1,3})\s*%/i
-  ) || text.match(/(\d{1,3})\s*%[^\n]*(?:session|5.?h(?:our)?)/i);
-  if (fh) result.session5hPct = Math.min(100, parseInt(fh[1], 10));
+  // Helper: find "X% used · resets <rest>" on a line matching a label.
+  const extract = (labelRe) => {
+    const line = text.split("\n").find(l => labelRe.test(l));
+    if (!line) return null;
+    const pctM = line.match(/(\d{1,3})\s*%/);
+    const resetM = line.match(/resets\s+(.+)/i);
+    return {
+      pct: pctM ? Math.min(100, parseInt(pctM[1], 10)) : null,
+      reset: resetM
+        ? resetM[1]
+            .replace(/\(.*?\)/g, "")  // strip timezone in parens
+            .replace(/·/g, "")
+            .trim()
+        : null,
+    };
+  };
 
-  // Reset time for 5h window (text immediately after the 5h % on the same line)
-  const fhLine = text.match(
-    /(?:session(?:_5h)?|5.?h(?:our)?)[^\n]*/i
-  )?.[0] ?? "";
-  const fhReset = fhLine.match(/resets?\s+(?:in\s+)?([^\n,|]+)/i)?.[1]?.trim();
-  if (fhReset) result.session5hReset = fhReset;
+  const session = extract(/current session/i);
+  if (session?.pct != null) {
+    result.session5hPct = session.pct;
+    if (session.reset) result.session5hReset = session.reset;
+  }
 
-  // ── 7-day window ────────────────────────────────────────────────────────
-  const wd = text.match(
-    /(?:week(?:ly)?(?:_all(?:_models)?)?|7.?d(?:ay)?)[^\n]*?(\d{1,3})\s*%/i
-  ) || text.match(/(\d{1,3})\s*%[^\n]*(?:week(?:ly)?|7.?d(?:ay)?)/i);
-  if (wd) result.week7dPct = Math.min(100, parseInt(wd[1], 10));
+  const weekAll = extract(/current week\s*\(all models\)/i) || extract(/current week\s*[:·]/i);
+  if (weekAll?.pct != null) {
+    result.week7dPct = weekAll.pct;
+    if (weekAll.reset) result.week7dReset = weekAll.reset;
+  }
 
-  const wdLine = text.match(
-    /(?:week(?:ly)?(?:_all(?:_models)?)?|7.?d(?:ay)?)[^\n]*/i
-  )?.[0] ?? "";
-  const wdReset = wdLine.match(/resets?\s+(?:in\s+)?([^\n,|]+)/i)?.[1]?.trim();
-  if (wdReset) result.week7dReset = wdReset;
+  const weekSon = extract(/current week\s*\(sonnet/i);
+  if (weekSon?.pct != null) result.weekSonnetPct = weekSon.pct;
 
-  // ── Sonnet / Opus per-model weekly (bonus if present) ───────────────────
-  const son = text.match(/(?:sonnet)[^\n]*?(\d{1,3})\s*%/i);
-  if (son) result.weekSonnetPct = Math.min(100, parseInt(son[1], 10));
-  const opus = text.match(/(?:opus)[^\n]*?(\d{1,3})\s*%/i);
-  if (opus) result.weekOpusPct = Math.min(100, parseInt(opus[1], 10));
+  const weekOpus = extract(/current week\s*\(opus/i);
+  if (weekOpus?.pct != null) result.weekOpusPct = weekOpus.pct;
 
   return Object.keys(result).length > 0 ? result : null;
 }
 
-/** Locate the claude binary — check PATH, then a few known install locations. */
+/** Resolve the claude binary.
+ *  On Windows, claude is a .cmd wrapper — return the full path so we can
+ *  invoke it via cmd.exe. On Unix, look for the binary in common locations. */
 function findClaudeBin() {
-  // Check well-known install paths first (Windows & Unix).
+  if (IS_WIN) {
+    const npmBin = join(homedir(), "AppData", "Roaming", "npm", "claude.cmd");
+    if (existsSync(npmBin)) return { cmd: "cmd.exe", args: ["/c", npmBin] };
+    // Fallback: let cmd.exe find it via PATH.
+    return { cmd: "cmd.exe", args: ["/c", "claude.cmd"] };
+  }
+  // Unix: check PATH, then known install locations.
   const candidates = [
-    "claude", // on PATH
-    join(homedir(), ".claude", "local", "claude"),
-    join(homedir(), ".nvm", "versions", "node", "current", "bin", "claude"),
+    "claude",
+    join(homedir(), ".local", "bin", "claude"),
     "/usr/local/bin/claude",
     "/opt/homebrew/bin/claude",
   ];
   for (const c of candidates) {
-    // For "claude" (no path separator), rely on execFile PATH resolution.
-    if (!c.includes("/") && !c.includes("\\")) return c;
-    if (existsSync(c)) return c;
+    if (!c.includes("/")) return { cmd: c, args: [] };
+    if (existsSync(c)) return { cmd: c, args: [] };
   }
-  return "claude"; // fall through — let execFile fail gracefully
+  return { cmd: "claude", args: [] };
 }
 
-/**
- * Attempt to read Claude rate-limit quota via the CLI.
- * Returns a quota object or {ok:false} on failure.
- */
 export async function fetchClaudeQuota({ force = false } = {}) {
   const now = Date.now();
   if (!force && _cache && now - _cacheAt < CACHE_MS) return _cache;
 
-  const bin = findClaudeBin();
+  const { cmd, args } = findClaudeBin();
   let parsed = null;
 
-  // Strategy 1: non-interactive --print mode (Claude Code ≥ 1.x)
   try {
     const { stdout, stderr } = await execFileAsync(
-      bin,
-      ["--print", "/usage"],
+      cmd,
+      [...args, "--print", "/usage"],
       {
-        timeout: 10_000,
-        env: { ...process.env, NO_COLOR: "1", TERM: "dumb", CI: "1" },
+        timeout: 12_000,
+        env: { ...process.env, NO_COLOR: "1", TERM: "dumb" },
       }
     );
     parsed = parseUsageText(stdout + "\n" + stderr);
-  } catch { /* not in PATH, timed out, or /usage not recognised */ }
-
-  // Strategy 2: pipe mode — some older versions respond to piped stdin
-  if (!parsed) {
-    try {
-      const { stdout, stderr } = await execFileAsync(
-        bin,
-        ["--dangerously-skip-permissions"],
-        {
-          timeout: 8_000,
-          input: "/usage\n",
-          env: { ...process.env, NO_COLOR: "1", TERM: "dumb", CI: "1" },
-        }
-      );
-      parsed = parseUsageText(stdout + "\n" + stderr);
-    } catch { /* ignore */ }
+  } catch (err) {
+    // Binary not found or timed out — degrade gracefully.
+    console.error("agents-deck quota: claude CLI failed:", err?.message ?? err);
   }
 
   const result = parsed
@@ -138,7 +127,6 @@ export async function fetchClaudeQuota({ force = false } = {}) {
   return result;
 }
 
-/** Invalidate the cache so the next /api/quota call re-fetches. */
 export function invalidateQuotaCache() {
   _cache = null;
   _cacheAt = 0;
