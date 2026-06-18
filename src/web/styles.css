@@ -2733,6 +2733,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 10.5px;
 }
 .up-quota-loading { font-size: 11px; color: var(--muted-dim); }
+.up-quota-sub { font-size: 10px; color: var(--muted-dim); margin-top: 4px; }
 
 :root[data-theme="light"] .up-rate {
   background: rgba(126,34,206,0.10);

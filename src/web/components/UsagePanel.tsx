@@ -154,7 +154,21 @@ function useQuota() {
   return { quota, loading, refresh };
 }
 
-// ── Codex usage types + hook ───────────────────────────────────────────────
+// ── Codex quota types + hook ───────────────────────────────────────────────
+interface CodexQuotaData {
+  ok: boolean;
+  limitReached?: boolean;
+  session5hPct?: number;
+  session5hReset?: string;
+  week7dPct?: number;
+  week7dReset?: string;
+  planType?: string;
+  reason?: string;
+  fetchedAt?: number;
+  [key: string]: unknown; // extra_<model>_pct fields
+}
+
+// ── Codex usage types + hook (token aggregation fallback) ─────────────────
 interface CodexWindow {
   inputTokens: number;
   outputTokens: number;
@@ -171,15 +185,15 @@ interface CodexUsageData {
 
 const CODEX_POLL_MS = 60_000;
 
-function useCodexUsage() {
-  const [data, setData] = useState<CodexUsageData | null>(null);
+function useCodexQuota() {
+  const [data, setData] = useState<CodexQuotaData | null>(null);
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<number | null>(null);
 
   const fetch_ = async (forceRefresh = false) => {
     if (forceRefresh) setLoading(true);
     try {
-      const url = forceRefresh ? "/api/codex-usage?refresh=1" : "/api/codex-usage";
+      const url = forceRefresh ? "/api/codex-quota?refresh=1" : "/api/codex-quota";
       const res = await fetch(url);
       if (res.ok) setData(await res.json());
     } catch { /* server unreachable */ }
@@ -187,13 +201,33 @@ function useCodexUsage() {
   };
 
   useEffect(() => {
-    fetch_(false); // initial — just get current data, don't force (fast)
+    fetch_(true); // force on mount — get fresh data immediately
     timerRef.current = window.setInterval(() => fetch_(false), CODEX_POLL_MS);
     return () => { if (timerRef.current != null) window.clearInterval(timerRef.current); };
   }, []);
 
   const refresh = () => fetch_(true);
   return { data, loading, refresh };
+}
+
+function useCodexUsage() {
+  const [data, setData] = useState<CodexUsageData | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  const fetch_ = async () => {
+    try {
+      const res = await fetch("/api/codex-usage");
+      if (res.ok) setData(await res.json());
+    } catch { /* server unreachable */ }
+  };
+
+  useEffect(() => {
+    fetch_();
+    timerRef.current = window.setInterval(fetch_, CODEX_POLL_MS);
+    return () => { if (timerRef.current != null) window.clearInterval(timerRef.current); };
+  }, []);
+
+  return { data };
 }
 
 interface Props {
@@ -204,7 +238,8 @@ interface Props {
 
 export default function UsagePanel({ state, now, onClose }: Props) {
   const { quota, loading: quotaLoading, refresh: refreshQuota } = useQuota();
-  const { data: codexUsage, loading: codexLoading, refresh: refreshCodex } = useCodexUsage();
+  const { data: codexQuota, loading: codexLoading, refresh: refreshCodex } = useCodexQuota();
+  const { data: codexUsage } = useCodexUsage();
   const { byModel, totalCost, totalTokens, burnRate } = useMemo(() => {
     const modelMap = new Map<string, ModelRow>();
     const totalCostAcc: CostBreakdown = { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -352,25 +387,50 @@ export default function UsagePanel({ state, now, onClose }: Props) {
         )}
       </section>
 
-      {/* ── Codex usage ── */}
+      {/* ── Codex quota ── */}
       <section className="up-section up-quota-section">
         <div className="up-quota-header">
-          <h4 className="up-section-title" style={{ margin: 0 }}>Codex usage</h4>
+          <h4 className="up-section-title" style={{ margin: 0 }}>Codex quota</h4>
           <button
             type="button"
             className="btn up-refresh-btn"
             onClick={refreshCodex}
             disabled={codexLoading}
-            title="Re-scan Codex session files"
+            title="Re-fetch Codex quota from ChatGPT API"
           >{codexLoading ? "…" : "↻"}</button>
         </div>
-        {codexUsage?.ok ? (
+        {codexQuota?.ok ? (
           <div className="up-quota-bars">
-            <CodexUsageRow label="5-hour window" win={codexUsage.window5h!} />
-            <CodexUsageRow label="7-day window"  win={codexUsage.window7d!} />
+            {codexQuota.session5hPct != null && (
+              <QuotaBar
+                label="5-hour window"
+                pct={codexQuota.session5hPct}
+                reset={codexQuota.session5hReset}
+              />
+            )}
+            {codexQuota.week7dPct != null && (
+              <QuotaBar
+                label="7-day window"
+                pct={codexQuota.week7dPct}
+                reset={codexQuota.week7dReset}
+              />
+            )}
+            {/* token-count breakdown from local files (supplemental) */}
+            {codexUsage?.ok && codexUsage.window7d && codexUsage.window7d.sessionCount > 0 && (
+              <div className="up-quota-sub">
+                {fmtTokens(codexUsage.window7d.totalTokens)} tokens · {codexUsage.window7d.sessionCount} sessions (7d)
+              </div>
+            )}
           </div>
-        ) : codexUsage?.ok === false ? (
-          <div className="up-quota-na">No Codex sessions found.</div>
+        ) : codexQuota?.ok === false ? (
+          <div className="up-quota-na">
+            <span>Quota unavailable.</span>
+            <span className="up-quota-hint">
+              {codexQuota.reason === "no_token"
+                ? "Run codex login to authenticate."
+                : "ChatGPT API unreachable — click ↻ to retry."}
+            </span>
+          </div>
         ) : (
           <div className="up-quota-na up-quota-loading">Checking…</div>
         )}

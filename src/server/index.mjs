@@ -1013,6 +1013,16 @@ async function handleCodexUsage(req, res) {
   send(res, 200, usage);
 }
 
+async function handleCodexQuota(req, res) {
+  const { fetchCodexQuota } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/codex-quota.mjs")).href
+  );
+  const url = new URL(req.url, "http://localhost");
+  const force = url.searchParams.get("refresh") === "1";
+  const quota = await fetchCodexQuota({ force });
+  send(res, 200, quota);
+}
+
 function handleHealth(_req, res) {
   send(res, 200, {
     ok: true,
@@ -1080,7 +1090,8 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
     if (req.method === "GET"  && url.pathname === "/api/quota")       return handleQuota(req, res);
-    if (req.method === "GET"  && url.pathname === "/api/codex-usage") return handleCodexUsage(req, res);
+    if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return handleCodexUsage(req, res);
+    if (req.method === "GET"  && url.pathname === "/api/codex-quota") return handleCodexQuota(req, res);
 
     if (req.method === "GET" && url.pathname === "/api/events") {
       const since = Number(url.searchParams.get("since") ?? 0);
