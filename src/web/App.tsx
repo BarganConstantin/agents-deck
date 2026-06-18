@@ -14,6 +14,7 @@ import ReactFlow, {
 import AgentNode, { shortModel } from "./components/AgentNode";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
+import SessionGroupNode from "./components/SessionGroupNode";
 import ToolBursts from "./components/ToolBursts";
 import SessionSummary from "./components/SessionSummary";
 import ContextModal from "./components/ContextModal";
@@ -36,7 +37,12 @@ function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-const nodeTypes = { agent: AgentNode };
+const nodeTypes = { agent: AgentNode, sessionGroup: SessionGroupNode };
+
+// Padding of the invisible session drag-handle node. Matches SessionClusters'
+// PAD so the handle lines up with the card's body (the card's header strip is
+// left uncovered so its label stays clickable).
+const GROUP_PAD = 18;
 
 const STALE_TOOL_MS = 90_000;
 const AGENT_CAP = 200;
@@ -46,6 +52,7 @@ const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
 const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
 const SESSION_LIST_OPEN_KEY = "agent-dag.sessionListOpen";
 const TIMELINE_OPEN_KEY = "agent-dag.timelineOpen";
+const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 
 function loadSessionListOpen(): boolean {
   if (typeof window === "undefined") return true;
@@ -62,6 +69,14 @@ function loadTimelineOpen(): boolean {
 function saveTimelineOpen(open: boolean): void {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(TIMELINE_OPEN_KEY, open ? "1" : "0"); } catch {}
+}
+function loadDetailOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  try { return window.localStorage.getItem(DETAIL_OPEN_KEY) !== "0"; } catch { return true; }
+}
+function saveDetailOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(DETAIL_OPEN_KEY, open ? "1" : "0"); } catch {}
 }
 
 function loadDismissedSummaries(): Set<string> {
@@ -440,6 +455,13 @@ function Inner() {
   /** Bottom timeline strip visibility — persisted across refresh. */
   const [timelineOpen, setTimelineOpen] = useState<boolean>(loadTimelineOpen);
   useEffect(() => { saveTimelineOpen(timelineOpen); }, [timelineOpen]);
+  /** Right detail panel visibility — persisted across refresh. */
+  const [detailOpen, setDetailOpen] = useState<boolean>(loadDetailOpen);
+  useEffect(() => { saveDetailOpen(detailOpen); }, [detailOpen]);
+  /** Bumped on each group-drag move so snapshotToFlow recomputes immediately
+   *  (reads the freshly-pinned positions) rather than waiting for the 250ms
+   *  tick. A plain counter — value is irrelevant, only the change matters. */
+  const [dragTick, setDragTick] = useState(0);
   const [live, setLive] = useState(false);
   const [paused, setPaused] = useState(false);
   const queueRef = useRef<HookEnvelope[]>([]);
@@ -449,6 +471,9 @@ function Inner() {
   // browser refresh (their session_id is stable), so dragged positions
   // come back where you left them.
   const pinnedRef = useRef<Map<string, { x: number; y: number }>>(new Map(loadLayout()));
+  /** Active session group-drag: the handle node's start position + each
+   *  member's start position, captured at drag start. */
+  const groupDragRef = useRef<{ start: { x: number; y: number }; members: Map<string, { x: number; y: number }> } | null>(null);
   const restoredViewport = useState(() => loadViewport())[0];
   const [query, setQuery] = useState("");
   /** Categories the user has muted via the filter chips. Bursts whose
@@ -758,8 +783,57 @@ function Inner() {
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext],
+    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
+
+  // Invisible per-session drag-handle nodes. One per session, sized to the
+  // bounding box of that session's agent nodes and rendered behind them
+  // (negative zIndex). Grabbing the empty canvas behind a session drags the
+  // whole session; the agent nodes stay on top and individually draggable.
+  const groupNodes = useMemo(() => {
+    const bySession = new Map<string, { minX: number; minY: number; maxX: number; maxY: number }>();
+    for (const n of nodes) {
+      const d = n.data as AgentNodeData | undefined;
+      if (!d?.sessionId || d.exitAt != null) continue;
+      const w = n.width, h = n.height;
+      if (w == null || h == null) continue; // unmeasured — skip this frame
+      const x1 = n.position.x, y1 = n.position.y, x2 = x1 + w, y2 = y1 + h;
+      const b = bySession.get(d.sessionId);
+      if (!b) bySession.set(d.sessionId, { minX: x1, minY: y1, maxX: x2, maxY: y2 });
+      else {
+        b.minX = Math.min(b.minX, x1); b.minY = Math.min(b.minY, y1);
+        b.maxX = Math.max(b.maxX, x2); b.maxY = Math.max(b.maxY, y2);
+      }
+    }
+    const out: typeof nodes = [];
+    for (const [sid, b] of bySession) {
+      // Cover the nodes + padding, but NOT the header strip above them — that
+      // area holds SessionClusters' clickable label (fit-view), which must stay
+      // hittable above this handle.
+      const w = b.maxX - b.minX + GROUP_PAD * 2;
+      const h = b.maxY - b.minY + GROUP_PAD * 2;
+      out.push({
+        id: `group:${sid}`,
+        type: "sessionGroup",
+        position: { x: b.minX - GROUP_PAD, y: b.minY - GROUP_PAD },
+        // w/h handed to the node component so it can size itself in explicit
+        // pixels (a 100% child would collapse under RF's content sizing).
+        data: { sessionId: sid, w, h } as unknown as AgentNodeData & { now: number },
+        width: w,
+        height: h,
+        style: { width: w, height: h },
+        zIndex: -1,
+        draggable: true,
+        selectable: false,
+        focusable: false,
+        deletable: false,
+        connectable: false,
+      });
+    }
+    return out;
+  }, [nodes, now]);
+
+  const allNodes = useMemo(() => [...groupNodes, ...nodes], [groupNodes, nodes]);
 
 
   // Set of agent ids that match the current /-search query, or null when
@@ -1113,7 +1187,7 @@ function Inner() {
           </div>
         )}
         <ReactFlow
-          nodes={nodes}
+          nodes={allNodes}
           edges={edges}
           nodeTypes={nodeTypes}
           fitView={!restoredViewport}
@@ -1124,7 +1198,10 @@ function Inner() {
           nodesDraggable
           nodesConnectable={false}
           selectionOnDrag={false}
-          onNodeClick={(e, n) => selectAgent(n.id, e.shiftKey)}
+          onNodeClick={(e, n) => {
+            if (n.type === "sessionGroup") { clearSelection(); return; }
+            selectAgent(n.id, e.shiftKey);
+          }}
           onPaneClick={() => clearSelection()}
           onMoveStart={() => {
             // User-initiated pan/zoom only (programmatic fitView doesn't
@@ -1142,17 +1219,63 @@ function Inner() {
           onNodeDragStart={(_, n) => {
             markInteract();
             disableAutoFit();
+            if (n.type === "sessionGroup") {
+              // Snapshot every member's start position so each move applies the
+              // gesture delta to a fixed origin (the group node's own start).
+              const sid = (n.data as { sessionId?: string })?.sessionId;
+              const members = new Map<string, { x: number; y: number }>();
+              if (sid) {
+                for (const m of nodes) {
+                  const d = m.data as AgentNodeData | undefined;
+                  if (d?.sessionId === sid) members.set(m.id, { x: m.position.x, y: m.position.y });
+                }
+              }
+              groupDragRef.current = { start: { x: n.position.x, y: n.position.y }, members };
+              return;
+            }
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
           }}
           onNodeDrag={(_, n) => {
+            markInteract();
+            if (n.type === "sessionGroup") {
+              const g = groupDragRef.current;
+              if (!g) return;
+              const dx = n.position.x - g.start.x;
+              const dy = n.position.y - g.start.y;
+              // Move every member by the delta. Writing pinned/positions is the
+              // source of truth snapshotToFlow reads; the nonce forces an
+              // immediate recompute so the nodes follow this frame.
+              for (const [id, p0] of g.members) {
+                const p = { x: p0.x + dx, y: p0.y + dy };
+                pinnedRef.current.set(id, p);
+                positionsRef.current.set(id, p);
+              }
+              setDragTick(t => t + 1);
+              return;
+            }
             // Live-pin during drag so an incoming event re-render doesn't
             // snap the node back to its dagre slot mid-motion.
-            markInteract();
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
           }}
           onNodeDragStop={(_, n) => {
             markInteract();
+            if (n.type === "sessionGroup") {
+              const g = groupDragRef.current;
+              if (g) {
+                const dx = n.position.x - g.start.x;
+                const dy = n.position.y - g.start.y;
+                for (const [id, p0] of g.members) {
+                  const p = { x: p0.x + dx, y: p0.y + dy };
+                  pinnedRef.current.set(id, p);
+                  positionsRef.current.set(id, p);
+                }
+              }
+              groupDragRef.current = null;
+              saveLayout(pinnedRef.current);
+              setDragTick(t => t + 1);
+              return;
+            }
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             saveLayout(pinnedRef.current);
@@ -1215,23 +1338,40 @@ function Inner() {
         )}
       </div>
 
-      <aside className="detail">
-        {selected
-          ? <Detail
-              agent={selected}
-              now={now}
-              onOpenTool={setOpenedToolId}
-              onShowSummary={(sid) => {
-                if (dismissedSummariesRef.current.has(sid)) {
-                  dismissedSummariesRef.current.delete(sid);
-                  saveDismissedSummaries(dismissedSummariesRef.current);
-                }
-                setSummaryFor(sid);
-              }}
-              onExportSession={(sid) => exportSessionJson(stateRef.current, sid)}
-            />
-          : <EmptyDetail count={agentCount} />}
-      </aside>
+      {detailOpen ? (
+        <aside className="detail">
+          <button
+            type="button"
+            className="detail-close"
+            title="Close panel"
+            aria-label="Close detail panel"
+            onClick={() => setDetailOpen(false)}
+          >×</button>
+          {selected
+            ? <Detail
+                agent={selected}
+                now={now}
+                onOpenTool={setOpenedToolId}
+                onShowSummary={(sid) => {
+                  if (dismissedSummariesRef.current.has(sid)) {
+                    dismissedSummariesRef.current.delete(sid);
+                    saveDismissedSummaries(dismissedSummariesRef.current);
+                  }
+                  setSummaryFor(sid);
+                }}
+                onExportSession={(sid) => exportSessionJson(stateRef.current, sid)}
+              />
+            : <EmptyDetail count={agentCount} />}
+        </aside>
+      ) : (
+        <button
+          type="button"
+          className="detail-reopen"
+          title="Show detail panel"
+          aria-label="Show detail panel"
+          onClick={() => setDetailOpen(true)}
+        >‹</button>
+      )}
 
       {openedTool && <ToolModal tool={openedTool} onClose={() => setOpenedToolId(null)} />}
       {contextFor && (() => {

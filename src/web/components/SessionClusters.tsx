@@ -9,6 +9,8 @@ interface Cluster {
   x: number; y: number; w: number; h: number;
 }
 
+// Must match GROUP_PAD / GROUP_HEADER in App.tsx so the decorative card lines
+// up with the invisible draggable group-handle node sitting under it.
 const PAD = 18;
 const HEADER_H = 26;
 const LABEL_LIFT = 12; // px the label tab sits above the box's top edge
@@ -127,7 +129,7 @@ export default function SessionClusters() {
               type="button"
               className="cluster-label"
               style={labelStyle}
-              title={`Fit view to ${c.label}`}
+              title={`Fit view to ${c.label} · drag the wrapper to move the whole session`}
               onClick={() => focusSession(c.sessionId)}
             >{c.label}</button>
           </React.Fragment>
