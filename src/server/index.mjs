@@ -57,9 +57,9 @@ async function maybeRotatePersistFile() {
     try { await unlink(oldPath); } catch {}
     const { rename } = await import("node:fs/promises");
     await rename(persistPath, oldPath);
-    console.log(`agent-dag: rotated ${persistPath} (${(s.size / 1024 / 1024).toFixed(0)}MB → ${oldPath})`);
+    console.log(`agent-deck: rotated ${persistPath} (${(s.size / 1024 / 1024).toFixed(0)}MB → ${oldPath})`);
   } catch (err) {
-    console.error("agent-dag: persist rotation failed:", err && err.message ? err.message : err);
+    console.error("agent-deck: persist rotation failed:", err && err.message ? err.message : err);
   } finally {
     rotateInProgress = false;
   }
@@ -1101,9 +1101,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   startServer({ port }).then(s => {
     const addr = s.address();
     const p = typeof addr === "object" && addr ? addr.port : port;
-    console.log(`agent-dag server: http://127.0.0.1:${p}`);
+    console.log(`agent-deck server: http://127.0.0.1:${p}`);
   }).catch(e => {
-    console.error("agent-dag server failed:", e.message);
+    console.error("agent-deck server failed:", e.message);
     process.exit(1);
   });
 }

@@ -46,14 +46,27 @@ jobs:
       - name: Build web bundle
         run: npm run build
 
-      - name: Publish to npm
+      # Publish under the primary name (agent-deck) and ALSO under the legacy
+      # name (agent-dag) so existing installs keep receiving updates. Same
+      # build/tarball, two registry names. We flip the "name" field in
+      # package.json for the second publish, then restore it.
+      - name: Publish to npm (agent-deck)
         run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm (agent-dag, legacy alias)
+        run: |
+          npm pkg set name=agent-dag
+          npm publish --provenance --access public
+          npm pkg set name=agent-deck
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summary
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          echo "### Published agent-dag@$VERSION :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "### Published agent-deck@$VERSION :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "https://www.npmjs.com/package/agent-dag/v/$VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- https://www.npmjs.com/package/agent-deck/v/$VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- https://www.npmjs.com/package/agent-dag/v/$VERSION (legacy alias)" >> $GITHUB_STEP_SUMMARY

@@ -24,13 +24,13 @@ if (flags.uninstall) {
   const { uninstallHooks, hasCodexInstalled } = await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
   const claude = await uninstallHooks({ provider: "claude" });
   console.log(claude.changed
-    ? `agent-dag: hooks removed from ${claude.settingsPath}`
-    : "agent-dag: no Claude hooks to remove");
+    ? `agent-deck: hooks removed from ${claude.settingsPath}`
+    : "agent-deck: no Claude hooks to remove");
   if (hasCodexInstalled()) {
     const codex = await uninstallHooks({ provider: "codex" });
     console.log(codex.changed
-      ? `agent-dag: hooks removed from ${codex.settingsPath}`
-      : "agent-dag: no Codex hooks to remove");
+      ? `agent-deck: hooks removed from ${codex.settingsPath}`
+      : "agent-deck: no Codex hooks to remove");
   }
   process.exit(0);
 }
@@ -59,7 +59,7 @@ const wantCodex = flags.noCodex
 
 const WEB_DIST = join(PKG_ROOT, "dist", "web", "index.html");
 if (!existsSync(WEB_DIST)) {
-  console.error("agent-dag: ui not built. run `npm run build` (or `pnpm build`) first.");
+  console.error("agent-deck: ui not built. run `npm run build` (or `pnpm build`) first.");
   process.exit(1);
 }
 
@@ -88,7 +88,7 @@ async function printBanner() {
 
   // Each entry: [rendered string with ANSI, visible char count, left-border color, right-border color]
   const rows = [
-    { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agent-dag${C.reset}  ${C.dim}v${PKG_VERSION}${C.reset}`, vis: 17 + PKG_VERSION.length, lc: C.blue,    rc: C.blue    },
+    { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agent-deck${C.reset}  ${C.dim}v${PKG_VERSION}${C.reset}`, vis: 18 + PKG_VERSION.length, lc: C.blue,    rc: C.blue    },
     { l: `  ${C.dim}live DAG · Claude Code + Codex${C.reset}`,                                                  vis: 32, lc: C.magenta, rc: C.magenta },
     { l: `  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}`,               vis: 34, lc: C.bMag,    rc: C.bMag    },
   ];
@@ -206,10 +206,10 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  process.stdout.write(`agent-dag — live DAG of Claude Code + Codex agents
+  process.stdout.write(`agent-deck — live deck of Claude Code + Codex agents
 
 Usage:
-  agent-dag [options]
+  agent-deck [options]
 
 Options:
   -p, --port <number>      Preferred port (default: 4317; falls back to random 4318–4400)
@@ -221,7 +221,7 @@ Options:
       --no-persist         Don't write or replay events log (RAM-only)
       --codex              Force-enable Codex capture even if ~/.codex/ missing
       --no-codex           Skip Codex capture (Claude only)
-      --uninstall          Remove agent-dag Claude hook entries
+      --uninstall          Remove agent-deck Claude hook entries
   -h, --help               Show this help
 `);
 }

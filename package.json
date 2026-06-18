@@ -1,9 +1,10 @@
 {
-  "name": "agent-dag",
-  "version": "1.17.0",
-  "description": "Live DAG of Claude Code and Codex agents — watch parallel subagents fork, call tools, and return on one calm canvas.",
+  "name": "agent-deck",
+  "version": "1.18.0",
+  "description": "Live deck of Claude Code and Codex agents — watch parallel subagents fork, call tools, and return on one calm canvas.",
   "type": "module",
   "bin": {
+    "agent-deck": "bin/agent-dag.js",
     "agent-dag": "bin/agent-dag.js"
   },
   "files": [
@@ -37,6 +38,7 @@
     "hooks",
     "observability",
     "dag",
+    "deck",
     "graph",
     "live"
   ],
@@ -44,12 +46,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BarganConstantin/agent-dag.git"
+    "url": "git+https://github.com/BarganConstantin/agent-deck.git"
   },
   "bugs": {
-    "url": "https://github.com/BarganConstantin/agent-dag/issues"
+    "url": "https://github.com/BarganConstantin/agent-deck/issues"
   },
-  "homepage": "https://github.com/BarganConstantin/agent-dag#readme",
+  "homepage": "https://github.com/BarganConstantin/agent-deck#readme",
   "dependencies": {
     "open": "^10.1.0"
   },

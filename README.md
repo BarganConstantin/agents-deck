@@ -1,11 +1,13 @@
-# agent-dag
+# agent-deck
 
-Live DAG of Claude Code **and OpenAI Codex** agents. Watch parallel subagents fork, call tools, and return — all on one calm canvas.
+Live deck of Claude Code **and OpenAI Codex** agents. Watch parallel subagents fork, call tools, and return — all on one calm canvas.
+
+> Formerly **agent-dag**. The old name still works — `agent-deck` and `agent-dag` are published as the same package, and the `agent-dag` command remains a built-in alias.
 
 ## Run
 
 ```bash
-npx agent-dag
+npx agent-deck
 ```
 
 Opens http://127.0.0.1:4317 (or a random port in 4318–4400 if 4317 is taken). Start a Claude Code **or Codex** session in any directory and watch the graph fill in. Both providers render side by side on the same canvas; the model chip on each node tells them apart (e.g. `Opus 4.8`, `GPT-5.5`).
@@ -22,7 +24,7 @@ Opens http://127.0.0.1:4317 (or a random port in 4318–4400 if 4317 is taken). 
     --no-codex           Skip Codex capture (Claude only)
     --history <path>     Override events log file (default: ~/.claude/agent-dag/events.jsonl)
     --no-persist         RAM-only mode, no log file
-    --uninstall          Remove agent-dag hooks from ~/.claude/settings.json
+    --uninstall          Remove agent-deck hooks from ~/.claude/settings.json
 -h, --help               Show help
 ```
 
@@ -38,7 +40,7 @@ Opens http://127.0.0.1:4317 (or a random port in 4318–4400 if 4317 is taken). 
 
 Two providers, two capture paths — both stream to the same server, which pushes events to the browser over SSE.
 
-**Claude Code** — `agent-dag` registers a hook script in `~/.claude/settings.json` for these events:
+**Claude Code** — `agent-deck` registers a hook script in `~/.claude/settings.json` for these events:
 
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`, `SessionEnd`, `Notification`.
 
@@ -49,7 +51,7 @@ The hook forwards the event JSON to the running server.
 ## Uninstall
 
 ```bash
-npx agent-dag --uninstall
+npx agent-deck --uninstall
 ```
 
 Removes all hooks from `~/.claude/settings.json`.

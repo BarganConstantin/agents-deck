@@ -194,7 +194,7 @@ function exportSessionJson(state: GraphState, sessionId: string): void {
   const a = document.createElement("a");
   const safeLabel = (root.label || "session").replace(/[^a-z0-9._-]/gi, "_");
   a.href = url;
-  a.download = `agent-dag-${safeLabel}-${sessionId.slice(0, 8)}.json`;
+  a.download = `agent-deck-${safeLabel}-${sessionId.slice(0, 8)}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1018,7 +1018,7 @@ function Inner() {
       <header className="topbar">
         <div className="brand">
           <span className="logo" />
-          agent-dag <span className="v">v{__APP_VERSION__}</span>
+          agent-deck <span className="v">v{__APP_VERSION__}</span>
         </div>
         {selected && (() => {
           const c = costForUsage(selected.usage, selected.model);
@@ -1149,7 +1149,7 @@ function Inner() {
       {everConnected && !live && (
         <div className="conn-banner" role="alert">
           <span className="conn-dot" />
-          Lost connection to agent-dag server. Reconnecting…
+          Lost connection to agent-deck server. Reconnecting…
         </div>
       )}
 
@@ -1416,7 +1416,7 @@ function EmptyHero({ live, everConnected }: { live: boolean; everConnected: bool
           <h2>{everConnected ? "Disconnected from server" : "Server unreachable"}</h2>
           <p>
             The browser cannot reach <code>/events</code>. Check that
-            <code>agent-dag</code> is still running in your terminal, then this
+            <code>agent-deck</code> is still running in your terminal, then this
             page will resume automatically.
           </p>
         </>
@@ -1435,7 +1435,7 @@ function agentNoneCopy() {
         fork and tools are called.
       </p>
       <p className="hint-row">
-        Not seeing anything? Make sure <code>agent-dag</code> is running and that
+        Not seeing anything? Make sure <code>agent-deck</code> is running and that
         hooks are installed in <code>~/.claude/settings.json</code> and{" "}
         <code>~/.codex/hooks.json</code>. (Codex requires{" "}
         <code>/hooks</code> trust on first run.)
@@ -1451,7 +1451,7 @@ function EmptyDetail({ count }: { count: number }) {
       {count === 0 ? (
         <div className="hint">
           No data yet. Start a Claude Code or Codex session anywhere on this
-          machine — agent-dag is in <code>--all</code> mode and listens to every
+          machine — agent-deck is in <code>--all</code> mode and listens to every
           workspace.
         </div>
       ) : (
