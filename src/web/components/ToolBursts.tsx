@@ -41,6 +41,13 @@ const TOOL_CATEGORY: Record<string, ToolCategory> = {
   Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
   Glob: "file", Grep: "file", LS: "file", NotebookEdit: "file",
   Bash: "shell", PowerShell: "shell",
+  // Codex shell tools — same category as Bash/PowerShell
+  shell: "shell", exec_command: "shell", shell_command: "shell",
+  write_stdin: "shell", wait: "shell",
+  // Codex file-edit tool — same category as Edit/Write
+  apply_patch: "file",
+  // Codex planning tool — same category as TodoWrite/TaskCreate
+  update_plan: "task",
   WebFetch: "web", WebSearch: "web",
   Task: "agent", Agent: "agent",
   TodoWrite: "task", TaskCreate: "task", TaskUpdate: "task",
@@ -67,6 +74,16 @@ const TOOL_EMOJI: Record<string, string> = {
   Grep: "🔎",
   Bash: "⚡",
   PowerShell: "💻",
+  // Codex shell tools
+  shell: "⚡",
+  exec_command: "⚡",
+  shell_command: "⚡",
+  write_stdin: "💻",
+  wait: "⏳",
+  // Codex file-edit tool
+  apply_patch: "🩹",
+  // Codex planning tool
+  update_plan: "📋",
   LS: "📂",
   Task: "🤖",
   Agent: "🤖",
@@ -211,19 +228,56 @@ interface CommandSkin {
 /** Extract a usable command string from CC's tool_input.
  *  - Bash:        { command: "git status", description?: string, ... }
  *  - PowerShell:  { command: "..." } or sometimes { script: "..." }
+ *  - Codex shell: { command: ["powershell.exe","-NoProfile","-Command","<cmd>"] }
+ *  - Codex exec_command: { cmd: "ls", workdir: "..." }
+ *  - Codex shell_command: { command: "cd X && git status" }
  *  - Fallback:    if input is a bare string, use it directly. */
 function commandStringOf(input: unknown): string | null {
   if (typeof input === "string") return input;
   if (!input || typeof input !== "object") return null;
   const obj = input as Record<string, unknown>;
-  if (typeof obj.command === "string") return obj.command;
   if (typeof obj.cmd === "string") return obj.cmd;
+  if (typeof obj.command === "string") return obj.command;
+  // Codex `shell` tool: command is a string array like
+  // ["powershell.exe", "-NoProfile", "-Command", "<real cmd>"]
+  // When it looks like a shell wrapper, surface the real inner command.
+  if (Array.isArray(obj.command) && obj.command.every(x => typeof x === "string")) {
+    const arr = obj.command as string[];
+    // If first element is a known shell interpreter, look for -Command/-c flag
+    // and return the argument that follows it as the real command.
+    if (/powershell|cmd|bash|sh(\.exe)?$/i.test(arr[0] ?? "")) {
+      const flagIdx = arr.findIndex(a => /^(-Command|-c)$/i.test(a));
+      if (flagIdx >= 0 && flagIdx + 1 < arr.length) {
+        return arr[flagIdx + 1];
+      }
+    }
+    // Fallback: join the whole array.
+    return arr.join(" ");
+  }
   if (typeof obj.script === "string") return obj.script;
   return null;
 }
 
+const SHELL_TOOLS = new Set(["Bash", "PowerShell", "shell", "exec_command", "shell_command", "write_stdin", "wait"]);
+
+// Codex tool names are much longer than CC's ("exec_command"/"shell_command"
+// vs "Bash"), so the fixed ESTIMATED_BUBBLE_W under-shoots the primary
+// bubble's real width and the chained sub-bubble lands on top of it with no
+// gap. For these tools only we widen the primary estimate from the label
+// length; floored at ESTIMATED_BUBBLE_W so Claude/MCP bubbles are unchanged.
+const CODEX_TOOLS = new Set(["shell", "exec_command", "shell_command", "write_stdin", "wait", "apply_patch", "update_plan"]);
+
+/** Estimated primary-bubble width in px. For Codex tools, scale with the
+ *  label length so the sub-bubble clears the (longer) primary; everything
+ *  else keeps the original fixed estimate, leaving Claude rendering intact. */
+function primaryBubbleWidth(toolName: string, label: string): number {
+  if (!CODEX_TOOLS.has(toolName)) return ESTIMATED_BUBBLE_W;
+  // emoji + paddings ≈ 34px, then ~7.5px per character.
+  return Math.max(ESTIMATED_BUBBLE_W, 34 + label.length * 7.5);
+}
+
 function skinForShellCall(toolName: string, input: unknown): CommandSkin | null {
-  if (toolName !== "Bash" && toolName !== "PowerShell") return null;
+  if (!SHELL_TOOLS.has(toolName)) return null;
   const raw = commandStringOf(input);
   if (!raw) return null;
   const cmd = parseShellCommand(raw);
@@ -241,7 +295,7 @@ function skinForShellCall(toolName: string, input: unknown): CommandSkin | null 
 // extension so the canvas reads "📖 Read → 🐍 main.py" instead of just
 // "📖 Read". Tooltip shows the full path.
 
-const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "LS", "Glob"]);
+const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "LS", "Glob", "apply_patch"]);
 
 /** Emoji by file extension — covers code / config / docs / media / etc.
  *  Picked so each ext is visually distinct from neighbours at low zoom. */
@@ -322,6 +376,13 @@ function emojiForFilename(name: string): string {
 function extractFilePath(toolName: string, input: unknown): string | null {
   if (!input || typeof input !== "object") return null;
   const obj = input as Record<string, unknown>;
+  // Codex apply_patch: extract the first file path from the patch header.
+  // Matches "*** Update File: ", "*** Add File: ", or "*** Delete File: ".
+  if (toolName === "apply_patch" && typeof obj.patch === "string") {
+    const m = obj.patch.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m);
+    if (m) return m[1].trim();
+    return null;
+  }
   // CC's most-common key shapes across file tools.
   if (typeof obj.file_path === "string") return obj.file_path;
   if (typeof obj.notebook_path === "string") return obj.notebook_path;
@@ -438,6 +499,21 @@ function skinFor(toolName: string, input: unknown): CommandSkin | null {
  *  "🐙 GitHub" and the sub bubble reads "create_pr". Non-MCP tools fall
  *  back to the existing emojiFor / tool name. */
 interface PrimaryDisplay { emoji: string; label: string; hue?: number }
+
+// Codex exposes raw internal tool names ("exec_command", "shell_command",
+// "apply_patch"…). Show clean, Claude-style labels on the bubble instead;
+// the original name still goes into the tooltip (b.toolName) so nothing is
+// hidden. Display-only — does not affect categorisation or Claude tools.
+const CODEX_PRIMARY_LABEL: Record<string, string> = {
+  shell: "Shell",
+  exec_command: "Shell",
+  shell_command: "Shell",
+  write_stdin: "stdin",
+  wait: "wait",
+  apply_patch: "Edit",
+  update_plan: "Plan",
+};
+
 function primaryDisplayFor(toolName: string): PrimaryDisplay {
   const mcp = parseMcpName(toolName);
   if (mcp) {
@@ -446,6 +522,8 @@ function primaryDisplayFor(toolName: string): PrimaryDisplay {
     // Unknown server — keep the literal segment, tint by hash.
     return { emoji: "🔌", label: mcp.server, hue: hashHue(mcp.server) };
   }
+  const codexLabel = CODEX_PRIMARY_LABEL[toolName];
+  if (codexLabel) return { emoji: emojiFor(toolName), label: codexLabel };
   return { emoji: emojiFor(toolName), label: toolName };
 }
 
@@ -577,9 +655,10 @@ function collectBursts(
       // and stringifying it loses field access.
       const skin = skinFor(t.name, t.input);
       if (skin) {
-        const subWorldX = worldX + ESTIMATED_BUBBLE_W + SUB_GAP;
+        const primaryW = primaryBubbleWidth(t.name, primary.label);
+        const subWorldX = worldX + primaryW + SUB_GAP;
         const subWorldY = worldY;
-        const subAnchorX = worldX + ESTIMATED_BUBBLE_W;
+        const subAnchorX = worldX + primaryW;
         const subAnchorY = worldY + BUBBLE_HALF_H;
         out.push({
           id: `sub:${t.id}`,

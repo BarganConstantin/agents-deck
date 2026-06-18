@@ -48,10 +48,45 @@ const RATES: Array<{ match: RegExp; rates: ModelRates }> = [
   { match: /^claude[-_]haiku[-_]3[-_.]5\b/i,
     rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
 
-  // Codex / GPT-5 family — pricing intentionally null. Token tracking
-  // works (server reads ~/.codex/sessions/...), but the agent-dag UI hides
-  // the $ pill for Codex sessions until we wire OpenAI pricing in.
-  // null rates short-circuits costForUsage → returns zeros, hiding cost UI.
+  // ── OpenAI / Codex family ────────────────────────────────────────────────
+  // Rates sourced 2026-06-17 from platform.openai.com/docs/pricing.
+  // OpenAI billing is READ-DISCOUNT-ONLY: cached input tokens are billed at
+  // a reduced cached-input rate; there is NO cache-write charge (unlike
+  // Anthropic). cacheWrite is therefore 0 for every row below.
+  // See costForUsage() for the Codex-specific cost formula — input_tokens
+  // from OpenAI INCLUDES cached tokens, so we must not double-bill them.
+
+  // gpt-5.3-codex — $1.75 / $14  (cached $0.175)
+  { match: /^gpt[-_]5[-_.]3[-_.]codex/i,
+    rates: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
+
+  // codex-mini-latest — $1.50 / $6  (cached $0.375)
+  { match: /^codex[-_]mini/i,
+    rates: { input: 1.50, output: 6, cacheRead: 0.375, cacheWrite: 0 } },
+
+  // gpt-5.5 — $5 / $30  (cached $0.50)
+  { match: /^gpt[-_]5[-_.]5\b/i,
+    rates: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } },
+
+  // gpt-5.4-mini — $0.75 / $4.50  (cached $0.075)  ← must come before plain 5.4
+  { match: /^gpt[-_]5[-_.]4[-_.]mini/i,
+    rates: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 } },
+
+  // gpt-5.4-nano — $0.20 / $1.25  (cached $0.02)  ← must come before plain 5.4
+  { match: /^gpt[-_]5[-_.]4[-_.]nano/i,
+    rates: { input: 0.20, output: 1.25, cacheRead: 0.02, cacheWrite: 0 } },
+
+  // gpt-5.4 — $2.50 / $15  (cached $0.25)
+  { match: /^gpt[-_]5[-_.]4\b/i,
+    rates: { input: 2.50, output: 15, cacheRead: 0.25, cacheWrite: 0 } },
+
+  // o4-mini — $1.10 / $4.40  (cached $0.275)
+  { match: /^o4[-_]mini/i,
+    rates: { input: 1.10, output: 4.40, cacheRead: 0.275, cacheWrite: 0 } },
+
+  // o3 — $2.00 / $8  (cached $0.50)
+  { match: /^o3\b/i,
+    rates: { input: 2.00, output: 8, cacheRead: 0.50, cacheWrite: 0 } },
 ];
 
 /** Recognise Codex / OpenAI model ids so the UI can tag the model display
@@ -80,10 +115,17 @@ export interface CostBreakdown {
 export function costForUsage(usage: TokenUsage, modelId: string | undefined): CostBreakdown {
   const rates = ratesForModel(modelId);
   if (!rates) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  const input      = (usage.inputTokens       * rates.input)      / 1_000_000;
-  const output     = (usage.outputTokens      * rates.output)     / 1_000_000;
-  const cacheRead  = (usage.cacheReadTokens   * rates.cacheRead)  / 1_000_000;
-  const cacheWrite = (usage.cacheCreateTokens * rates.cacheWrite) / 1_000_000;
+  // OpenAI/Codex: input_tokens INCLUDES cached tokens, so bill only the
+  // non-cached portion at the full input rate to avoid double-charging.
+  // Claude: inputTokens EXCLUDES cache tokens — use it as-is.
+  const isCodex = isCodexModel(modelId);
+  const fullInputTokens = isCodex
+    ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
+    : usage.inputTokens;
+  const input      = fullInputTokens              * rates.input      / 1_000_000;
+  const output     = usage.outputTokens           * rates.output     / 1_000_000;
+  const cacheRead  = usage.cacheReadTokens        * rates.cacheRead  / 1_000_000;
+  const cacheWrite = usage.cacheCreateTokens      * rates.cacheWrite / 1_000_000;  // 0 for Codex
   return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 

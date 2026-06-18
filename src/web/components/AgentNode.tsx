@@ -92,7 +92,7 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
         <span><b>{data.toolCount}</b> tools</span>
         {inflight > 0 && <span className="inflight-meta"><b>{inflight}</b> in-flight</span>}
         {(data.usage.inputTokens + data.usage.outputTokens) > 0 && (
-          <span className="tokens-meta" title={`in:${data.usage.inputTokens}  out:${data.usage.outputTokens}  cache-r:${data.usage.cacheReadTokens}  cache-c:${data.usage.cacheCreateTokens}`}>
+          <span className="tokens-meta" title={`in:${data.usage.inputTokens}  out:${data.usage.outputTokens}  cache-r:${data.usage.cacheReadTokens}  cache-c:${data.usage.cacheCreateTokens}${(data.usage.reasoningOutputTokens ?? 0) > 0 ? `  reasoning:${data.usage.reasoningOutputTokens}` : ""}`}>
             <b>{fmtTok(data.usage.inputTokens + data.usage.outputTokens)}</b> tok
           </span>
         )}

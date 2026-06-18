@@ -725,11 +725,25 @@ function codexObjToPayload(obj, sid, cwd) {
       try { input = JSON.parse(pl.arguments); } catch {}
       return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: input, tool_use_id: pl.call_id, model };
     }
-    if (pl.type === "function_call_output") {
-      return { ...base, hook_event_name: "PostToolUse", tool_use_id: pl.call_id, model };
+    if (pl.type === "custom_tool_call") {
+      return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: { patch: pl.input }, tool_use_id: pl.call_id, model };
+    }
+    if (pl.type === "function_call_output" || pl.type === "custom_tool_call_output") {
+      const tool_response = pl.output != null ? parseCodexOutput(pl.output) : undefined;
+      return { ...base, hook_event_name: "PostToolUse", tool_use_id: pl.call_id, tool_response, model };
     }
   }
   return null;
+}
+
+function parseCodexOutput(raw) {
+  if (typeof raw !== "string") return raw;
+  try {
+    const o = JSON.parse(raw);
+    return (o && typeof o.output === "string") ? o.output : raw;
+  } catch {
+    return raw;
+  }
 }
 
 function emitCodexEvent(payload) {

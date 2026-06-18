@@ -217,6 +217,13 @@ const DETAIL_TOOL_CAT: Record<string, DetailCategory> = {
   Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
   Glob: "file", Grep: "file", LS: "file", NotebookEdit: "file",
   Bash: "shell", PowerShell: "shell",
+  // Codex shell tools
+  shell: "shell", exec_command: "shell", shell_command: "shell",
+  write_stdin: "shell", wait: "shell",
+  // Codex file-edit tool
+  apply_patch: "file",
+  // Codex planning tool
+  update_plan: "task",
   WebFetch: "web", WebSearch: "web",
   Task: "agent", Agent: "agent",
   TodoWrite: "task", TaskCreate: "task", TaskUpdate: "task",
