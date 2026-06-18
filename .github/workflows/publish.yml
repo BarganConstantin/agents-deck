@@ -46,27 +46,44 @@ jobs:
       - name: Build web bundle
         run: npm run build
 
-      # Publish under the primary name (agent-deck) and ALSO under the legacy
-      # name (agent-dag) so existing installs keep receiving updates. Same
-      # build/tarball, two registry names. We flip the "name" field in
-      # package.json for the second publish, then restore it.
-      - name: Publish to npm (agent-deck)
-        run: npm publish --provenance --access public
+      # Publish under BOTH names from the same build/tarball: the legacy name
+      # (agent-dag) first so existing installs always update, then the primary
+      # name (agent-deck). Each publish is idempotent — it skips if that
+      # version is already on the registry — so the workflow is safe to re-run
+      # (e.g. after fixing token scope) without erroring on the already-shipped
+      # name. The two steps are independent: a failure in one does not block
+      # the other.
+      - name: Publish to npm (agent-dag, legacy alias)
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "agent-dag@$VERSION" version >/dev/null 2>&1; then
+            echo "agent-dag@$VERSION already published — skipping."
+          else
+            npm pkg set name=agent-dag
+            npm publish --provenance --access public
+            npm pkg set name=agent-deck
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish to npm (agent-dag, legacy alias)
+      - name: Publish to npm (agent-deck)
+        if: ${{ !cancelled() }}
         run: |
-          npm pkg set name=agent-dag
-          npm publish --provenance --access public
-          npm pkg set name=agent-deck
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "agent-deck@$VERSION" version >/dev/null 2>&1; then
+            echo "agent-deck@$VERSION already published — skipping."
+          else
+            npm pkg set name=agent-deck
+            npm publish --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summary
+        if: ${{ !cancelled() }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          echo "### Published agent-deck@$VERSION :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "### Published v$VERSION :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- https://www.npmjs.com/package/agent-deck/v/$VERSION" >> $GITHUB_STEP_SUMMARY
           echo "- https://www.npmjs.com/package/agent-dag/v/$VERSION (legacy alias)" >> $GITHUB_STEP_SUMMARY
