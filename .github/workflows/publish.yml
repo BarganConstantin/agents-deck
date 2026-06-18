@@ -64,7 +64,7 @@ jobs:
             echo "agent-dag@$VERSION already published — skipping."
           else
             npm pkg set name=agent-dag
-            npm publish --access public
+            npm publish --provenance --access public
             npm pkg set name=agents-deck
           fi
         env:
@@ -79,7 +79,7 @@ jobs:
             echo "agents-deck@$VERSION already published — skipping."
           else
             npm pkg set name=agents-deck
-            npm publish --access public
+            npm publish --provenance --access public
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
