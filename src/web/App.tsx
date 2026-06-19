@@ -19,8 +19,8 @@ import ToolBursts from "./components/ToolBursts";
 import SessionSummary from "./components/SessionSummary";
 import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
-import TimelineStrip from "./components/TimelineStrip";
 import UsagePanel from "./components/UsagePanel";
+import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
@@ -52,7 +52,6 @@ const LAYOUT_STORAGE_KEY = "agent-dag.layout";
 const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
 const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
 const SESSION_LIST_OPEN_KEY = "agent-dag.sessionListOpen";
-const TIMELINE_OPEN_KEY = "agent-dag.timelineOpen";
 const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 const USAGE_PANEL_OPEN_KEY = "agent-dag.usagePanelOpen";
 
@@ -63,15 +62,6 @@ function loadSessionListOpen(): boolean {
 function saveSessionListOpen(open: boolean): void {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(SESSION_LIST_OPEN_KEY, open ? "1" : "0"); } catch {}
-}
-function loadTimelineOpen(): boolean {
-  if (typeof window === "undefined") return false;
-  const stored = window.localStorage.getItem(TIMELINE_OPEN_KEY);
-  try { return stored === null ? false : stored !== "0"; } catch { return false; }
-}
-function saveTimelineOpen(open: boolean): void {
-  if (typeof window === "undefined") return;
-  try { window.localStorage.setItem(TIMELINE_OPEN_KEY, open ? "1" : "0"); } catch {}
 }
 function loadDetailOpen(): boolean {
   if (typeof window === "undefined") return true;
@@ -471,15 +461,15 @@ function Inner() {
   /** Left sidebar (session list) visibility — persisted across refresh. */
   const [sessionListOpen, setSessionListOpen] = useState<boolean>(loadSessionListOpen);
   useEffect(() => { saveSessionListOpen(sessionListOpen); }, [sessionListOpen]);
-  /** Bottom timeline strip visibility — persisted across refresh. */
-  const [timelineOpen, setTimelineOpen] = useState<boolean>(loadTimelineOpen);
-  useEffect(() => { saveTimelineOpen(timelineOpen); }, [timelineOpen]);
+  /** Bottom spend-trend panel visibility — persisted across refresh. */
   /** Right detail panel visibility — persisted across refresh. */
   const [detailOpen, setDetailOpen] = useState<boolean>(loadDetailOpen);
   useEffect(() => { saveDetailOpen(detailOpen); }, [detailOpen]);
   /** Usage panel visibility — persisted across refresh. */
   const [usagePanelOpen, setUsagePanelOpen] = useState<boolean>(loadUsagePanelOpen);
   useEffect(() => { saveUsagePanelOpen(usagePanelOpen); }, [usagePanelOpen]);
+  // ccusage history modal — transient (not persisted), opened from the toolbar.
+  const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** Bumped on each group-drag move so snapshotToFlow recomputes immediately
    *  (reads the freshly-pinned positions) rather than waiting for the 250ms
    *  tick. A plain counter — value is irrelevant, only the change matters. */
@@ -607,18 +597,6 @@ function Inner() {
       // Prune long-finished agents so memory doesn't grow over multi-day
       // sessions. Keeps most-recent AGENT_CAP — past 5 minutes since done.
       if (pruneOldAgents(stateRef.current, t, AGENT_CAP, AGENT_GRACE_MS)) changed = true;
-      // Sample total cost every ~1s for the timeline chart. Cheaper than
-      // ticking every 250ms and detailed enough for a smooth area.
-      if (t - lastCostSampleAtRef.current >= 1000) {
-        lastCostSampleAtRef.current = t;
-        let total = 0;
-        for (const a of stateRef.current.agents.values()) {
-          total += costForUsage(a.usage, a.model).total;
-        }
-        const buf = costSamplesRef.current;
-        buf.push({ t, cost: total });
-        if (buf.length > 240) buf.shift();
-      }
       if (changed) rerender();
     }, 250);
     return () => clearInterval(id);
@@ -630,11 +608,6 @@ function Inner() {
   const lastLayoutSigForFitRef = useRef("");
   // Debounce timer for persisting the viewport on pan/zoom.
   const vpSaveTimerRef = useRef<number | null>(null);
-  /** Rolling buffer of {t, total} cost samples, snapshotted ~1/sec. Powers
-   *  the timeline's "$" mode (smooth area chart of cumulative spend over
-   *  the last minute or so). Capped at 240 samples (~4 minutes). */
-  const costSamplesRef = useRef<Array<{ t: number; cost: number }>>([]);
-  const lastCostSampleAtRef = useRef(0);
 
   // Auto-recover from "drifted off-screen": every 1.5s check whether ANY
   // agent's bounding box intersects the visible viewport. If none have at
@@ -999,7 +972,7 @@ function Inner() {
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
       if (e.key === "l" || e.key === "L") setSessionListOpen(o => !o);
-      if (e.key === "h" || e.key === "H") setTimelineOpen(o => !o);
+      if (e.key === "h" || e.key === "H") setUsageHistoryOpen(o => !o);
       if (e.key === "u" || e.key === "U") setUsagePanelOpen(o => !o);
       if (e.key === "j" || e.key === "J") stepAgent(1);
       if (e.key === "k" || e.key === "K") stepAgent(-1);
@@ -1150,11 +1123,17 @@ function Inner() {
             aria-label="Toggle session list"
           >☰</button>
           <button
-            className={`btn icon-btn ${timelineOpen ? "primary" : ""}`}
-            onClick={() => setTimelineOpen(o => !o)}
-            title={`${timelineOpen ? "Hide" : "Show"} activity timeline (H)`}
-            aria-label="Toggle activity timeline"
-          >⏱</button>
+            className={`btn icon-btn ${usageHistoryOpen ? "primary" : ""}`}
+            onClick={() => setUsageHistoryOpen(o => !o)}
+            title="Usage history — ccusage (H)"
+            aria-label="Open usage history"
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+              <line x1="3" y1="11.5" x2="3" y2="7" />
+              <line x1="7" y1="11.5" x2="7" y2="3" />
+              <line x1="11" y1="11.5" x2="11" y2="8.5" />
+            </svg>
+          </button>
           <button className="btn" onClick={handleRelayout} title="Auto-arrange — clear pins (R)">Re-layout</button>
           <button className="btn" onClick={handleClear} title="Clear canvas (C)">Clear</button>
           <button
@@ -1362,17 +1341,6 @@ function Inner() {
             style={{ background: cssVar("--panel"), border: `1px solid ${cssVar("--line")}`, borderRadius: 8 }}
           />
         </ReactFlow>
-        {timelineOpen && agentCount > 0 && (
-          <TimelineStrip
-            agents={stateRef.current.agents}
-            visibleAgentIds={visibleAgentIds}
-            now={now}
-            costSamples={costSamplesRef.current}
-            onSelect={(id) => selectAgent(id, false)}
-            onOpenTool={setOpenedToolId}
-            onClose={() => setTimelineOpen(false)}
-          />
-        )}
       </div>
 
       {detailOpen ? (
@@ -1411,6 +1379,7 @@ function Inner() {
       )}
 
       {openedTool && <ToolModal tool={openedTool} onClose={() => setOpenedToolId(null)} />}
+      {usageHistoryOpen && <UsageHistoryModal onClose={() => setUsageHistoryOpen(false)} />}
       {contextFor && (() => {
         const root = stateRef.current.agents.get(contextFor);
         if (!root) return null;
@@ -1497,7 +1466,7 @@ function EmptyDetail({ count }: { count: number }) {
         <div className="sc"><kbd>R</kbd><span>re-arrange</span></div>
         <div className="sc"><kbd>F</kbd><span>fit view</span></div>
         <div className="sc"><kbd>L</kbd><span>session list</span></div>
-        <div className="sc"><kbd>H</kbd><span>activity timeline</span></div>
+        <div className="sc"><kbd>H</kbd><span>usage history</span></div>
         <div className="sc"><kbd>U</kbd><span>usage panel</span></div>
         <div className="sc"><kbd>C</kbd><span>clear canvas</span></div>
         <div className="sc"><kbd>T</kbd><span>toggle theme</span></div>

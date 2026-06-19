@@ -1023,6 +1023,18 @@ async function handleCodexQuota(req, res) {
   send(res, 200, quota);
 }
 
+async function handleCcusage(req, res) {
+  const { fetchCcusageDaily } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href
+  );
+  const url = new URL(req.url, "http://localhost");
+  const force = url.searchParams.get("refresh") === "1";
+  const since = url.searchParams.get("since") || undefined;
+  const until = url.searchParams.get("until") || undefined;
+  const data = await fetchCcusageDaily({ since, until, force });
+  send(res, 200, data);
+}
+
 function handleHealth(_req, res) {
   send(res, 200, {
     ok: true,
@@ -1092,6 +1104,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/quota")       return handleQuota(req, res);
     if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return handleCodexUsage(req, res);
     if (req.method === "GET"  && url.pathname === "/api/codex-quota") return handleCodexQuota(req, res);
+    if (req.method === "GET"  && url.pathname === "/api/ccusage")     return handleCcusage(req, res);
 
     if (req.method === "GET" && url.pathname === "/api/events") {
       const since = Number(url.searchParams.get("since") ?? 0);
