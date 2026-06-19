@@ -82,28 +82,35 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Animated banner ───────────────────────────────────────────────────────────
 async function printBanner() {
-  const IW = 38; // inner visible width between ║ chars
-  const pad = (visLen) => " ".repeat(Math.max(0, IW - visLen));
-  const HR = "═".repeat(IW);
-
-  // Each entry: [rendered string with ANSI, visible char count, left-border color, right-border color]
-  const rows = [
-    { l: `  ${C.bCyan}${C.bold}◉${C.reset}  ${C.white}${C.bold}agents-deck${C.reset}  ${C.dim}v${PKG_VERSION}${C.reset}`, vis: 19 + PKG_VERSION.length, lc: C.blue,    rc: C.blue    },
-    { l: `  ${C.dim}live DAG · Claude Code + Codex${C.reset}`,                                                  vis: 32, lc: C.magenta, rc: C.magenta },
-    { l: `  ${C.yellow}watch agents fork  ${C.cyan}→${C.reset}  ${C.green}tools fire${C.reset}`,               vis: 34, lc: C.bMag,    rc: C.bMag    },
+  // figlet slant font — hardcoded, no runtime dep
+  const ART = [
+    '                          __                 __          __  ',
+    '  ____ _____ ____  ____  / /______      ____/ /__  _____/ /__',
+    ' / __ `/ __ `/ _ \\/ __ \\/ __/ ___/_____/ __  / _ \\/ ___/ //_/',
+    '/ /_/ / /_/ /  __/ / / / /_(__  )_____/ /_/ /  __/ /__/ ,<   ',
+    '\\__,_/\\__, /\\___/_/ /_/\\__/____/      \\__,_/\\___/\\___/_/|_|  ',
+    '     /____/                                                    ',
   ];
+  const COLORS = [C.dim, C.blue, C.cyan, C.bCyan, C.magenta, C.dim];
 
-  const lines = [
-    "",
-    `  ${C.cyan}${C.bold}╔${HR}╗${C.reset}`,
-    ...rows.map(r => `  ${r.lc}${C.bold}║${C.reset}${r.l}${pad(r.vis)}${r.rc}${C.bold}║${C.reset}`),
-    `  ${C.cyan}${C.bold}╚${HR}╝${C.reset}`,
-    "",
-  ];
-  for (const line of lines) {
-    process.stdout.write(line + "\n");
-    if (tty) await sleep(45);
+  process.stdout.write('\n');
+
+  if (tty) {
+    const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+    for (let i = 0; i < 8; i++) {
+      process.stdout.write(`\r  ${C.bCyan}${frames[i % frames.length]}${C.reset}  ${C.dim}loading…${C.reset}`);
+      await sleep(70);
+    }
+    process.stdout.write('\r' + ' '.repeat(28) + '\n');
+    await sleep(40);
   }
+
+  for (let i = 0; i < ART.length; i++) {
+    process.stdout.write(` ${COLORS[i]}${ART[i]}${C.reset}\n`);
+    if (tty) await sleep(38);
+  }
+
+  process.stdout.write(`\n  ${C.dim}v${PKG_VERSION}  ·  live agent DAG · Claude Code + Codex${C.reset}\n\n`);
 }
 
 // ── Spinner ───────────────────────────────────────────────────────────────────
