@@ -1,25 +1,149 @@
 // Fetches historical usage from the `ccusage` CLI (https://github.com/ccusage/ccusage).
 // ccusage reads the local ~/.claude (and other agent) logs and reports cost +
-// token usage grouped by day. We shell out to it via `npx -y ccusage@latest`
-// — it is NOT a dependency; npx fetches it on first run (cached afterwards).
+// token usage grouped by day.
 //
-// The whole backend is: spawn the CLI with --json, slice the JSON out of stdout
-// (npx can print banner noise), JSON.parse, cache. Ported from the task-board
-// project's three Next.js routes, collapsed to one daily fetch.
-import { spawn } from "node:child_process";
+// Performance: we do NOT run `npx -y ccusage@latest` on every call — that hits
+// the npm registry to resolve `@latest` (and re-downloads when the npx cache is
+// cold), so each modal open waited seconds. Instead we keep our OWN managed
+// install under ~/.agents-deck/ccusage and invoke it directly with
+// `node <pkg>/src/cli.js` (no npx, no registry round-trip). A throttled
+// once-per-day background check upgrades it when a newer ccusage ships, while
+// the current call always serves from the already-installed copy. If the
+// managed install is missing/broken we fall back to the old npx path so the
+// feature still works on a fresh machine.
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
-const CACHE_MS = 120_000; // 2 min — ccusage spawn is heavy; modal is manual-open
+const CACHE_MS = 120_000; // 2 min — modal is manual-open; cheap to keep warm
 const TIMEOUT_MS = 90_000;
+const INSTALL_TIMEOUT_MS = 120_000; // first-run npm install can be slow
+const UPDATE_CHECK_MS = 24 * 3600_000; // check npm for a newer ccusage once/day
+
+const CACHE_DIR = path.join(os.homedir(), ".agents-deck", "ccusage");
+const PKG_DIR = path.join(CACHE_DIR, "node_modules", "ccusage");
+const MARKER = path.join(CACHE_DIR, ".last-update-check");
 
 const _cache = new Map(); // key `${since}|${until}` → { result, at }
 
-// Run `ccusage <args> --json` and resolve its raw stdout.
-function runCcusage(args) {
+let _installing = null;   // Promise guard so concurrent calls share one install
+let _checkedThisRun = false; // only kick the daily check once per process boot
+
+// ── managed install ─────────────────────────────────────────────────────────
+
+// Absolute path to ccusage's CLI entry inside our managed install, or null if
+// not installed. Reads the package's `bin` field (currently "./src/cli.js").
+function resolveEntry() {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(PKG_DIR, "package.json"), "utf8"));
+    let rel = pkg.bin;
+    if (rel && typeof rel === "object") rel = rel.ccusage ?? Object.values(rel)[0];
+    if (typeof rel !== "string") return null;
+    const entry = path.join(PKG_DIR, rel);
+    return existsSync(entry) ? { entry, version: pkg.version } : null;
+  } catch {
+    return null;
+  }
+}
+
+// Run `npm install ccusage@<spec> --prefix CACHE_DIR`. Synchronous variant for
+// the first-run cold path (we must have a binary before we can answer).
+function installSync(spec = "latest") {
+  mkdirSync(CACHE_DIR, { recursive: true });
+  const r = spawnSync(
+    "npm",
+    ["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
+     "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"],
+    { shell: true, windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    throw new Error(`npm install ccusage failed: ${(r.stderr || "").trim() || r.status}`);
+  }
+}
+
+// Background, non-blocking install (used by the daily update path).
+function installAsync(spec = "latest") {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const child = spawn(
+      "npm",
+      ["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
+       "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"],
+      { shell: true, windowsHide: true, detached: false, stdio: "ignore" },
+    );
+    child.on("error", () => {});
+    child.unref?.();
+  } catch { /* best-effort */ }
+}
+
+// True at most once per UPDATE_CHECK_MS, gated by the marker file's mtime so the
+// throttle survives restarts.
+function updateCheckDue() {
+  try {
+    return Date.now() - statSync(MARKER).mtimeMs > UPDATE_CHECK_MS;
+  } catch {
+    return true; // no marker yet → due
+  }
+}
+// (Re)write the marker so its mtime marks "now" as the last check time.
+function touchMarker() {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(MARKER, String(Date.now()));
+  } catch { /* ignore */ }
+}
+
+// Non-blocking: compare installed version to npm `latest`; install if newer.
+function maybeBackgroundUpdate(installedVersion) {
+  if (_checkedThisRun || !updateCheckDue()) return;
+  _checkedThisRun = true;
+  touchMarker();
+  try {
+    const child = spawn("npm", ["view", "ccusage", "version"],
+      { shell: true, windowsHide: true });
+    let out = "";
+    child.stdout.on("data", d => { out += d; });
+    child.on("error", () => {});
+    child.on("close", () => {
+      const latest = out.trim();
+      if (latest && latest !== installedVersion) installAsync(latest);
+    });
+  } catch { /* ignore */ }
+}
+
+// Ensure a runnable ccusage. Returns { kind:"node", entry } for the managed
+// install, or { kind:"npx" } as the portable fallback.
+async function getRunner() {
+  let resolved = resolveEntry();
+  if (resolved) {
+    maybeBackgroundUpdate(resolved.version);
+    return { kind: "node", entry: resolved.entry };
+  }
+  // Cold: install once (deduped across concurrent callers).
+  if (!_installing) {
+    _installing = (async () => { installSync("latest"); })()
+      .catch(e => { console.error("agents-deck ccusage: install failed:", e?.message ?? e); })
+      .finally(() => { _installing = null; });
+  }
+  await _installing;
+  resolved = resolveEntry();
+  if (resolved) { touchMarker(); return { kind: "node", entry: resolved.entry }; }
+  return { kind: "npx" }; // npm unavailable / offline → fall back to npx
+}
+
+// ── invocation ──────────────────────────────────────────────────────────────
+
+// Run ccusage with the given args, resolve raw stdout.
+async function runCcusage(args) {
+  const runner = await getRunner();
+  const [cmd, full] = runner.kind === "node"
+    ? [process.execPath, [runner.entry, ...args]]
+    : ["npx", ["-y", "ccusage@latest", ...args]];
   return new Promise((resolve, reject) => {
-    // shell:true + windowsHide:true so `npx` resolves on Windows without a
-    // popup console. ccusage@latest is pinned so behavior is stable.
-    const child = spawn("npx", ["-y", "ccusage@latest", ...args], {
-      shell: true,
+    const child = spawn(cmd, full, {
+      // node path needs no shell; npx fallback does (Windows .cmd shim).
+      shell: runner.kind === "npx",
       windowsHide: true,
     });
     let out = "", err = "";
