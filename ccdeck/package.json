@@ -1,0 +1,36 @@
+{
+  "name": "ccdeck",
+  "version": "1.0.0",
+  "description": "Alias for agents-deck — live canvas of Claude Code subagents.",
+  "type": "module",
+  "bin": {
+    "ccdeck": "bin/ccdeck.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "dependencies": {
+    "agents-deck": "^1.23.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "anthropic",
+    "agents",
+    "visualization",
+    "dashboard",
+    "dag",
+    "deck",
+    "ccdeck"
+  ],
+  "author": "Bargan Constantin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BarganConstantin/agents-deck.git"
+  },
+  "homepage": "https://github.com/BarganConstantin/agents-deck#readme"
+}

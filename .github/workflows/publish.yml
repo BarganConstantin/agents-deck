@@ -84,11 +84,28 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Publish to npm (ccdeck, stub alias)
+        if: ${{ !cancelled() }}
+        run: |
+          cd ccdeck
+          VERSION=$(node -p "require('./package.json').version")
+          EXISTING=$(npm view "ccdeck@$VERSION" version 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "ccdeck@$VERSION already published — skipping."
+          else
+            npm install --ignore-scripts
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          CCDECK_VERSION=$(node -p "require('./ccdeck/package.json').version")
           echo "### Published v$VERSION :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- https://www.npmjs.com/package/agents-deck/v/$VERSION" >> $GITHUB_STEP_SUMMARY
           echo "- https://www.npmjs.com/package/agent-dag/v/$VERSION (legacy alias)" >> $GITHUB_STEP_SUMMARY
+          echo "- https://www.npmjs.com/package/ccdeck/v/$CCDECK_VERSION (stub alias)" >> $GITHUB_STEP_SUMMARY

@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "agents-deck": "bin/agent-dag.js",
-    "agent-dag": "bin/agent-dag.js"
+    "agent-dag": "bin/agent-dag.js",
+    "ccdeck": "bin/agent-dag.js"
   },
   "files": [
     "bin",
