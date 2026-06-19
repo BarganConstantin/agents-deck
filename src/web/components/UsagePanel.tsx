@@ -419,32 +419,49 @@ export default function UsagePanel({ state, now, onClose }: Props) {
   const hasCost = totalCost.total > 0;
   const totalTokenSum = totalTokens.in + totalTokens.out;
 
+  const anyLoading = quotaLoading || codexLoading;
+  const lastUpdatedMs = Math.max(quota?.fetchedAt ?? 0, codexQuota?.fetchedAt ?? 0);
+  const lastUpdatedAgo = lastUpdatedMs > 0
+    ? (() => {
+        const diffSec = nowSec - Math.floor(lastUpdatedMs / 1000);
+        if (diffSec < 10)  return "just now";
+        if (diffSec < 60)  return `${diffSec}s ago`;
+        if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+        return `${Math.floor(diffSec / 3600)}h ago`;
+      })()
+    : null;
+
+  const refreshAll = () => { refreshQuota(); refreshCodex(); };
+
   return (
     <div className="usage-panel" aria-label="Usage">
       <div className="up-header">
         <h3>Usage</h3>
         {burnRate && <span className="up-rate">{burnRate}</span>}
-        <button
-          type="button"
-          className="btn icon-btn up-close"
-          onClick={onClose}
-          aria-label="Close usage panel"
-          title="Close (U)"
-        >×</button>
+        <div className="up-header-right">
+          {lastUpdatedAgo && !anyLoading && (
+            <span className="up-last-updated">{lastUpdatedAgo}</span>
+          )}
+          <button
+            type="button"
+            className="btn up-refresh-btn"
+            onClick={refreshAll}
+            disabled={anyLoading}
+            title="Refresh Claude + Codex quota"
+          >{anyLoading ? "…" : "↻"}</button>
+          <button
+            type="button"
+            className="btn icon-btn up-close"
+            onClick={onClose}
+            aria-label="Close usage panel"
+            title="Close (U)"
+          >×</button>
+        </div>
       </div>
 
       {/* ── Claude quota ── */}
       <section className="up-section up-quota-section">
-        <div className="up-quota-header">
-          <h4 className="up-section-title" style={{ margin: 0 }}>Claude quota</h4>
-          <button
-            type="button"
-            className="btn up-refresh-btn"
-            onClick={refreshQuota}
-            disabled={quotaLoading}
-            title="Re-fetch quota from claude CLI"
-          >{quotaLoading ? "…" : "↻"}</button>
-        </div>
+        <h4 className="up-section-title">Claude quota</h4>
         {quota?.ok ? (
           <div className="up-quota-bars">
             {quota.session5hPct != null && (
@@ -486,16 +503,7 @@ export default function UsagePanel({ state, now, onClose }: Props) {
 
       {/* ── Codex quota ── */}
       <section className="up-section up-quota-section">
-        <div className="up-quota-header">
-          <h4 className="up-section-title" style={{ margin: 0 }}>Codex quota</h4>
-          <button
-            type="button"
-            className="btn up-refresh-btn"
-            onClick={refreshCodex}
-            disabled={codexLoading}
-            title="Re-fetch Codex quota from ChatGPT API"
-          >{codexLoading ? "…" : "↻"}</button>
-        </div>
+        <h4 className="up-section-title">Codex quota</h4>
         {codexQuota?.ok ? (
           <div className="up-quota-bars">
             {codexQuota.session5hPct != null && (

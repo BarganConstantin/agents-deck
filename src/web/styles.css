@@ -2516,6 +2516,16 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-weight: 600;
   flex: 1;
 }
+.up-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.up-last-updated {
+  font-size: 10px;
+  color: var(--muted-dim);
+  white-space: nowrap;
+}
 .up-rate {
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
