@@ -1,7 +1,7 @@
 {
   "name": "ccdeck",
   "version": "1.23.1",
-  "description": "Alias for agents-deck — live canvas of Claude Code subagents.",
+  "description": "Alias for agents-deck — live deck of Claude Code and Codex agents. Run with: npx ccdeck",
   "type": "module",
   "bin": {
     "ccdeck": "bin/ccdeck.js"
