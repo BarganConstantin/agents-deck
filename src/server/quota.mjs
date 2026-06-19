@@ -13,7 +13,7 @@ const IS_WIN = platform() === "win32";
 
 let _cache = null;
 let _cacheAt = 0;
-const CACHE_MS = 120_000;
+const CACHE_MS = 60_000;
 
 function stripAnsi(s) {
   return s

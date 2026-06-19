@@ -205,7 +205,7 @@ function QuotaBar({ pct, label, reset, resetAt, windowSec, limitReached, nowSec 
 }
 
 // ── Quota fetch hook ───────────────────────────────────────────────────────
-const QUOTA_POLL_MS = 120_000; // match server cache TTL
+const QUOTA_POLL_MS = 60_000;
 
 function useQuota() {
   const [quota, setQuota] = useState<QuotaData | null>(null);

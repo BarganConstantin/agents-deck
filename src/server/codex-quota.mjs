@@ -11,7 +11,7 @@ const WHAM_URL    = "https://chatgpt.com/backend-api/wham/usage";
 
 let _cache    = null;
 let _cacheAt  = 0;
-const CACHE_MS = 120_000;
+const CACHE_MS = 60_000;
 
 async function readAccessToken() {
   try {
