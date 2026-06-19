@@ -18,36 +18,72 @@ const CACHE_MS = 60_000;
 const WINDOW_5H_MS  = 5 * 60 * 60 * 1000;
 const WINDOW_7D_MS  = 7 * 24 * 60 * 60 * 1000;
 
-// Tail-read the last CHUNK bytes of a file, split on newlines, find the last
-// token_count event. Returns the total_token_usage object or null.
-const TAIL_CHUNK = 32_768; // 32 KB — enough for a few recent token_count lines
-
-async function readLastTokenCount(filePath) {
+// Read the full series of cumulative token_count events from a rollout file.
+// Each token_count event carries `info.total_token_usage` — the running total
+// for the session at that point. We keep the whole series (with timestamps) so
+// we can compute how many tokens were spent *within* a rolling window via a
+// cumulative delta, rather than dumping a session's lifetime total into a bucket
+// based on when it merely started.
+//
+// Returns an ascending-by-time array of { ts, inp, out, cacheR, total } where
+// `inp` includes the cached portion (Codex reports input_tokens incl. cache),
+// or null if the file has no usable token_count events.
+async function readTokenSeries(filePath) {
   let fd;
   try {
     fd = await open(filePath, "r");
     const { size } = await fd.stat();
     if (size === 0) return null;
-    const readSize = Math.min(size, TAIL_CHUNK);
-    const buf = Buffer.alloc(readSize);
-    await fd.read(buf, 0, readSize, size - readSize);
-    const text = buf.toString("utf8");
-    // Split into lines (may start mid-line — skip first if partial)
-    const lines = text.split("\n");
-    // Process from the end
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type === "event_msg" && obj.payload?.type === "token_count") {
-          return obj.payload.info?.total_token_usage ?? null;
-        }
-      } catch { /* malformed — keep searching */ }
+    const text = (await fd.readFile()).toString("utf8");
+    const series = [];
+    for (const raw of text.split("\n")) {
+      // Cheap pre-filter before the (relatively) expensive JSON.parse.
+      if (!raw.includes("total_token_usage")) continue;
+      let obj;
+      try { obj = JSON.parse(raw); } catch { continue; }
+      if (obj.type !== "event_msg" || obj.payload?.type !== "token_count") continue;
+      const u = obj.payload.info?.total_token_usage;
+      if (!u) continue;
+      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      series.push({
+        ts:     isNaN(ts) ? null : ts,
+        inp:    u.input_tokens         ?? 0,
+        out:    u.output_tokens        ?? 0,
+        cacheR: u.cached_input_tokens  ?? 0,
+        total:  u.total_tokens         ?? ((u.input_tokens ?? 0) + (u.output_tokens ?? 0)),
+      });
     }
-  } catch { /* file gone or unreadable */ }
+    return series.length ? series : null;
+  } catch { return null; }
   finally { fd?.close().catch(() => {}); }
-  return null;
+}
+
+// Tokens spent within [windowStartMs, now]: the last cumulative snapshot minus
+// the last snapshot taken *before* the window opened. If the session began
+// inside the window (no prior snapshot), the baseline is zero and the full
+// cumulative end counts. Fields are returned non-overlapping so they sum to
+// `total`: `input` is fresh (non-cached) input, `cacheRead` is the cached
+// portion, `output` is output. (Codex's input_tokens includes cache, so we
+// subtract it out to avoid double-counting.)
+function windowDelta(series, windowStartMs) {
+  if (!series || series.length === 0) return null;
+  const end = series[series.length - 1];
+  // Baseline = last event strictly before the window opened.
+  let base = null;
+  for (const e of series) {
+    if (e.ts != null && e.ts < windowStartMs) base = e;
+    else if (e.ts != null) break;
+  }
+  const dInp    = Math.max(0, end.inp    - (base?.inp    ?? 0));
+  const dOut    = Math.max(0, end.out    - (base?.out    ?? 0));
+  const dCacheR = Math.max(0, end.cacheR - (base?.cacheR ?? 0));
+  const dTotal  = Math.max(0, end.total  - (base?.total  ?? 0));
+  return {
+    inputTokens:     Math.max(0, dInp - dCacheR), // fresh (non-cached) input
+    outputTokens:    dOut,
+    cacheReadTokens: dCacheR,
+    totalTokens:     dTotal,
+  };
 }
 
 // Parse session start time from rollout filename.
@@ -106,41 +142,31 @@ export async function fetchCodexUsage({ force = false } = {}) {
 
   const w5h  = emptyWindow();
   const w7d  = emptyWindow();
+  const start5h = now - WINDOW_5H_MS;
+  const start7d = now - WINDOW_7D_MS;
+
+  const addTo = (win, d) => {
+    if (!d || d.totalTokens <= 0) return;
+    win.inputTokens      += d.inputTokens;
+    win.outputTokens     += d.outputTokens;
+    win.cacheReadTokens  += d.cacheReadTokens;
+    win.totalTokens      += d.totalTokens;
+    win.sessionCount++;
+  };
 
   try {
-    // Need files from last 7 days (superset covers both windows)
+    // Files whose session *started* within 7d. A long session that started up
+    // to 7d ago but is still active is captured here too, and its share of the
+    // 5h window is recovered via the cumulative delta below — so bucketing no
+    // longer drops active-but-old sessions or over-counts the pre-window tail.
     const files = await listRolloutFiles(WINDOW_7D_MS);
 
-    await Promise.all(files.map(async ({ path, startMs }) => {
-      const usage = await readLastTokenCount(path);
-      if (!usage) return;
-
-      const age = now - startMs;
-      const in5h = age <= WINDOW_5H_MS;
-      const in7d = age <= WINDOW_7D_MS; // always true here but explicit
-
-      const inp   = usage.input_tokens          ?? 0;
-      const out   = usage.output_tokens         ?? 0;
-      const cacheR = usage.cached_input_tokens  ?? 0;
-      const cacheC = 0; // rollout doesn't track cache creation separately
-      const total = usage.total_tokens          ?? (inp + out);
-
-      if (in5h) {
-        w5h.inputTokens      += inp;
-        w5h.outputTokens     += out;
-        w5h.cacheReadTokens  += cacheR;
-        w5h.cacheCreateTokens += cacheC;
-        w5h.totalTokens      += total;
-        w5h.sessionCount++;
-      }
-      if (in7d) {
-        w7d.inputTokens      += inp;
-        w7d.outputTokens     += out;
-        w7d.cacheReadTokens  += cacheR;
-        w7d.cacheCreateTokens += cacheC;
-        w7d.totalTokens      += total;
-        w7d.sessionCount++;
-      }
+    await Promise.all(files.map(async ({ path }) => {
+      const series = await readTokenSeries(path);
+      if (!series) return;
+      // Same series feeds both windows; baseline differs per window start.
+      addTo(w5h, windowDelta(series, start5h));
+      addTo(w7d, windowDelta(series, start7d));
     }));
   } catch (err) {
     console.error("agents-deck codex-usage: scan failed:", err?.message ?? err);

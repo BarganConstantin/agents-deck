@@ -129,7 +129,9 @@ function fmtCountdown(resetAtSec: number, nowSec: number): string | null {
 interface PaceInfo {
   label: string;
   color: string;
-  runsOutIn?: string; // set when deficit and ETA < window remaining
+  expectedPct: number;  // where usage "should" be now — the green-line marker position
+  isDeficit: boolean;   // true when burning faster than sustainable
+  runsOutIn?: string;   // set when deficit and ETA < window remaining
 }
 
 function computePace(pct: number, resetAtSec: number, windowSec: number, nowSec: number): PaceInfo | null {
@@ -139,14 +141,19 @@ function computePace(pct: number, resetAtSec: number, windowSec: number, nowSec:
   const expectedPct = Math.min(100, (elapsedSec / windowSec) * 100);
   const delta = pct - expectedPct;
 
-  if (Math.abs(delta) < 3) return { label: "on pace", color: "var(--accent)" };
+  if (Math.abs(delta) < 3) {
+    return { label: "on pace", color: "var(--ok)", expectedPct, isDeficit: false };
+  }
 
   if (delta > 0) {
-    // using more than expected → deficit
+    // using more than expected → deficit (burning too fast)
     const remainPct = 100 - pct;
     const ratePerSec = elapsedSec > 0 ? pct / elapsedSec : 0;
     const runsOutSec = ratePerSec > 0 ? remainPct / ratePerSec : Infinity;
-    const info: PaceInfo = { label: `${Math.round(delta)}% ahead`, color: "var(--warn)" };
+    const info: PaceInfo = {
+      label: `${Math.round(delta)}% ahead`, color: "var(--warn)",
+      expectedPct, isDeficit: true,
+    };
     if (runsOutSec < remainSec && runsOutSec < 86400) {
       const h = Math.floor(runsOutSec / 3600);
       const m = Math.floor((runsOutSec % 3600) / 60);
@@ -154,8 +161,8 @@ function computePace(pct: number, resetAtSec: number, windowSec: number, nowSec:
     }
     return info;
   }
-  // under-using → reserve
-  return { label: `${Math.round(-delta)}% reserve`, color: "var(--accent)" };
+  // under-using → reserve (safe, will last until reset)
+  return { label: `${Math.round(-delta)}% reserve`, color: "var(--ok)", expectedPct, isDeficit: false };
 }
 
 // ── Quota bar ──────────────────────────────────────────────────────────────
@@ -190,6 +197,15 @@ function QuotaBar({ pct, label, reset, resetAt, windowSec, limitReached, nowSec 
       </div>
       <div className="qb-track">
         <div className="qb-fill" style={{ width: `${fillW}%`, background: color, opacity: capped === 0 ? 0.4 : 1 }} />
+        {/* Pace marker ("green line"): where usage should be now to last until
+            reset. Green when you have reserve / on pace, red when in deficit. */}
+        {pace && (
+          <div
+            className="qb-pace-marker"
+            style={{ left: `${pace.expectedPct}%`, background: pace.isDeficit ? "var(--err)" : "var(--ok)" }}
+            title={`To last until reset, stay near ${Math.round(pace.expectedPct)}% by now`}
+          />
+        )}
       </div>
       <div className="qb-reset-row">
         {countdown

@@ -2714,6 +2714,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-weight: 600;
 }
 .qb-track {
+  position: relative;
   height: 6px;
   border-radius: 3px;
   background: var(--line);
@@ -2723,6 +2724,18 @@ button.tool.clickable:last-child { border-bottom: none; }
   height: 100%;
   border-radius: 3px;
   transition: width 400ms ease;
+}
+/* Pace "green line" — vertical marker at the expected-usage position. */
+.qb-pace-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+  transition: left 400ms ease;
+  z-index: 2;
 }
 .qb-reset-row {
   display: flex;
