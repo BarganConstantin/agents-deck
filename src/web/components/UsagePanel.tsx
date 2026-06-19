@@ -169,9 +169,12 @@ interface QuotaBarProps {
   nowSec: number;      // current time in seconds (for countdown + pace)
 }
 function QuotaBar({ pct, label, reset, resetAt, windowSec, limitReached, nowSec }: QuotaBarProps) {
-  const capped = Math.min(100, Math.max(0, pct));
-  const isErr  = limitReached || capped >= 90;
-  const color  = isErr ? "var(--err)" : capped >= 70 ? "var(--warn)" : "var(--accent)";
+  const capped   = Math.min(100, Math.max(0, pct));
+  const isErr    = limitReached || capped >= 90;
+  const color    = isErr ? "var(--err)" : capped >= 70 ? "var(--warn)" : "var(--accent)";
+  const pctLabel = capped === 0 ? "< 1%" : `${capped}%`;
+  // minimum 2% visual fill so a 0% bar is still visible as a thin sliver
+  const fillW    = capped === 0 ? 2 : capped;
 
   const countdown = resetAt ? fmtCountdown(resetAt, nowSec) : null;
   const pace = (resetAt && windowSec) ? computePace(capped, resetAt, windowSec, nowSec) : null;
@@ -183,10 +186,10 @@ function QuotaBar({ pct, label, reset, resetAt, windowSec, limitReached, nowSec 
           {label}
           {limitReached && <span className="qb-limit-badge" title="Rate limit reached">⛔</span>}
         </span>
-        <span className="qb-pct" style={{ color }}>{capped}%</span>
+        <span className="qb-pct" style={{ color }}>{pctLabel}</span>
       </div>
       <div className="qb-track">
-        <div className="qb-fill" style={{ width: `${capped}%`, background: color }} />
+        <div className="qb-fill" style={{ width: `${fillW}%`, background: color, opacity: capped === 0 ? 0.4 : 1 }} />
       </div>
       <div className="qb-reset-row">
         {countdown
