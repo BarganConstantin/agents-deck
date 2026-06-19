@@ -1,6 +1,6 @@
 {
   "name": "agents-deck",
-  "version": "1.20.2",
+  "version": "1.21.0",
   "description": "Live deck of Claude Code and Codex agents — watch parallel subagents fork, call tools, and return on one calm canvas.",
   "type": "module",
   "bin": {
