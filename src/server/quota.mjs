@@ -1,20 +1,144 @@
-// Fetches Claude rate-limit quota by running `claude --print /usage`.
-// On Windows the binary is a .cmd wrapper — we use exec() (shell-based)
-// so that cmd.exe handles quoting and stdin redirect correctly.
-// Caches the result for 2 minutes.
+// Fetches Claude rate-limit quota.
+//
+// Primary source: Anthropic's OAuth usage API
+//   GET https://api.anthropic.com/api/oauth/usage
+//   Auth: Bearer token from ~/.claude/.credentials.json (claudeAiOauth.accessToken)
+// This is instant and exact — same data the `/usage` command shows, but with no
+// cold-start gap (the CLI omits the quota lines on its first invocation after
+// idle). Mechanism reverse-engineered from steipete/CodexBar.
+//
+// Fallback: parse `claude --print /usage` CLI output (used only if the API call
+// fails — no token, expired token, network error). On Windows the binary is a
+// .cmd wrapper, so we use exec() (shell-based) for correct quoting + stdin.
+//
+// Result is cached for 60s.
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 
 const execAsync = promisify(exec);
 const IS_WIN = platform() === "win32";
 
+const CREDS_PATH  = join(homedir(), ".claude", ".credentials.json");
+const USAGE_URL   = "https://api.anthropic.com/api/oauth/usage";
+const BETA_HEADER = "oauth-2025-04-20";
+const WIN_5H_SEC  = 18000;
+const WIN_7D_SEC  = 604800;
+
+// 429 cooldown gate — after a rate-limit, skip the API until this passes.
+let _rateLimitedUntil = 0;
+
+async function readOAuthToken() {
+  try {
+    const raw  = await readFile(CREDS_PATH, "utf8");
+    const auth = JSON.parse(raw)?.claudeAiOauth;
+    if (!auth?.accessToken) return null;
+    // expiresAt is epoch milliseconds. If expired, the CLI fallback handles it.
+    if (auth.expiresAt && Date.now() >= auth.expiresAt) return null;
+    return auth.accessToken;
+  } catch {
+    return null;
+  }
+}
+
+// ISO-8601 → "Jun 19, 1:19pm" (local time, matching the CLI display format).
+function fmtResetIso(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  // "Jun 19, 1:19 PM" → "Jun 19, 1:19pm" (matches the CLI display format)
+  return d.toLocaleString("en-US", {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+  }).replace(/\s+(AM|PM)/, (_, p) => p.toLowerCase());
+}
+
+function isoToSec(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+// Map the OAuth usage JSON to our quota result shape.
+// utilization is already a 0–100 percentage. 5h falls back to 7d if absent.
+function mapOAuthUsage(data) {
+  const fh = data?.five_hour;
+  const sd = data?.seven_day;
+  const son = data?.seven_day_sonnet;
+  const opus = data?.seven_day_opus;
+
+  const primary = (fh?.utilization != null) ? fh : sd;
+  if (!primary || primary.utilization == null) return null;
+
+  const round = (v) => Math.min(100, Math.max(0, Math.round(v)));
+  const result = {
+    session5hPct:       round(primary.utilization),
+    session5hWindowSec: WIN_5H_SEC,
+    session5hReset:     fmtResetIso(primary.resets_at),
+    session5hResetAt:   isoToSec(primary.resets_at),
+    week7dWindowSec:    WIN_7D_SEC,
+  };
+  if (sd?.utilization != null) {
+    result.week7dPct     = round(sd.utilization);
+    result.week7dReset   = fmtResetIso(sd.resets_at);
+    result.week7dResetAt = isoToSec(sd.resets_at);
+  } else {
+    result.week7dPct = 0;
+  }
+  if (son?.utilization != null)  result.weekSonnetPct = round(son.utilization);
+  if (opus?.utilization != null) result.weekOpusPct   = round(opus.utilization);
+
+  // extra usage credits (pay-as-you-go top-up), if enabled
+  const extra = data?.extra_usage;
+  if (extra?.is_enabled) {
+    result.extraEnabled = true;
+    if (extra.used_credits != null)  result.extraUsedCredits  = extra.used_credits;
+    if (extra.monthly_limit != null) result.extraMonthlyLimit = extra.monthly_limit;
+    if (extra.currency)              result.extraCurrency     = extra.currency;
+  }
+  return result;
+}
+
+async function fetchOAuthUsage() {
+  if (Date.now() < _rateLimitedUntil) return null;
+  const token = await readOAuthToken();
+  if (!token) return null;
+
+  try {
+    const res = await fetch(USAGE_URL, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "anthropic-beta": BETA_HEADER,
+        "Accept":         "application/json",
+        "Content-Type":   "application/json",
+        "User-Agent":     "claude-code/2.1.0",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get("retry-after") ?? "", 10);
+      const cooldownMs = Number.isFinite(retryAfter) ? retryAfter * 1000 : 5 * 60_000;
+      _rateLimitedUntil = Date.now() + cooldownMs;
+      return null;
+    }
+    if (!res.ok) return null;
+
+    return mapOAuthUsage(await res.json());
+  } catch {
+    return null;
+  }
+}
+
 let _cache    = null;
 let _cacheAt  = 0;
 let _inflight = null;   // deduplicates concurrent exec() calls
+let _lastGood = null;   // last result that had real quota percentages
 const CACHE_MS = 60_000;
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function stripAnsi(s) {
   return s
@@ -132,11 +256,11 @@ export async function fetchClaudeQuota({ force = false } = {}) {
   return _inflight;
 }
 
-async function _doFetch(now) {
-  const shellCmd = buildQuotaShellCmd();
-  let parsed = null;
-  let cliOk = false;
-
+// Run `claude --print /usage` once. Returns { cliOk, parsed }.
+//   cliOk  — the CLI ran and we recognized its output (preamble present)
+//   parsed — quota percentages object, or null if the "Current session/week"
+//            lines were absent (CLI cold-start, or genuinely <1% usage)
+async function _execOnce(shellCmd) {
   try {
     const { stdout, stderr } = await execAsync(shellCmd, {
       timeout: 15_000,
@@ -144,38 +268,71 @@ async function _doFetch(now) {
       maxBuffer: 1024 * 1024,
     });
     const combined = stdout + "\n" + stderr;
-    cliOk = /subscription/i.test(combined) || /claude code usage/i.test(combined);
-    parsed = parseUsageText(combined);
+    const cliOk = /subscription/i.test(combined) || /claude code usage/i.test(combined);
+    return { cliOk, parsed: parseUsageText(combined) };
   } catch (err) {
     const msg = err?.stderr ? stripAnsi(err.stderr).trim() : (err?.message ?? String(err));
     console.error("agents-deck quota: claude CLI failed:", msg);
     if (err?.stdout || err?.stderr) {
       const combined = (err.stdout ?? "") + "\n" + (err.stderr ?? "");
-      cliOk = /subscription/i.test(combined);
-      parsed = parseUsageText(combined);
+      return { cliOk: /subscription/i.test(combined), parsed: parseUsageText(combined) };
     }
+    return { cliOk: false, parsed: null };
+  }
+}
+
+async function _doFetch(now) {
+  // Primary: OAuth usage API — instant, exact, no cold-start gap.
+  const api = await fetchOAuthUsage();
+  if (api) {
+    const result = { ok: true, ...api, source: "api", fetchedAt: now };
+    _cache = result; _cacheAt = now;
+    _lastGood = result;
+    return result;
   }
 
-  // CLI ran OK but quota lines absent — this happens when:
-  // (a) near-zero usage in the rolling window (Claude omits bars below ~1%), or
-  // (b) CLI cold-start: the server-side rolling window hasn't been computed yet.
-  // In case (b) the real value appears within ~60s. Use a 5s short-cache so
-  // the UI polls again quickly and shows real values as soon as they're ready.
-  const shortCache = cliOk && !parsed;
-  if (shortCache) {
-    parsed = {
-      session5hPct: 0, session5hWindowSec: 18000,
-      week7dPct:    0, week7dWindowSec:    604800,
-    };
+  // Fallback: parse `claude --print /usage` CLI output.
+  const shellCmd = buildQuotaShellCmd();
+
+  // The CLI sometimes omits the "Current session/week" quota lines on a cold
+  // invocation (right after the server starts, or after the page is hard-
+  // refreshed). The real lines appear on a subsequent call. Retry a couple
+  // times before giving up so the first paint already shows real values.
+  let cliOk = false;
+  let parsed = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(1200);
+    const r = await _execOnce(shellCmd);
+    cliOk = r.cliOk || cliOk;
+    if (r.parsed) { parsed = r.parsed; break; }
   }
 
-  const result = parsed
-    ? { ok: true, ...parsed, fetchedAt: now }
+  // Got real quota lines — cache normally and remember as last-known-good.
+  if (parsed) {
+    const result = { ok: true, ...parsed, fetchedAt: now };
+    _cache = result; _cacheAt = now;
+    _lastGood = result;
+    return result;
+  }
+
+  // No quota lines after retries. If we've ever seen real values, keep showing
+  // them rather than regressing to 0% on a transient empty read. Short-cache so
+  // we retry the CLI again soon.
+  if (_lastGood) {
+    const result = { ..._lastGood, fetchedAt: now, stale: true };
+    _cache = result;
+    _cacheAt = now - (CACHE_MS - 5_000);
+    return result;
+  }
+
+  // Never had good data. CLI ran but lines absent → treat as genuine <1%.
+  // CLI failed entirely → ok:false. Either way short-cache for a quick retry.
+  const result = cliOk
+    ? { ok: true, session5hPct: 0, session5hWindowSec: 18000,
+        week7dPct: 0, week7dWindowSec: 604800, fetchedAt: now }
     : { ok: false, fetchedAt: now };
-
-  _cache   = result;
-  // Short-cache the 0% fallback so the UI retries in ~5s rather than 60s.
-  _cacheAt = shortCache ? now - (CACHE_MS - 5_000) : now;
+  _cache = result;
+  _cacheAt = now - (CACHE_MS - 5_000);
   return result;
 }
 
