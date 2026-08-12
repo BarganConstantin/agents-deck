@@ -1225,7 +1225,36 @@ function Inner() {
     return out;
   }, [nodes, now]);
 
-  const allNodes = useMemo(() => [...groupNodes, ...nodes], [groupNodes, nodes]);
+  /**
+   * Hand React Flow the same array for the length of a single-node drag.
+   *
+   * React Flow is given `nodes` with no onNodesChange, so it re-applies the
+   * whole prop whenever the array identity changes — overwriting the position
+   * its own drag logic just set. groupNodes is memoised on `now`, which ticks
+   * every 250ms, so a new array was produced four times a second whether or
+   * not anything had changed, and the node under the cursor was pushed back to
+   * whatever the array said four times a second.
+   *
+   * That is why a slow drag looked fine and a fast one did not: the error is
+   * however far the cursor travelled since the last rebuild, so it scales with
+   * speed. The node was effectively moving at 4Hz.
+   *
+   * Holding the identity still lets React Flow's store own the position for the
+   * gesture, which it updates every frame. Freezing `nodes` alone was tried and
+   * made it worse — groupNodes still changed, so the array still changed, and
+   * the position it reset to was now the one from before the drag started.
+   *
+   * Session drags are excluded: they move their members through this array
+   * rather than through React Flow, so for those it has to keep being rebuilt.
+   */
+  const lastAllNodesRef = useRef<Node[] | null>(null);
+  const freezeNodes = dragging && groupDragRef.current == null;
+  const allNodes = useMemo(() => {
+    if (freezeNodes && lastAllNodesRef.current) return lastAllNodesRef.current;
+    const out = [...groupNodes, ...nodes];
+    lastAllNodesRef.current = out;
+    return out;
+  }, [groupNodes, nodes, freezeNodes]);
 
 
   // Set of agent ids that match the current /-search query, or null when
