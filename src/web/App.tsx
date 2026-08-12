@@ -491,6 +491,38 @@ function Inner() {
     try { window.localStorage.setItem(ACCOUNTS_PANEL_OPEN_KEY, accountsPanelOpen ? "1" : "0"); } catch {}
   }, [accountsPanelOpen]);
 
+  // Finish-sound hook. `null` until the first fetch resolves, so the button
+  // can stay out of the way rather than flicker through a wrong state.
+  const [soundOn, setSoundOn] = useState<boolean | null>(null);
+  const [soundBusy, setSoundBusy] = useState(false);
+  // Hand-written sound hooks already on the Stop event. Surfaced because
+  // turning ours on alongside one that works here means two sounds per turn,
+  // and the cause is in a settings file the user is not looking at.
+  const [soundClash, setSoundClash] = useState(0);
+  useEffect(() => {
+    fetch("/api/sound-hook")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d?.ok) return;
+        setSoundOn(d.enabled === true);
+        setSoundClash((d.foreign ?? []).filter((f: { worksHere?: boolean }) => f.worksHere).length);
+      })
+      .catch(() => {});
+  }, []);
+  const toggleSound = useCallback(async () => {
+    setSoundBusy(true);
+    try {
+      const res = await fetch("/api/sound-hook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !soundOn }),
+      });
+      const out = await res.json().catch(() => null);
+      if (out?.ok) setSoundOn(out.enabled === true);
+    } catch { /* server unreachable */ }
+    finally { setSoundBusy(false); }
+  }, [soundOn]);
+
   // One left column, two things that want it. Opening either evicts the other
   // rather than fighting over the same grid slot.
   const toggleSessionList = useCallback(() => {
@@ -1157,6 +1189,30 @@ function Inner() {
             title={`${usagePanelOpen ? "Hide" : "Show"} usage panel (U)`}
             aria-label="Toggle usage panel"
           >$</button>
+          {soundOn !== null && (
+            <button
+              className={`btn icon-btn ${soundOn ? "primary" : ""}`}
+              onClick={toggleSound}
+              disabled={soundBusy}
+              title={
+                (soundOn
+                  ? "Sound on turn finish: on — click to remove the hook"
+                  : "Sound on turn finish: off — click to add a Stop hook") +
+                (soundClash > 0
+                  ? `\n\nYou already have ${soundClash} sound hook${soundClash > 1 ? "s" : ""} in settings.json that run${soundClash > 1 ? "" : "s"} on this machine — turning this on will play two sounds per turn.`
+                  : "")
+              }
+              aria-label="Toggle finish sound"
+              aria-pressed={soundOn}
+            >
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M3.2 5.2h2L7.8 3v8L5.2 8.8h-2z" />
+                {soundOn
+                  ? <><path d="M9.8 5.4a2.4 2.4 0 0 1 0 3.2" /><path d="M11.3 3.9a4.6 4.6 0 0 1 0 6.2" /></>
+                  : <><path d="M10 5.6l2.6 2.8" /><path d="M12.6 5.6L10 8.4" /></>}
+              </svg>
+            </button>
+          )}
           <button
             className={`btn icon-btn ${accountsPanelOpen ? "primary" : ""}`}
             onClick={toggleAccountsPanel}
