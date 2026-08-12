@@ -1157,32 +1157,22 @@ function Inner() {
   // the canvas.
   const availableHeight = canvasSize.h > 0 ? canvasSize.h : 0;
 
-  // Last graph handed to React Flow, kept so a drag can reuse it verbatim.
-  const lastFlowRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
-
+  // Rebuilt on every render, drags included.
+  //
+  // Freezing it during a drag was tried and reverted: it looks like an obvious
+  // win — the rebuild is the most expensive thing here — but the node under the
+  // cursor then stopped moving until the mouse came up. React Flow is given
+  // `nodes` with no onNodesChange, so this array and React Flow's own store
+  // both believe they own positions, and holding this one still meant the
+  // stale one won. Anything done here has to keep the two in agreement.
   const { nodes, edges } = useMemo(
     () => {
-      // Hold the graph still for the length of a drag.
-      //
-      // This rebuild runs on the clock tick — once a second, for the elapsed
-      // times — and again on every event that arrives. Each one walks the
-      // agent map, rebuilds every node and edge, and hands React Flow a new
-      // array to diff: measured at 8-14ms for 18 nodes in a tab that was not
-      // even painting. On a live board that lands in the middle of the gesture
-      // as a stall, and a drag becomes move, stop, move, stop.
-      //
-      // Nothing is lost by pausing it. The position of the node under the
-      // cursor belongs to React Flow's store during a drag, not to this array,
-      // and everything else — new tools, new agents, ticking timers — is a
-      // second of staleness that resolves the moment the mouse comes up.
-      if (dragging && lastFlowRef.current) return lastFlowRef.current;
       const flow = snapshotToFlow(
       stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
       measuredRef.current, prevSessionSizeRef.current, onBubble, settled, dragging,
       positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
       );
-      lastFlowRef.current = flow;
       return flow;
     },
     [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, settled, dragging, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
@@ -1743,20 +1733,12 @@ function Inner() {
                 pinnedRef.current.set(id, p);
                 positionsRef.current.set(id, p);
               }
-              // Move the cards in React Flow's own store rather than asking the
-              // app to re-render.
-              //
-              // This used to bump a nonce, which re-ran snapshotToFlow — every
-              // agent node rebuilt, every edge rebuilt, the whole array handed
-              // back to React Flow to diff — once per pointer move. At 60Hz
-              // with a few dozen agents that is the lag: the cards were being
-              // recomputed from the event log to move them 8 pixels. The refs
-              // above are still the source of truth, so the next real render
-              // produces exactly these positions.
-              rf.setNodes(ns => ns.map(nd => {
-                const p0m = g.members.get(nd.id);
-                return p0m ? { ...nd, position: { x: p0m.x + dx, y: p0m.y + dy } } : nd;
-              }));
+              // The nonce forces an immediate recompute so the cards follow
+              // this frame. Writing React Flow's store directly instead was
+              // tried and reverted along with the render freeze — same reason:
+              // two owners for one position, and the array wins the next time
+              // it is rebuilt.
+              setDragTick(t => t + 1);
               return;
             }
             // Live-pin during drag so an incoming event re-render doesn't
