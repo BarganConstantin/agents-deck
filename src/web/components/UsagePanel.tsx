@@ -20,7 +20,26 @@ interface QuotaData {
   week7dWindowSec?: number;
   weekSonnetPct?: number;
   weekOpusPct?: number;
+  source?: string;
   fetchedAt?: number;
+}
+
+/** "just now" / "40s ago" / "17m ago" / "2h ago", or null when never fetched. */
+function ageLabel(ms: number | undefined, nowSec: number): string | null {
+  if (!ms) return null;
+  const s = nowSec - Math.floor(ms / 1000);
+  if (s < 10)   return "just now";
+  if (s < 60)   return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+}
+
+/** Which of the three sources answered, in words. */
+function quotaSourceHint(source?: string): string {
+  if (source === "claude-swap") return "Read from claude-swap's last collection — costs no request against your usage-endpoint budget";
+  if (source === "api")         return "Fetched from Anthropic's usage endpoint, at most once every 5 minutes";
+  if (source === "cli")         return "Parsed from `claude /usage`, at most once every 5 minutes";
+  return "Last update";
 }
 
 function fmtTokens(n: number): string {
@@ -475,16 +494,13 @@ export default function UsagePanel({ state, now, onClose }: Props) {
   const totalTokenSum = totalTokens.in + totalTokens.out;
 
   const anyLoading = quotaLoading || codexLoading;
-  const lastUpdatedMs = Math.max(quota?.fetchedAt ?? 0, codexQuota?.fetchedAt ?? 0);
-  const lastUpdatedAgo = lastUpdatedMs > 0
-    ? (() => {
-        const diffSec = nowSec - Math.floor(lastUpdatedMs / 1000);
-        if (diffSec < 10)  return "just now";
-        if (diffSec < 60)  return `${diffSec}s ago`;
-        if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-        return `${Math.floor(diffSec / 3600)}h ago`;
-      })()
-    : null;
+  // Per section, not per panel. The two quotas come from different places and
+  // now age at very different rates — Codex is fetched here, Claude is usually
+  // read from claude-swap's last collection, which can be half an hour old.
+  // One combined "just now" in the header took the fresher of the two and
+  // stamped it on both.
+  const claudeAge = ageLabel(quota?.fetchedAt, nowSec);
+  const codexAge  = ageLabel(codexQuota?.fetchedAt, nowSec);
 
   const refreshAll = () => { refreshQuota(); refreshCodex(); };
 
@@ -494,9 +510,6 @@ export default function UsagePanel({ state, now, onClose }: Props) {
         <h3>Usage</h3>
         {burnRate && <span className="up-rate">{burnRate}</span>}
         <div className="up-header-right">
-          {lastUpdatedAgo && !anyLoading && (
-            <span className="up-last-updated">{lastUpdatedAgo}</span>
-          )}
           <button
             type="button"
             className="btn up-refresh-btn"
@@ -516,7 +529,17 @@ export default function UsagePanel({ state, now, onClose }: Props) {
 
       {/* ── Claude quota ── */}
       <section className="up-section up-quota-section">
-        <h4 className="up-section-title">Claude quota</h4>
+        <h4 className="up-section-title">
+          Claude quota
+          {/* Where the numbers came from, on hover. Anthropic's usage endpoint
+              allows ~28-30 calls an hour per account, shared by every tool on
+              the machine, so when claude-swap is already collecting them the
+              deck reads its store instead of spending a second call — which is
+              why this age is minutes rather than seconds. */}
+          {claudeAge && !quotaLoading && (
+            <span className="up-section-age" title={quotaSourceHint(quota?.source)}>{claudeAge}</span>
+          )}
+        </h4>
         {quota?.ok ? (
           <div className="up-quota-bars">
             {quota.session5hPct != null && (
@@ -562,6 +585,9 @@ export default function UsagePanel({ state, now, onClose }: Props) {
           Codex quota
           {codexQuota?.ok && codexQuota.planLabel && (
             <span className="up-plan-badge">{codexQuota.planLabel}</span>
+          )}
+          {codexAge && !codexLoading && (
+            <span className="up-section-age" title="Fetched from the Codex usage endpoint">{codexAge}</span>
           )}
         </h4>
         {codexQuota?.ok ? (

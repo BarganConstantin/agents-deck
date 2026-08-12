@@ -1,17 +1,30 @@
-// Fetches Claude rate-limit quota.
+// Claude rate-limit quota, from whichever source costs least.
 //
-// Primary source: Anthropic's OAuth usage API
-//   GET https://api.anthropic.com/api/oauth/usage
-//   Auth: Bearer token from ~/.claude/.credentials.json (claudeAiOauth.accessToken)
-// This is instant and exact — same data the `/usage` command shows, but with no
-// cold-start gap (the CLI omits the quota lines on its first invocation after
-// idle). Mechanism reverse-engineered from steipete/CodexBar.
+// All three sources below end at the same place: GET /api/oauth/usage, which
+// Anthropic budgets at roughly 28-30 calls per rolling hour PER TOKEN, shared
+// by every tool on the machine. That budget is the constraint this module is
+// built around, because it was being blown by this module: a 60s poll is 60
+// calls an hour on its own, and the account the deck was polling started
+// answering http-429 to claude-swap, whose collections the accounts panel is
+// entirely made of. One panel went stale so the other could be a minute
+// fresher.
 //
-// Fallback: parse `claude --print /usage` CLI output (used only if the API call
-// fails — no token, expired token, network error). On Windows the binary is a
-// .cmd wrapper, so we use exec() (shell-based) for correct quoting + stdin.
+//   1. claude-swap's store — free. It polls the active account on its own
+//      schedule and writes what it got; reading that file costs nothing and
+//      spends none of the budget. Used whenever it holds a recent enough row.
+//   2. The OAuth usage API directly, with the token from
+//      ~/.claude/.credentials.json. Exact and instant. Mechanism
+//      reverse-engineered from steipete/CodexBar.
+//   3. `claude --print /usage`, parsed. Used when there is no readable token —
+//      notably on macOS, where Claude Code keeps credentials in the Keychain
+//      and that file does not exist, so this is the ONLY self-service path
+//      there. It is also the most expensive: a whole Claude Code process per
+//      poll. On Windows the binary is a .cmd wrapper, so exec() (shell-based)
+//      is used for correct quoting + stdin.
 //
-// Result is cached for 60s.
+// 2 and 3 are rate-floored (SELF_POLL_MS) and gated behind the same 429
+// cooldown; 1 is not, because it is a local file read.
+import { activeAccountUsage, requestCollection } from "./claude-accounts.mjs";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
@@ -136,7 +149,74 @@ let _cache    = null;
 let _cacheAt  = 0;
 let _inflight = null;   // deduplicates concurrent exec() calls
 let _lastGood = null;   // last result that had real quota percentages
+let _lastSelfPollAt = 0;
+
 const CACHE_MS = 60_000;
+
+// Floor between two polls WE pay for. Twelve an hour against a budget of
+// ~28-30 leaves claude-swap room to collect for every account, which is what
+// the accounts panel is made of. Only reached when the store cannot answer.
+const SELF_POLL_MS = 5 * 60_000;
+
+// The refresh button may beat that floor, but not turn into a poll loop when
+// held down. It never beats the 429 cooldown.
+const FORCE_POLL_MS = 60_000;
+
+// How old a claude-swap row may be before we stop treating it as the answer.
+// Its own default poll interval is 1800s, so a row older than this means its
+// collector is backing off or not running — the case self-polling exists for.
+const STORE_TRUSTED_MS = 45 * 60_000;
+
+/**
+ * claude-swap's row for the active account, in the shape the panel speaks.
+ *
+ * Exported for tests: the mapping is where a wrong number would come from, and
+ * it is pure.
+ */
+export function quotaFromStore(entry) {
+  const good = entry?.lastGood;
+  const fh = good?.five_hour;
+  const sd = good?.seven_day;
+  const primary = (typeof fh?.pct === "number") ? fh : sd;
+  if (typeof primary?.pct !== "number") return null;
+
+  const round = (v) => Math.min(100, Math.max(0, Math.round(v)));
+  const out = {
+    ok: true,
+    source: "claude-swap",
+    session5hPct:       round(primary.pct),
+    session5hWindowSec: WIN_5H_SEC,
+    session5hReset:     fmtResetIso(primary.resets_at),
+    session5hResetAt:   isoToSec(primary.resets_at),
+    week7dWindowSec:    WIN_7D_SEC,
+    week7dPct:          typeof sd?.pct === "number" ? round(sd.pct) : 0,
+    week7dReset:        fmtResetIso(sd?.resets_at),
+    week7dResetAt:      isoToSec(sd?.resets_at),
+    // The age of the DATA, not of our read of it. The panel prints this, and
+    // "30s ago" over numbers claude-swap collected twenty minutes back is the
+    // kind of true-looking lie this whole change exists to remove.
+    fetchedAt: entry.fetchedAt,
+  };
+  // claude-swap keeps per-model windows in a named list rather than fixed
+  // fields, because which ones an account has depends on its plan.
+  for (const s of Array.isArray(good.scoped) ? good.scoped : []) {
+    if (typeof s?.pct !== "number") continue;
+    if (/sonnet/i.test(s.name ?? "")) out.weekSonnetPct = round(s.pct);
+    else if (/opus/i.test(s.name ?? "")) out.weekOpusPct = round(s.pct);
+  }
+  return out;
+}
+
+/**
+ * Whether we may spend a request of the user's budget right now.
+ *
+ * Exported for tests — this is the rule that stopped the deck from starving
+ * claude-swap, and it is worth pinning down.
+ */
+export function maySelfPoll({ now, force, lastSelfPollAt, rateLimitedUntil }) {
+  if (now < rateLimitedUntil) return false;
+  return now - lastSelfPollAt >= (force ? FORCE_POLL_MS : SELF_POLL_MS);
+}
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -252,8 +332,43 @@ export async function fetchClaudeQuota({ force = false } = {}) {
   // good result with 0%).
   if (_inflight) return _inflight;
 
-  _inflight = _doFetch(now).finally(() => { _inflight = null; });
+  _inflight = _doFetch(now, force).finally(() => { _inflight = null; });
   return _inflight;
+}
+
+/**
+ * claude-swap's numbers for the active account, if it has any.
+ *
+ * Never throws and never blocks on the network: worst case the store is
+ * missing, unparseable, or about a different account than the one that is
+ * active, and the caller falls through to fetching for itself.
+ */
+async function storeQuota() {
+  try {
+    return quotaFromStore(await activeAccountUsage());
+  } catch {
+    return null;
+  }
+}
+
+// After asking claude-swap to collect, how long to keep looking for the row it
+// writes. Its fetch is a single HTTPS call; three tries covers a slow one
+// without making the refresh button feel stuck.
+const REREAD_TRIES = 3;
+const REREAD_GAP_MS = 800;
+
+/** Ask for a collection, then watch the store for the result. */
+async function nudgeAndReread(previous) {
+  let asked = false;
+  try { asked = await requestCollection(); } catch { /* cswap missing */ }
+  if (!asked) return previous;
+
+  for (let i = 0; i < REREAD_TRIES; i++) {
+    await sleep(REREAD_GAP_MS);
+    const fresh = await storeQuota();
+    if (fresh && (!previous || fresh.fetchedAt > previous.fetchedAt)) return fresh;
+  }
+  return previous;
 }
 
 // Run `claude --print /usage` once. Returns { cliOk, parsed }.
@@ -286,8 +401,39 @@ async function _execOnce(shellCmd) {
   }
 }
 
-async function _doFetch(now) {
-  // Primary: OAuth usage API — instant, exact, no cold-start gap.
+async function _doFetch(now, force = false) {
+  // Source 1: claude-swap's store. Free, and already paid for.
+  let store = await storeQuota();
+
+  // Refresh asks for newer numbers, and the honest way to get them from this
+  // source is to ask the collector that owns it — which applies its own
+  // schedule and backoff, so this cannot become a poll loop.
+  if (force && (!store || now - store.fetchedAt > FORCE_POLL_MS)) {
+    store = await nudgeAndReread(store);
+  }
+  if (store && now - store.fetchedAt <= STORE_TRUSTED_MS) {
+    _cache = store; _cacheAt = now;
+    _lastGood = store;
+    return store;
+  }
+
+  // Nothing usable in the store. Everything below spends the user's budget, so
+  // it happens on a floor, and not at all while a 429 cooldown is running.
+  if (!maySelfPoll({ now, force, lastSelfPollAt: _lastSelfPollAt, rateLimitedUntil: _rateLimitedUntil })) {
+    // A stale row still beats an empty panel, and says how stale it is.
+    const held = store ?? _lastGood;
+    if (held) {
+      const result = { ...held, stale: true };
+      _cache = result; _cacheAt = now;
+      return result;
+    }
+    const result = { ok: false, reason: now < _rateLimitedUntil ? "rate_limited" : "waiting", fetchedAt: now };
+    _cache = result; _cacheAt = now - (CACHE_MS - 5_000);
+    return result;
+  }
+  _lastSelfPollAt = now;
+
+  // Source 2: OAuth usage API — instant, exact, no cold-start gap.
   const api = await fetchOAuthUsage();
   if (api) {
     const result = { ok: true, ...api, source: "api", fetchedAt: now };
@@ -296,7 +442,7 @@ async function _doFetch(now) {
     return result;
   }
 
-  // Fallback: parse `claude --print /usage` CLI output.
+  // Source 3: parse `claude --print /usage` CLI output.
   const shellCmd = buildQuotaShellCmd();
 
   // The CLI sometimes omits the "Current session/week" quota lines on a cold
@@ -314,7 +460,7 @@ async function _doFetch(now) {
 
   // Got real quota lines — cache normally and remember as last-known-good.
   if (parsed) {
-    const result = { ok: true, ...parsed, fetchedAt: now };
+    const result = { ok: true, ...parsed, source: "cli", fetchedAt: now };
     _cache = result; _cacheAt = now;
     _lastGood = result;
     return result;

@@ -2349,11 +2349,6 @@ button.tool.clickable:last-child { border-bottom: none; }
   align-items: center;
   gap: 4px;
 }
-.up-last-updated {
-  font-size: 10px;
-  color: var(--muted-dim);
-  white-space: nowrap;
-}
 .up-rate {
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -2420,12 +2415,27 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-top: 1px solid var(--line-soft);
 }
 .up-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 8px 0 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+/* Each quota carries its own age, because they are fetched separately and one
+   is usually much older than the other. Set back to normal case and weight —
+   it is a read-out sitting in a heading, not part of the heading. */
+.up-section-age {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted-dim);
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .up-table {
