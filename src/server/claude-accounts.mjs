@@ -14,7 +14,7 @@
 // and cannot lose a login. Switching shells out to `cswap` rather than
 // reimplementing the lock protocol its correctness depends on.
 import { readFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 
@@ -39,6 +39,41 @@ const CACHE_MS = 5_000;
 // Past this, claude-swap's own numbers are old enough that showing them
 // without a marker would misrepresent them (its own trust ceiling is 3600s).
 const STALE_AFTER_MS = 15 * 60_000;
+
+// Nudging the collector: at most this often, however many times the panel asks.
+const NUDGE_EVERY_MS = 60_000;
+let _lastNudge = 0;
+
+/**
+ * Ask claude-swap to collect, if its own schedule says anything is due.
+ *
+ * Without this the panel is only as live as whatever else is running: if the
+ * user has no `cswap watch`/`auto`/TUI open, nothing ever writes the store and
+ * the panel shows frozen numbers while looking current.
+ *
+ * `cswap list` is the safe way to ask. It runs the same on-demand pass every
+ * claude-swap surface uses, and the store — not us — decides which accounts,
+ * if any, may actually hit the network. So this cannot outrun the request
+ * budget no matter how often the panel polls: when nothing is due, it is a
+ * local read that fetches nothing.
+ *
+ * Fire-and-forget. The result lands in the store for the next poll to pick up;
+ * making the caller wait would just delay the numbers it already has.
+ */
+function nudgeCollector(rows, now) {
+  if (now - _lastNudge < NUDGE_EVERY_MS) return;
+  const due = Object.values(rows).some(r =>
+    typeof r?.nextPollAt === "number" && r.nextPollAt * 1000 <= now
+  );
+  if (!due) return;
+
+  _lastNudge = now;
+  try {
+    const child = spawn("cswap", ["list"], { stdio: "ignore", shell: false, windowsHide: true });
+    child.on("error", () => {});   // not installed — the panel already says so
+    child.unref?.();
+  } catch { /* best-effort */ }
+}
 
 async function readJson(path) {
   try {
@@ -88,6 +123,9 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
   const usage = await readJson(join(root, "cache", "usage.json"));
   // A schema bump means the rows may not mean what this code thinks they do.
   const rows = usage?.schemaVersion === 2 ? (usage.accounts ?? {}) : {};
+
+  // Kick a collection for the NEXT poll if claude-swap says an account is due.
+  nudgeCollector(rows, now);
 
   const order = Array.isArray(seq.sequence) && seq.sequence.length
     ? seq.sequence.map(String)
