@@ -14,6 +14,7 @@
 // and cannot lose a login. Switching shells out to `cswap` rather than
 // reimplementing the lock protocol its correctness depends on.
 import { readFile } from "node:fs/promises";
+import { cswapBin, cswapVersion, installHint } from "./cswap-install.mjs";
 import { run, runDetached } from "./exec.mjs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
@@ -68,7 +69,9 @@ function nudgeCollector(rows, now) {
   if (!due) return;
 
   _lastNudge = now;
-  runDetached("cswap", ["list"]);   // not installed — the panel already says so
+  // Fire-and-forget: this function is deliberately synchronous so callers never
+  // wait on it, and resolving the binary is the only async part.
+  cswapBin().then(bin => runDetached(bin, ["list"])).catch(() => {});
 }
 
 async function readJson(path) {
@@ -118,7 +121,6 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
   const root = backupRoot();
   const seq  = await readJson(join(root, "sequence.json"));
   if (!seq?.accounts) {
-    const { cswapVersion, installHint } = await import("./cswap-install.mjs");
     const version = await cswapVersion();
     return finish(version
       ? { ok: false, reason: "no_accounts", version, fetchedAt: now }
@@ -210,9 +212,11 @@ export function switchClaudeAccount(accountNum) {
 
   // Argument vector, never a shell — and resolved through exec.mjs so the
   // Windows `.exe`/`.cmd` shim is found too.
-  return run("cswap", ["switch", String(num)], { timeout: 30_000 }).then(r => {
-    if (r.ok) return { ok: true, output: r.stdout.trim() };
-    const reason = r.code === "ENOENT" ? "no_cswap" : r.killed ? "timeout" : "switch_failed";
-    return { ok: false, reason, output: (r.stderr || r.stdout).trim().slice(0, 500) };
-  });
+  return cswapBin()
+    .then(bin => run(bin, ["switch", String(num)], { timeout: 30_000 }))
+    .then(r => {
+      if (r.ok) return { ok: true, output: r.stdout.trim() };
+      const reason = r.code === "ENOENT" ? "no_cswap" : r.killed ? "timeout" : "switch_failed";
+      return { ok: false, reason, output: (r.stderr || r.stdout).trim().slice(0, 500) };
+    });
 }

@@ -8,7 +8,8 @@
 // entirely. It is always best-effort — the deck's core function does not
 // depend on it, so a failure is reported and then ignored.
 import { run, runDetached } from "./exec.mjs";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { bootstrapUv, existingBootstrappedUv } from "./uv-bootstrap.mjs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -19,9 +20,45 @@ const INSTALL_TIMEOUT_MS = 180_000; // uv resolves + builds a Python env
 const UPDATE_CHECK_MS = 24 * 3600_000;
 const MARKER = join(homedir(), ".agents-deck", ".cswap-update-check");
 
-/** Installed version string, or null when cswap isn't on PATH. */
+/**
+ * How to invoke cswap: the bare name when PATH resolves it, otherwise an
+ * absolute path to where its installers actually put it.
+ *
+ * ~/.local/bin is where both `uv tool install` and `pipx install` place
+ * executables, on every platform, and it is famously not on PATH — that is the
+ * whole reason `pipx ensurepath` exists. Installing claude-swap successfully
+ * and then reporting it as missing because the shell cannot see it is a bad
+ * enough outcome on its own; it is worse now that the deck may have done the
+ * installing. So PATH is a convenience here, not the source of truth.
+ *
+ * Re-resolved when a lookup fails so an install during this process is picked
+ * up without a restart.
+ */
+let _bin = null;
+export async function cswapBin() {
+  if (_bin) return _bin;
+  if ((await run("cswap", ["--version"], { timeout: 8_000 })).ok) return (_bin = "cswap");
+
+  const exe = process.platform === "win32" ? "cswap.exe" : "cswap";
+  const candidates = [
+    join(homedir(), ".local", "bin", exe),
+    // pipx before 1.5 on Windows, and any pip --user install.
+    process.platform === "win32"
+      ? join(homedir(), "AppData", "Roaming", "Python", "Scripts", exe)
+      : join(homedir(), ".pyenv", "shims", exe),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c) && (await run(c, ["--version"], { timeout: 8_000 })).ok) return (_bin = c);
+  }
+  return "cswap";   // not found; leave the bare name so errors read sensibly
+}
+
+/** Forget the cached resolution — call after installing. */
+export function resetCswapBin() { _bin = null; }
+
+/** Installed version string, or null when cswap cannot be found. */
 export async function cswapVersion() {
-  const r = await run("cswap", ["--version"]);
+  const r = await run(await cswapBin(), ["--version"]);
   if (!r.ok) return null;
   // "claude-swap 0.25.0" → "0.25.0"
   const m = (r.stdout || r.stderr).trim().match(/(\d+\.\d+\.\d+\S*)/);
@@ -37,25 +74,59 @@ export async function cswapVersion() {
  * Python environment where it can collide with their own dependencies, which
  * is not a thing to do to someone without asking.
  */
-const PY = process.platform === "win32" ? ["py", "python"] : ["python3", "python"];
-
 /**
- * Whether it is safe to execute a python interpreter here.
+ * Python interpreters that are safe to execute on this machine.
  *
- * On macOS, /usr/bin/python3 is a shim: with the Command Line Tools absent it
- * does not run python, it pops the "install developer tools?" dialog. Probing
- * for python in the background would throw that dialog at someone who only
- * wanted a dashboard, so on darwin nothing python-shaped is executed until
- * xcode-select confirms the tools are actually there. That check is a plain
- * path lookup and triggers nothing itself.
+ * Both desktop platforms ship a fake python that does something other than run
+ * python when none is installed, and this code runs unprompted at startup for
+ * an optional panel — so neither may be executed on spec.
+ *
+ * macOS: /usr/bin/python3 is a shim that opens the "install developer tools?"
+ * dialog. `xcode-select -p` says whether the real thing is behind it, and is
+ * itself only a path lookup.
+ *
+ * Windows: `python` and `python3` are App Execution Aliases under
+ * WindowsApps — zero-length reparse points that open the Microsoft Store. They
+ * are on PATH whether or not Python exists, so presence proves nothing and
+ * running one opens the Store. `where` reports the paths without executing
+ * anything, so the aliases can be filtered out and the real interpreter (if
+ * any) called by absolute path. `py`, the Python launcher, only exists when
+ * Python was actually installed and is safe as-is.
+ *
+ * Returns absolute paths or bare command names, best first; empty when there
+ * is nothing safe to run.
  */
-let _pyOk = null;
-async function pythonProbeSafe() {
-  if (_pyOk != null) return _pyOk;
-  _pyOk = process.platform !== "darwin"
-    ? true
-    : (await run("xcode-select", ["-p"], { timeout: 5_000 })).ok;
-  return _pyOk;
+let _pythons = null;
+async function safePythons() {
+  if (_pythons != null) return _pythons;
+
+  if (process.platform === "darwin") {
+    _pythons = (await run("xcode-select", ["-p"], { timeout: 5_000 })).ok
+      ? ["python3", "python"]
+      : [];
+    return _pythons;
+  }
+
+  if (process.platform !== "win32") {
+    _pythons = ["python3", "python"];
+    return _pythons;
+  }
+
+  const found = [];
+  // The launcher first: it is never an alias.
+  if ((await run("py", ["-0"], { timeout: 8_000 })).ok) found.push("py");
+  for (const name of ["python", "python3"]) {
+    const r = await run("where", [name], { timeout: 8_000 });
+    if (!r.ok) continue;
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const p = line.trim();
+      if (!p || /\\WindowsApps\\/i.test(p)) continue;   // Store alias, not an interpreter
+      found.push(p);
+      break;
+    }
+  }
+  _pythons = found;
+  return _pythons;
 }
 
 /**
@@ -72,8 +143,10 @@ async function installers() {
     { cmd: "uv",   probe: ["--version"], args: ["tool", "install", "claude-swap"], via: "uv" },
     { cmd: "pipx", probe: ["--version"], args: ["install", "claude-swap"],         via: "pipx" },
   ];
-  if (!(await pythonProbeSafe())) return out;
-  for (const py of PY) {
+  // A uv fetched on an earlier run counts as installed tooling from here on.
+  const own = existingBootstrappedUv();
+  if (own) out.push({ cmd: own, probe: ["--version"], args: ["tool", "install", "claude-swap"], via: "uv (bundled)" });
+  for (const py of await safePythons()) {
     out.push({
       cmd: py,
       probe: ["-m", "pipx", "--version"],
@@ -91,7 +164,16 @@ async function installCswap() {
     if (r.ok) return { ok: true, via };
     return { ok: false, reason: "install_failed", via, detail: (r.stderr || r.stdout).trim().slice(0, 300) };
   }
-  return { ok: false, reason: "no_installer", hint: await installHint() };
+
+  // Nothing on the machine can install a Python application. Rather than hand
+  // the user a command and stop, fetch uv itself — verified, and into the
+  // deck's own directory, see uv-bootstrap.mjs — and use that.
+  const boot = await bootstrapUv();
+  if (!boot.ok) return { ok: false, reason: "no_installer", bootstrap: boot.reason, hint: await installHint() };
+
+  const r = await run(boot.bin, ["tool", "install", "claude-swap"], { timeout: INSTALL_TIMEOUT_MS });
+  if (r.ok) return { ok: true, via: `uv ${boot.version} (fetched)` };
+  return { ok: false, reason: "install_failed", via: "uv (fetched)", detail: (r.stderr || r.stdout).trim().slice(0, 300) };
 }
 
 /**
@@ -107,10 +189,11 @@ export async function installHint() {
   const uv = process.platform === "win32"
     ? 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  (then: uv tool install claude-swap)'
     : "curl -LsSf https://astral.sh/uv/install.sh | sh  (then: uv tool install claude-swap)";
-  if (!(await pythonProbeSafe())) return uv;
-  for (const py of PY) {
+  for (const py of await safePythons()) {
     if ((await run(py, ["-c", "import sys"], { timeout: 5_000 })).ok) {
-      return `${py} -m pip install --user pipx && ${py} -m pipx install claude-swap`;
+      // Quoted: a resolved Windows path routinely contains spaces.
+      const q = /\s/.test(py) ? `"${py}"` : py;
+      return `${q} -m pip install --user pipx && ${q} -m pipx install claude-swap`;
     }
   }
   return uv;
@@ -208,9 +291,11 @@ export async function ensureCswap() {
 
   const result = await installCswap();
   if (!result.ok) return { state: "unavailable", ...result };
+  resetCswapBin();   // it exists now; the earlier "not on PATH" answer is stale
 
   // Freshly installed tools land in ~/.local/bin, which may not be on the PATH
-  // of the shell that launched us — so confirm rather than assume.
+  // of the shell that launched us — cswapBin looks there directly, so this
+  // confirms the install rather than confirming the user's PATH.
   const version = await cswapVersion();
   return version
     ? { state: "installed", via: result.via, version }
