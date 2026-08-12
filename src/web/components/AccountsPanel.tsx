@@ -35,6 +35,7 @@ interface AccountsData {
   accounts?: Account[];
   activeNum?: number | null;
   reason?: string;
+  hint?: string;
   fetchedAt?: number;
 }
 
@@ -229,12 +230,34 @@ export default function AccountsPanel({ onClose }: Props) {
         <div className="ap-empty">Checking…</div>
       ) : !data.ok ? (
         <div className="ap-empty">
-          <span>No accounts found.</span>
-          <span className="ap-hint">
-            {data.reason === "no_store"
-              ? "This panel reads claude-swap's store. Install it with uv tool install claude-swap, then run cswap add."
-              : "claude-swap's store could not be read."}
-          </span>
+          {data.reason === "no_cswap" ? (
+            <>
+              <span>claude-swap isn't installed.</span>
+              <span className="ap-hint">
+                This panel reads the account store claude-swap keeps — without it there is
+                nothing to show. It is a separate tool, published on PyPI, so it does not
+                come with this package.
+              </span>
+              {data.hint && <code className="ap-cmd">{data.hint}</code>}
+              <span className="ap-hint">Then add your accounts with <code>cswap add</code> and reload.</span>
+            </>
+          ) : data.reason === "no_accounts" ? (
+            <>
+              <span>No accounts added yet.</span>
+              <span className="ap-hint">
+                claude-swap is installed but has nothing in its store.
+              </span>
+              <code className="ap-cmd">cswap add</code>
+            </>
+          ) : (
+            <>
+              <span>Couldn't read the account store.</span>
+              <span className="ap-hint">
+                claude-swap is installed, but its store could not be read
+                {data.reason ? ` (${data.reason})` : ""}.
+              </span>
+            </>
+          )}
         </div>
       ) : (
         <>

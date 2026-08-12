@@ -14,6 +14,7 @@
 // and cannot lose a login. Switching shells out to `cswap` rather than
 // reimplementing the lock protocol its correctness depends on.
 import { readFile } from "node:fs/promises";
+import { cswapBin, cswapVersion, installHint } from "./cswap-install.mjs";
 import { run, runDetached } from "./exec.mjs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
@@ -68,7 +69,9 @@ function nudgeCollector(rows, now) {
   if (!due) return;
 
   _lastNudge = now;
-  runDetached("cswap", ["list"]);   // not installed — the panel already says so
+  // Fire-and-forget: this function is deliberately synchronous so callers never
+  // wait on it, and resolving the binary is the only async part.
+  cswapBin().then(bin => runDetached(bin, ["list"])).catch(() => {});
 }
 
 async function readJson(path) {
@@ -103,8 +106,11 @@ function lane(id, label, win) {
 /**
  * Every managed account with whatever usage claude-swap last saw for it.
  *
- * Returns { ok: false, reason: "no_store" } when claude-swap isn't installed —
- * the panel then explains itself rather than showing an empty list.
+ * When there is nothing to show, says which of the two reasons it is:
+ * "no_cswap" (the tool is not installed, and here is the command for this
+ * machine) or "no_accounts" (it is installed but nothing has been added yet).
+ * They need different things from the user, and reporting both as one empty
+ * panel leaves whichever one they are in with nowhere to go.
  */
 export async function fetchClaudeAccounts({ force = false } = {}) {
   const now = Date.now();
@@ -114,7 +120,12 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
 
   const root = backupRoot();
   const seq  = await readJson(join(root, "sequence.json"));
-  if (!seq?.accounts) return finish({ ok: false, reason: "no_store", fetchedAt: now });
+  if (!seq?.accounts) {
+    const version = await cswapVersion();
+    return finish(version
+      ? { ok: false, reason: "no_accounts", version, fetchedAt: now }
+      : { ok: false, reason: "no_cswap", hint: await installHint(), fetchedAt: now });
+  }
 
   const usage = await readJson(join(root, "cache", "usage.json"));
   // A schema bump means the rows may not mean what this code thinks they do.
@@ -201,9 +212,11 @@ export function switchClaudeAccount(accountNum) {
 
   // Argument vector, never a shell — and resolved through exec.mjs so the
   // Windows `.exe`/`.cmd` shim is found too.
-  return run("cswap", ["switch", String(num)], { timeout: 30_000 }).then(r => {
-    if (r.ok) return { ok: true, output: r.stdout.trim() };
-    const reason = r.code === "ENOENT" ? "no_cswap" : r.killed ? "timeout" : "switch_failed";
-    return { ok: false, reason, output: (r.stderr || r.stdout).trim().slice(0, 500) };
-  });
+  return cswapBin()
+    .then(bin => run(bin, ["switch", String(num)], { timeout: 30_000 }))
+    .then(r => {
+      if (r.ok) return { ok: true, output: r.stdout.trim() };
+      const reason = r.code === "ENOENT" ? "no_cswap" : r.killed ? "timeout" : "switch_failed";
+      return { ok: false, reason, output: (r.stderr || r.stdout).trim().slice(0, 500) };
+    });
 }

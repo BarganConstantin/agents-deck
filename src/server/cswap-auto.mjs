@@ -11,6 +11,7 @@
 // on, the setting survives restarts, and the UI can always ask what a tick
 // WOULD do (--dry-run) before committing to letting it happen.
 import { run } from "./exec.mjs";
+import { cswapBin } from "./cswap-install.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -37,7 +38,7 @@ const SETTINGS = {
 
 /** Parse `cswap config` — "key   value   (default)" per line. */
 export async function readCswapConfig() {
-  const r = await run("cswap", ["config"]);
+  const r = await run(await cswapBin(), ["config"]);
   if (!r.ok) return null;
   const out = {};
   for (const line of r.stdout.split("\n")) {
@@ -71,7 +72,7 @@ export async function setCswapConfig(key, value) {
     if (str && !/^[A-Za-z0-9 ,._-]{1,120}$/.test(str)) return { ok: false, reason: "bad_value" };
   }
 
-  const r = await run("cswap", ["config", "set", key, str]);
+  const r = await run(await cswapBin(), ["config", "set", key, str]);
   return r.ok ? { ok: true } : { ok: false, reason: "set_failed", detail: (r.stderr || r.stdout).trim().slice(0, 300) };
 }
 
@@ -104,7 +105,7 @@ function summarise(stdout) {
  * never switches and never writes claude-swap's state.
  */
 export async function previewAutoSwitch() {
-  const r = await run("cswap", ["auto", "--once", "--dry-run", "--json"], { timeout: TICK_TIMEOUT_MS });
+  const r = await run(await cswapBin(), ["auto", "--once", "--dry-run", "--json"], { timeout: TICK_TIMEOUT_MS });
   if (!r.ok && !r.stdout) {
     return { ok: false, reason: r.code === "ENOENT" ? "no_cswap" : "tick_failed",
              detail: (r.stderr || "").trim().slice(0, 300) };
@@ -114,7 +115,7 @@ export async function previewAutoSwitch() {
 
 /** Evaluate a tick for real. May switch the active account. */
 async function runAutoTick() {
-  const r = await run("cswap", ["auto", "--once", "--json"], { timeout: TICK_TIMEOUT_MS });
+  const r = await run(await cswapBin(), ["auto", "--once", "--json"], { timeout: TICK_TIMEOUT_MS });
   if (!r.ok && !r.stdout) {
     return { ok: false, reason: "tick_failed", detail: (r.stderr || "").trim().slice(0, 300) };
   }
@@ -233,6 +234,6 @@ export async function autoStatus() {
 export async function setAccountEnabled(accountNum, enabled) {
   const num = Number(accountNum);
   if (!Number.isInteger(num) || num < 1 || num > 999) return { ok: false, reason: "bad_account" };
-  const r = await run("cswap", [enabled ? "enable" : "disable", String(num)]);
+  const r = await run(await cswapBin(), [enabled ? "enable" : "disable", String(num)]);
   return r.ok ? { ok: true } : { ok: false, reason: "command_failed", detail: (r.stderr || r.stdout).trim().slice(0, 300) };
 }

@@ -2855,6 +2855,28 @@ button.tool.clickable:last-child { border-bottom: none; }
   color: var(--muted);
 }
 .ap-hint { font-size: 10px; line-height: 1.5; color: var(--muted); }
+/* The command is the point of this state, so it is selectable and legible at a
+   glance rather than folded into the sentence explaining it. */
+.ap-empty .ap-cmd {
+  display: block;
+  margin: 6px 0 2px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.ap-empty .ap-hint code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  font-size: 10px;
+}
 .ap-failure {
   margin: 8px 14px 0;
   padding: 6px 8px;
