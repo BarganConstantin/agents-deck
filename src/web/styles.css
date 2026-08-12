@@ -2862,6 +2862,65 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 10px;
   word-break: break-word;
 }
+/* ── auto-switch controls ── */
+.ap-auto {
+  padding: 10px 14px 2px;
+  border-top: 1px solid var(--line);
+}
+.ap-auto-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.ap-auto-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ap-auto-ext { margin-left: auto; font-size: 9px; color: var(--muted-dim); }
+.ap-auto-toggle { margin-left: auto; padding: 1px 9px; font-size: 10px; }
+.ap-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.ap-auto-label { font-size: 10px; color: var(--muted-dim); }
+.ap-auto-select {
+  background: var(--panel-2, var(--panel));
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 3px;
+  font-size: 10px;
+  font-family: inherit;
+}
+.ap-auto-preview { margin-left: auto; padding: 1px 7px; font-size: 10px; }
+.ap-auto-result {
+  margin-top: 6px;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--muted-dim);
+}
+/* Text-weight, because holding an account out of rotation is a preference to
+   flip, not an action to fire. */
+.ap-rotate {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 9px;
+  color: var(--muted-dim);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.ap-rotate:hover:not(:disabled) { color: var(--fg); }
+.ap-rotate:disabled { cursor: default; opacity: 0.6; }
+
 .ap-footnote {
   padding: 8px 14px 0;
   font-size: 9px;

@@ -1074,6 +1074,47 @@ async function handleClaudeAccountSwitch(req, res) {
   send(res, result.ok ? 200 : 400, result);
 }
 
+function cswapAutoModule() {
+  return import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-auto.mjs")).href);
+}
+
+async function handleCswapAuto(req, res) {
+  const { autoStatus } = await cswapAutoModule();
+  send(res, 200, await autoStatus());
+}
+
+/**
+ * One POST for every auto-switch control, keyed by `action`. Each one can move
+ * the user's live Claude account or change when it moves, so nothing here is
+ * reachable by GET.
+ */
+async function handleCswapAutoAction(req, res) {
+  const mod = await cswapAutoModule();
+  const body = await readBody(req).catch(() => null);
+  let parsed = null;
+  try { parsed = JSON.parse(body ?? ""); } catch { /* handled below */ }
+  if (!parsed || typeof parsed !== "object") return send(res, 400, { ok: false, reason: "bad_request" });
+
+  let result;
+  switch (parsed.action) {
+    case "enable":
+      result = await mod.setAutoEnabled(parsed.enabled === true);
+      break;
+    case "preview":
+      result = await mod.previewAutoSwitch();
+      break;
+    case "setting":
+      result = await mod.setCswapConfig(String(parsed.key ?? ""), parsed.value);
+      break;
+    case "account":
+      result = await mod.setAccountEnabled(parsed.account, parsed.enabled === true);
+      break;
+    default:
+      return send(res, 400, { ok: false, reason: "unknown_action" });
+  }
+  send(res, result.ok ? 200 : 400, result);
+}
+
 function handleHealth(_req, res) {
   send(res, 200, {
     ok: true,
@@ -1156,6 +1197,8 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/ccusage")     return guard(handleCcusage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/claude-accounts") return guard(handleClaudeAccounts(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/claude-accounts/switch") return guard(handleClaudeAccountSwitch(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/cswap-auto")  return guard(handleCswapAuto(req, res), res);
+    if (req.method === "POST" && url.pathname === "/api/cswap-auto")  return guard(handleCswapAutoAction(req, res), res);
 
     if (req.method === "GET" && url.pathname === "/api/events") {
       const since = Number(url.searchParams.get("since") ?? 0);
@@ -1183,6 +1226,9 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
       await tryListen(server, candidate, host);
       // Codex has no working hooks on Windows — tail its rollout files instead.
       if (codex) startCodexWatcher(workspace);
+      // Auto-switch resumes only if the user previously turned it on; the
+      // module reads its own persisted flag and does nothing otherwise.
+      cswapAutoModule().then(m => m.initCswapAuto()).catch(() => {});
       return server;
     } catch (err) {
       if (err && err.code === "EADDRINUSE") continue;

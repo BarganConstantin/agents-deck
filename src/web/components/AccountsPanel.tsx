@@ -38,7 +38,34 @@ interface AccountsData {
   fetchedAt?: number;
 }
 
+interface AutoTick {
+  at: number;
+  event: string;
+  reason?: string | null;
+  detail?: string | null;
+  to?: number | null;
+}
+
+interface AutoStatus {
+  ok: boolean;
+  enabled: boolean;
+  external: boolean;          // the user runs their own `cswap auto` loop
+  lastTick: AutoTick | null;
+  settings: Record<string, { value: string | null; isDefault: boolean }>;
+}
+
+interface PreviewResult {
+  ok: boolean;
+  event?: string;
+  reason?: string | null;
+  detail?: string | null;
+  threshold?: number | null;
+  headroom?: Record<string, number> | null;
+  reasonText?: string;
+}
+
 const POLL_MS = 15_000;
+const THRESHOLDS = [70, 80, 85, 90, 95];
 
 /** "3h 43m" / "6d 21h" — recomputed client-side so it never shows a stale countdown. */
 function countdown(resetAtSec: number, nowSec: number): string | null {
@@ -88,6 +115,9 @@ interface Props { onClose: () => void }
 
 export default function AccountsPanel({ onClose }: Props) {
   const [data, setData] = useState<AccountsData | null>(null);
+  const [auto, setAuto] = useState<AutoStatus | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
@@ -95,9 +125,34 @@ export default function AccountsPanel({ onClose }: Props) {
 
   const load = useCallback(async (force = false) => {
     try {
-      const res = await fetch(`/api/claude-accounts${force ? "?refresh=1" : ""}`);
-      if (res.ok) setData(await res.json());
+      const [accts, autoRes] = await Promise.all([
+        fetch(`/api/claude-accounts${force ? "?refresh=1" : ""}`),
+        fetch("/api/cswap-auto"),
+      ]);
+      if (accts.ok)    setData(await accts.json());
+      if (autoRes.ok)  setAuto(await autoRes.json());
     } catch { /* server unreachable */ }
+  }, []);
+
+  /** Every auto-switch control is one POST; they all reload afterwards. */
+  const post = useCallback(async (body: Record<string, unknown>, tag: string) => {
+    setBusy(tag);
+    setFailure(null);
+    try {
+      const res = await fetch("/api/cswap-auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => null);
+      if (!out?.ok) setFailure(out?.detail || out?.reason || "command failed");
+      return out;
+    } catch {
+      setFailure("server unreachable");
+      return null;
+    } finally {
+      setBusy(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -186,9 +241,94 @@ export default function AccountsPanel({ onClose }: Props) {
                 {a.fetchedAt
                   ? <span className={a.stale ? "ap-stale" : undefined}>{ago(a.fetchedAt, nowSec)}</span>
                   : <span className="ap-stale">never fetched</span>}
+                {/* Holding an account out of rotation only matters when
+                    something is rotating, so the control appears with it. */}
+                {(auto?.enabled || auto?.external) && !a.active && (
+                  <button
+                    type="button"
+                    className="ap-rotate"
+                    disabled={busy != null}
+                    onClick={() => post({ action: "account", account: a.num, enabled: a.disabled }, `rot-${a.num}`).then(() => load(true))}
+                    title={a.disabled
+                      ? "Return this account to auto-rotation"
+                      : "Hold this account out of auto-rotation"}
+                  >{a.disabled ? "held out" : "in rotation"}</button>
+                )}
               </div>
             </div>
           ))}
+
+          {/* ── auto-switch ── */}
+          {auto?.ok && (
+            <div className="ap-auto">
+              <div className="ap-auto-head">
+                <span className="ap-auto-title">Auto-switch</span>
+                {auto.external ? (
+                  // Two engines would not corrupt anything, but they would
+                  // double the tick rate against the request budget and leave
+                  // no single place explaining why an account moved.
+                  <span className="ap-auto-ext" title="A cswap auto loop is already running in your terminal">
+                    running externally
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className={`btn ap-auto-toggle${auto.enabled ? " primary" : ""}`}
+                    disabled={busy != null}
+                    onClick={() => post({ action: "enable", enabled: !auto.enabled }, "enable").then(() => load(true))}
+                    title={auto.enabled
+                      ? "Stop switching accounts automatically"
+                      : "Switch accounts automatically when the active one nears its limit"}
+                  >{auto.enabled ? "on" : "off"}</button>
+                )}
+              </div>
+
+              <div className="ap-auto-row">
+                <span className="ap-auto-label">at</span>
+                <select
+                  className="ap-auto-select"
+                  value={auto.settings["autoswitch.threshold"]?.value ?? "90"}
+                  disabled={busy != null}
+                  onChange={e => post({ action: "setting", key: "autoswitch.threshold", value: e.target.value }, "threshold").then(() => load(true))}
+                >
+                  {THRESHOLDS.map(t => <option key={t} value={t}>{t}%</option>)}
+                </select>
+                <select
+                  className="ap-auto-select"
+                  value={auto.settings["autoswitch.strategy"]?.value ?? "best"}
+                  disabled={busy != null}
+                  onChange={e => post({ action: "setting", key: "autoswitch.strategy", value: e.target.value }, "strategy").then(() => load(true))}
+                  title="best: most quota left · consume-first: the account whose week resets soonest"
+                >
+                  <option value="best">best</option>
+                  <option value="consume-first">consume-first</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn ap-auto-preview"
+                  disabled={busy != null}
+                  onClick={async () => setPreview(await post({ action: "preview" }, "preview"))}
+                  title="Evaluate a switch without performing one"
+                >{busy === "preview" ? "…" : "dry run"}</button>
+              </div>
+
+              {preview?.ok && (
+                <div className="ap-auto-result">
+                  {preview.event === "switch"
+                    ? `would switch → ${preview.detail ?? "another account"}`
+                    : preview.detail
+                      ? `no switch · ${preview.detail}`
+                      : `no switch · ${preview.reason ?? "nothing to do"}`}
+                </div>
+              )}
+              {auto.lastTick && !preview && (
+                <div className="ap-auto-result">
+                  last check {ago(auto.lastTick.at, nowSec)}
+                  {auto.lastTick.detail ? ` · ${auto.lastTick.detail}` : ""}
+                </div>
+              )}
+            </div>
+          )}
 
           {failure && <div className="ap-failure">{failure}</div>}
 
