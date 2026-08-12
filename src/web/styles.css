@@ -2580,6 +2580,21 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 10px;
 }
 .up-credits { color: var(--accent); }
+/* Plan tier next to the section heading — the heading is uppercased, so the
+   badge undoes that to keep "Pro 20x" readable as a product name. */
+.up-plan-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--muted-dim);
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: 1px;
+}
+.up-reset-credits { color: var(--ok); }
 .up-quota-na {
   display: flex;
   flex-direction: column;

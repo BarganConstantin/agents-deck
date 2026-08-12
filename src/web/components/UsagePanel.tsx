@@ -252,23 +252,59 @@ function useQuota() {
 }
 
 // ── Codex quota types + hook ───────────────────────────────────────────────
+// Lanes arrive as a list rather than fixed 5h/7d slots: which windows an
+// account has depends on its plan (free plans get weekly only, some get a
+// 30-day cap), and the server labels each one from the duration the API
+// reported instead of from its position in the payload.
+interface CodexLane {
+  id: string;
+  key: "session" | "weekly" | "monthly" | "unknown";
+  label: string;
+  pct: number;
+  windowSec: number | null;
+  resetAt: number | null;
+  reset: string | null;
+}
+
+interface CodexCreditLimit {
+  limit: number;
+  used: number;
+  usedPct: number;
+  remaining: number;
+  source: string | null;
+  resetAt: number | null;
+  reset: string | null;
+}
+
 interface CodexQuotaData {
   ok: boolean;
   limitReached?: boolean;
-  session5hPct?: number;
-  session5hReset?: string;
-  session5hResetAt?: number;   // unix seconds
-  session5hWindowSec?: number;
-  week7dPct?: number;
-  week7dReset?: string;
-  week7dResetAt?: number;      // unix seconds
-  week7dWindowSec?: number;
+  windows?: CodexLane[];
+  extraWindows?: CodexLane[];
+  plan?: string | null;
+  planLabel?: string | null;
   creditsBalance?: string | null;
   creditsUnlimited?: boolean;
-  planType?: string;
+  overageReached?: boolean;
+  creditLimit?: CodexCreditLimit | null;
+  spendControlReached?: boolean;
+  reachedType?: string | null;
+  promo?: string | null;
+  partial?: boolean;
+  resetCredits?: { availableCount: number; nextExpiryAt: number | null } | null;
   reason?: string;
   fetchedAt?: number;
-  [key: string]: unknown; // extra_<model>_pct fields
+}
+
+/** Why the Codex section is empty, in words that say what to do about it. */
+function codexHint(reason?: string): string {
+  switch (reason) {
+    case "no_token":         return "Run codex login to authenticate.";
+    case "api_key_mode":     return "API-key login — ChatGPT quota is only available for codex login.";
+    case "refresh_rejected": return "Codex session expired — run codex login.";
+    case "refresh_failed":   return "Couldn't refresh the Codex token — click ↻ to retry.";
+    default:                 return "ChatGPT API unreachable — click ↻ to retry.";
+  }
 }
 
 // ── Codex usage types + hook (token aggregation fallback) ─────────────────
@@ -522,30 +558,55 @@ export default function UsagePanel({ state, now, onClose }: Props) {
 
       {/* ── Codex quota ── */}
       <section className="up-section up-quota-section">
-        <h4 className="up-section-title">Codex quota</h4>
+        <h4 className="up-section-title">
+          Codex quota
+          {codexQuota?.ok && codexQuota.planLabel && (
+            <span className="up-plan-badge">{codexQuota.planLabel}</span>
+          )}
+        </h4>
         {codexQuota?.ok ? (
           <div className="up-quota-bars">
-            {codexQuota.session5hPct != null && (
+            {codexQuota.windows?.map(w => (
               <QuotaBar
-                label="5-hour window"
-                pct={codexQuota.session5hPct}
-                reset={codexQuota.session5hReset}
-                resetAt={codexQuota.session5hResetAt}
-                windowSec={codexQuota.session5hWindowSec}
-                limitReached={codexQuota.limitReached && codexQuota.session5hPct >= 100}
+                key={w.id}
+                label={w.label}
+                pct={w.pct}
+                reset={w.reset ?? undefined}
+                resetAt={w.resetAt ?? undefined}
+                windowSec={w.windowSec ?? undefined}
+                limitReached={codexQuota.limitReached && w.pct >= 100}
+                nowSec={nowSec}
+              />
+            ))}
+
+            {/* Per-model families (Codex Spark and friends) — separate caps
+                that run out independently of the account-wide lanes. */}
+            {codexQuota.extraWindows?.map(w => (
+              <QuotaBar
+                key={w.id}
+                label={w.label}
+                pct={w.pct}
+                reset={w.reset ?? undefined}
+                resetAt={w.resetAt ?? undefined}
+                windowSec={w.windowSec ?? undefined}
+                nowSec={nowSec}
+              />
+            ))}
+
+            {/* Spend cap (team/enterprise, or a personal monthly credit limit).
+                Denominated in dollars, so it gets its own bar rather than
+                pretending to be a rate-limit lane. */}
+            {codexQuota.creditLimit && (
+              <QuotaBar
+                label={`spend cap · $${Math.round(codexQuota.creditLimit.used)} of $${Math.round(codexQuota.creditLimit.limit)}`}
+                pct={codexQuota.creditLimit.usedPct}
+                reset={codexQuota.creditLimit.reset ?? undefined}
+                resetAt={codexQuota.creditLimit.resetAt ?? undefined}
+                limitReached={codexQuota.spendControlReached}
                 nowSec={nowSec}
               />
             )}
-            {codexQuota.week7dPct != null && (
-              <QuotaBar
-                label="7-day window"
-                pct={codexQuota.week7dPct}
-                reset={codexQuota.week7dReset}
-                resetAt={codexQuota.week7dResetAt}
-                windowSec={codexQuota.week7dWindowSec}
-                nowSec={nowSec}
-              />
-            )}
+
             {/* token-count from local files + credits */}
             {codexUsage?.ok && codexUsage.window7d && codexUsage.window7d.sessionCount > 0 && (
               <div className="up-quota-sub">
@@ -555,20 +616,33 @@ export default function UsagePanel({ state, now, onClose }: Props) {
             {codexQuota.creditsBalance && !codexQuota.creditsUnlimited && (
               <div className="up-quota-sub up-credits">
                 credits: ${codexQuota.creditsBalance}
+                {codexQuota.overageReached && " · overage limit reached"}
               </div>
             )}
             {codexQuota.creditsUnlimited && (
               <div className="up-quota-sub up-credits">credits: unlimited</div>
             )}
+            {codexQuota.resetCredits && codexQuota.resetCredits.availableCount > 0 && (
+              <div className="up-quota-sub up-reset-credits" title="Redeem in the Codex CLI or ChatGPT — agents-deck only reports them">
+                {codexQuota.resetCredits.availableCount} rate-limit reset
+                {codexQuota.resetCredits.availableCount !== 1 ? "s" : ""} available
+                {codexQuota.resetCredits.nextExpiryAt &&
+                  ` · expires ${new Date(codexQuota.resetCredits.nextExpiryAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+              </div>
+            )}
+            {codexQuota.promo && (
+              <div className="up-quota-sub">{codexQuota.promo}</div>
+            )}
+            {codexQuota.partial && (
+              <div className="up-quota-sub up-quota-hint">
+                Partial data — OpenAI returned limits this build doesn't recognise.
+              </div>
+            )}
           </div>
         ) : codexQuota?.ok === false ? (
           <div className="up-quota-na">
             <span>Quota unavailable.</span>
-            <span className="up-quota-hint">
-              {codexQuota.reason === "no_token"
-                ? "Run codex login to authenticate."
-                : "ChatGPT API unreachable — click ↻ to retry."}
-            </span>
+            <span className="up-quota-hint">{codexHint(codexQuota.reason)}</span>
           </div>
         ) : (
           <div className="up-quota-na up-quota-loading">Checking…</div>
