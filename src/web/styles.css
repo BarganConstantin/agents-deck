@@ -2855,6 +2855,13 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .ap-err { color: var(--warn); }
 .ap-stale { color: var(--warn); }
+/* Right edge, under the lane percentages: it is a value, and the panel puts
+   values there. On the left it read as a caption for the account. */
+.ap-age {
+  margin-left: auto;
+  white-space: nowrap;
+  cursor: help;
+}
 
 .ap-empty {
   display: flex;
@@ -3091,7 +3098,6 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 /* Text-weight, because holding an account out of rotation is a preference to
    flip, not an action to fire. */
 .ap-rotate {
-  margin-left: auto;
   background: none;
   border: none;
   padding: 0;

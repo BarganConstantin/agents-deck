@@ -261,9 +261,6 @@ export default function AccountsPanel({ onClose }: Props) {
                   decision made on old information. */}
               <div className="ap-meta">
                 {a.error && <span className="ap-err">{errorText(a.error)}</span>}
-                {a.fetchedAt
-                  ? <span className={a.stale ? "ap-stale" : undefined}>{ago(a.fetchedAt, nowSec)}</span>
-                  : <span className="ap-stale">never fetched</span>}
                 {/* Holding an account out of rotation only matters when
                     something is rotating, so the control appears with it. */}
                 {(auto?.enabled || auto?.external) && !a.active && (
@@ -277,6 +274,16 @@ export default function AccountsPanel({ onClose }: Props) {
                       : "Hold this account out of auto-rotation"}
                   >{a.disabled ? "held out" : "in rotation"}</button>
                 )}
+                {/* A bare "9m ago" under a stack of percentages does not say
+                    what happened 9 minutes ago — and the honest answer is not
+                    "you looked", it is "claude-swap read this account". The
+                    verb is the whole content of the line. */}
+                {a.fetchedAt
+                  ? <span
+                      className={`ap-age${a.stale ? " ap-stale" : ""}`}
+                      title="When claude-swap last read this account's usage"
+                    >collected {ago(a.fetchedAt, nowSec)}</span>
+                  : <span className="ap-age ap-stale" title="claude-swap has not read this account yet">never collected</span>}
               </div>
             </div>
           ))}
