@@ -22,7 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout } from "./layout";
-import { applyEvent, initialState, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
+import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
@@ -48,6 +48,12 @@ const GROUP_PAD = 18;
 const STALE_TOOL_MS = 90_000;
 const AGENT_CAP = 200;
 const AGENT_GRACE_MS = 5 * 60_000;
+// How many finished sessions stay on the canvas. Small on purpose: the board
+// is for what is happening now, and a day of sessions otherwise buries it.
+// The 2-minute grace is shorter than AGENT_GRACE_MS — a session is a bigger,
+// more obvious thing to disappear, so it should not linger once it is over.
+const DONE_SESSION_CAP = 6;
+const DONE_SESSION_GRACE_MS = 2 * 60_000;
 const LAYOUT_STORAGE_KEY = "agent-dag.layout";
 const VIEWPORT_STORAGE_KEY = "agent-dag.viewport";
 const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
@@ -597,6 +603,9 @@ function Inner() {
       // Prune long-finished agents so memory doesn't grow over multi-day
       // sessions. Keeps most-recent AGENT_CAP — past 5 minutes since done.
       if (pruneOldAgents(stateRef.current, t, AGENT_CAP, AGENT_GRACE_MS)) changed = true;
+      // Keep the canvas to the last few finished sessions, so a long day of
+      // work doesn't bury the running ones under everything already done.
+      if (pruneDoneSessions(stateRef.current, t, DONE_SESSION_CAP, DONE_SESSION_GRACE_MS)) changed = true;
       if (changed) rerender();
     }, 250);
     return () => clearInterval(id);

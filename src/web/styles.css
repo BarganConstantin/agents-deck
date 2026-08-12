@@ -2579,7 +2579,6 @@ button.tool.clickable:last-child { border-bottom: none; }
   margin-left: 4px;
   font-size: 10px;
 }
-.up-credits { color: var(--accent); }
 /* Plan tier next to the section heading — the heading is uppercased, so the
    badge undoes that to keep "Pro 20x" readable as a product name. */
 .up-plan-badge {
@@ -2594,7 +2593,6 @@ button.tool.clickable:last-child { border-bottom: none; }
   letter-spacing: 0;
   vertical-align: 1px;
 }
-.up-reset-credits { color: var(--ok); }
 .up-quota-na {
   display: flex;
   flex-direction: column;
@@ -2611,6 +2609,10 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .up-quota-loading { font-size: 11px; color: var(--muted-dim); }
 .up-quota-sub { font-size: 10px; color: var(--muted-dim); margin-top: 4px; }
+/* Both of these are .up-quota-sub lines, so they have to come after it to win
+   on source order — they read as dim grey otherwise. */
+.up-credits { color: var(--accent); }
+.up-reset-credits { color: var(--ok); }
 
 :root[data-theme="light"] .up-rate {
   background: rgba(126,34,206,0.10);

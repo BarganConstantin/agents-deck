@@ -610,7 +610,8 @@ export default function UsagePanel({ state, now, onClose }: Props) {
             {/* token-count from local files + credits */}
             {codexUsage?.ok && codexUsage.window7d && codexUsage.window7d.sessionCount > 0 && (
               <div className="up-quota-sub">
-                {fmtTokens(codexUsage.window7d.totalTokens)} tokens · {codexUsage.window7d.sessionCount} sessions (7d)
+                {fmtTokens(codexUsage.window7d.totalTokens)} tokens · {codexUsage.window7d.sessionCount} session
+                {codexUsage.window7d.sessionCount !== 1 ? "s" : ""} (7d)
               </div>
             )}
             {codexQuota.creditsBalance && !codexQuota.creditsUnlimited && (
