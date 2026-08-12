@@ -1722,7 +1722,20 @@ function Inner() {
                 pinnedRef.current.set(id, p);
                 positionsRef.current.set(id, p);
               }
-              setDragTick(t => t + 1);
+              // Move the cards in React Flow's own store rather than asking the
+              // app to re-render.
+              //
+              // This used to bump a nonce, which re-ran snapshotToFlow — every
+              // agent node rebuilt, every edge rebuilt, the whole array handed
+              // back to React Flow to diff — once per pointer move. At 60Hz
+              // with a few dozen agents that is the lag: the cards were being
+              // recomputed from the event log to move them 8 pixels. The refs
+              // above are still the source of truth, so the next real render
+              // produces exactly these positions.
+              rf.setNodes(ns => ns.map(nd => {
+                const p0m = g.members.get(nd.id);
+                return p0m ? { ...nd, position: { x: p0m.x + dx, y: p0m.y + dy } } : nd;
+              }));
               return;
             }
             // Live-pin during drag so an incoming event re-render doesn't
