@@ -86,6 +86,24 @@ function ago(ms: number, nowSec: number): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+/**
+ * What a dry run concluded, in one phrase. claude-swap's own reason codes are
+ * internal names — "below-threshold", "no-qualifying-candidate" — and its
+ * `detail` is bare arithmetic like "17% < 90%", true but not an answer.
+ */
+function previewText(p: PreviewResult): string {
+  if (p.event === "switch") return `would switch — ${p.detail ?? "another account"}`;
+  const why: Record<string, string> = {
+    "below-threshold":        "under threshold",
+    "no-qualifying-candidate": "no better account",
+    "all-exhausted":          "every account spent",
+    "cooldown":               "cooling down",
+    "external-engine":        "handled elsewhere",
+  };
+  const label = why[p.reason ?? ""] ?? p.reason ?? "nothing to do";
+  return p.detail ? `stays put · ${label}, ${p.detail}` : `stays put · ${label}`;
+}
+
 /** Plain-language version of claude-swap's error codes. */
 function errorText(code: string): string {
   if (code === "http-429") return "rate limited";
@@ -267,75 +285,84 @@ export default function AccountsPanel({ onClose }: Props) {
                   // Two engines would not corrupt anything, but they would
                   // double the tick rate against the request budget and leave
                   // no single place explaining why an account moved.
-                  <span className="ap-auto-ext" title="A cswap auto loop is already running in your terminal">
-                    running externally
+                  <span className="ap-auto-state external" title="A cswap auto loop is already running in your terminal — the deck stays out of its way">
+                    <i className="ap-dot" aria-hidden /> external
                   </span>
                 ) : (
                   <button
                     type="button"
-                    className={`btn ap-auto-toggle${auto.enabled ? " primary" : ""}`}
+                    className={`ap-auto-state toggle${auto.enabled ? " on" : ""}`}
+                    role="switch"
+                    aria-checked={auto.enabled}
                     disabled={busy != null}
                     onClick={() => post({ action: "enable", enabled: !auto.enabled }, "enable").then(() => load(true))}
                     title={auto.enabled
                       ? "Stop switching accounts automatically"
                       : "Switch accounts automatically when the active one nears its limit"}
-                  >{auto.enabled ? "on" : "off"}</button>
+                  >
+                    <i className="ap-dot" aria-hidden /> {auto.enabled ? "on" : "off"}
+                  </button>
                 )}
               </div>
 
-              <div className="ap-auto-row">
-                <span className="ap-auto-label">at</span>
-                <select
-                  className="ap-auto-select"
-                  value={auto.settings["autoswitch.threshold"]?.value ?? "90"}
-                  disabled={busy != null}
-                  onChange={e => post({ action: "setting", key: "autoswitch.threshold", value: e.target.value }, "threshold").then(() => load(true))}
-                >
-                  {THRESHOLDS.map(t => <option key={t} value={t}>{t}%</option>)}
-                </select>
-                <select
-                  className="ap-auto-select"
-                  value={auto.settings["autoswitch.strategy"]?.value ?? "best"}
-                  disabled={busy != null}
-                  onChange={e => post({ action: "setting", key: "autoswitch.strategy", value: e.target.value }, "strategy").then(() => load(true))}
-                  title="best: most quota left · consume-first: the account whose week resets soonest"
-                >
-                  <option value="best">best</option>
-                  <option value="consume-first">consume-first</option>
-                </select>
+              {/* Written as a sentence rather than a settings grid: the rule is
+                  short enough to state, and two labelled dropdowns with no
+                  sentence around them never said what they applied to. */}
+              <p className="ap-auto-rule">
+                Switch at{" "}
+                <span className="ap-field">
+                  <select
+                    aria-label="Switch threshold"
+                    value={auto.settings["autoswitch.threshold"]?.value ?? "90"}
+                    disabled={busy != null}
+                    onChange={e => post({ action: "setting", key: "autoswitch.threshold", value: e.target.value }, "threshold").then(() => load(true))}
+                  >
+                    {THRESHOLDS.map(t => <option key={t} value={t}>{t}%</option>)}
+                  </select>
+                </span>{" "}
+                to the account with{" "}
+                <span className="ap-field">
+                  <select
+                    aria-label="Target account strategy"
+                    value={auto.settings["autoswitch.strategy"]?.value ?? "best"}
+                    disabled={busy != null}
+                    onChange={e => post({ action: "setting", key: "autoswitch.strategy", value: e.target.value }, "strategy").then(() => load(true))}
+                  >
+                    {/* claude-swap's own names for these are "best" and
+                        "consume-first", which say nothing on their own. */}
+                    <option value="best">the most quota left</option>
+                    <option value="consume-first">the soonest reset</option>
+                  </select>
+                </span>.
+              </p>
+
+              <div className="ap-auto-foot">
                 <button
                   type="button"
-                  className="btn ap-auto-preview"
+                  className="ap-auto-dry"
                   disabled={busy != null}
                   onClick={async () => setPreview(await post({ action: "preview" }, "preview"))}
                   title="Evaluate a switch without performing one"
-                >{busy === "preview" ? "…" : "dry run"}</button>
-              </div>
+                >{busy === "preview" ? "checking…" : "dry run"}</button>
 
-              {preview?.ok && (
-                <div className="ap-auto-result">
-                  {preview.event === "switch"
-                    ? `would switch → ${preview.detail ?? "another account"}`
-                    : preview.detail
-                      ? `no switch · ${preview.detail}`
-                      : `no switch · ${preview.reason ?? "nothing to do"}`}
-                </div>
-              )}
-              {auto.lastTick && !preview && (
-                <div className="ap-auto-result">
-                  last check {ago(auto.lastTick.at, nowSec)}
-                  {auto.lastTick.detail ? ` · ${auto.lastTick.detail}` : ""}
-                </div>
-              )}
+                {preview?.ok ? (
+                  <span className={`ap-auto-result${preview.event === "switch" ? " would" : ""}`}>
+                    {previewText(preview)}
+                  </span>
+                ) : auto.lastTick ? (
+                  <span className="ap-auto-result">
+                    checked {ago(auto.lastTick.at, nowSec)}
+                  </span>
+                ) : null}
+              </div>
             </div>
           )}
 
           {failure && <div className="ap-failure">{failure}</div>}
 
-          <div className="ap-footnote">
-            Usage collected by claude-swap. The deck reads its store rather than
-            polling Anthropic, which shares one per-account request budget.
-          </div>
+          <p className="ap-footnote" title="Anthropic's usage endpoint allows roughly 28–30 requests per hour per account, shared by every tool on this machine. Polling it from here would rate-limit your account, so the deck reads what claude-swap already collected.">
+            Read from claude-swap, not polled.
+          </p>
         </>
       )}
     </div>

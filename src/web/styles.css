@@ -2780,9 +2780,10 @@ button.tool.clickable:last-child { border-bottom: none; }
   padding: 9px 14px 8px;
   border-bottom: 1px solid var(--line-soft);
 }
-/* The active account is the one answer the panel exists to give, so it gets a
-   marker readable without parsing any text. */
-.ap-account.active { border-left: 2px solid var(--accent); padding-left: 12px; }
+/* The active account is the one answer the panel exists to give, so it reads
+   before any text does — as a tint across the whole row rather than a colored
+   stripe down its edge, which marks the boundary instead of the row. */
+.ap-account.active { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .ap-account.disabled { opacity: 0.5; }
 
 .ap-account-head {
@@ -2793,7 +2794,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .ap-num {
   font-size: 10px;
-  color: var(--muted-dim);
+  color: var(--muted);
   min-width: 9px;
 }
 .ap-alias {
@@ -2831,15 +2832,16 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .ap-lane-fill { height: 100%; border-radius: 2px; }
 .ap-lane-pct { grid-area: pct; font-size: 10px; text-align: right; }
-.ap-lane-reset { grid-area: reset; font-size: 9px; color: var(--muted-dim); }
+.ap-lane-reset { grid-area: reset; font-size: 9px; color: var(--muted); }
 .ap-lane-reset:empty { display: none; }
 
 .ap-meta {
   display: flex;
+  align-items: baseline;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 5px;
   font-size: 9px;
-  color: var(--muted-dim);
+  color: var(--muted);
 }
 .ap-err { color: var(--warn); }
 .ap-stale { color: var(--warn); }
@@ -2852,7 +2854,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 11px;
   color: var(--muted);
 }
-.ap-hint { font-size: 10px; color: var(--muted-dim); }
+.ap-hint { font-size: 10px; line-height: 1.5; color: var(--muted); }
 .ap-failure {
   margin: 8px 14px 0;
   padding: 6px 8px;
@@ -2864,14 +2866,14 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 /* ── auto-switch controls ── */
 .ap-auto {
-  padding: 10px 14px 2px;
+  padding: 12px 14px 11px;
   border-top: 1px solid var(--line);
 }
 .ap-auto-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 .ap-auto-title {
   font-size: 11px;
@@ -2880,31 +2882,129 @@ button.tool.clickable:last-child { border-bottom: none; }
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.ap-auto-ext { margin-left: auto; font-size: 9px; color: var(--muted-dim); }
-.ap-auto-toggle { margin-left: auto; padding: 1px 9px; font-size: 10px; }
-.ap-auto-row {
-  display: flex;
+
+/* State reads as a status first and a control second: the dot carries it at a
+   glance, the word confirms it. Same shape whether it's ours or external, so
+   the eye doesn't have to relearn the corner. */
+.ap-auto-state {
+  margin-left: auto;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
-  flex-wrap: wrap;
-}
-.ap-auto-label { font-size: 10px; color: var(--muted-dim); }
-.ap-auto-select {
-  background: var(--panel-2, var(--panel));
-  color: var(--fg);
+  padding: 2px 8px 2px 7px;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 1px 3px;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
   font-size: 10px;
-  font-family: inherit;
+  color: var(--muted);
+  line-height: 1.5;
 }
-.ap-auto-preview { margin-left: auto; padding: 1px 7px; font-size: 10px; }
+.ap-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+button.ap-auto-state { cursor: pointer; transition: border-color 120ms, color 120ms; }
+button.ap-auto-state:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
+.ap-auto-state.on {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+.ap-auto-state.on .ap-dot {
+  opacity: 1;
+  /* Slow: this marks a background process that acts on its own, and a brisk
+     pulse would read as something needing attention. */
+  animation: ap-breathe 2.4s ease-in-out infinite;
+}
+@keyframes ap-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) {
+  .ap-auto-state.on .ap-dot { animation: none; }
+}
+
+/* The rule is a sentence with two editable words in it. */
+.ap-auto-rule {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+/* Native select, restyled rather than replaced — it keeps keyboard, mobile and
+   screen-reader behaviour that a div-based menu would have to rebuild badly.
+   The wrapper draws the chevron so the control can size to its own text. */
+.ap-field {
+  position: relative;
+  display: inline-block;
+}
+.ap-field::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -3px;
+  border-right: 1.2px solid currentColor;
+  border-bottom: 1.2px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.ap-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--bg-soft);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 18px 1px 6px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+.ap-field select:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+.ap-field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ap-field select:disabled { cursor: default; opacity: 0.6; }
+.ap-field:has(select:hover:not(:disabled))::after { color: var(--accent); opacity: 1; }
+
+.ap-auto-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 9px;
+}
+/* Text-weight: running a dry run is safe and repeatable, so it should not
+   carry more visual weight than the switch buttons above it, which are not. */
+.ap-auto-dry {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 10px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--accent-dim);
+  flex-shrink: 0;
+}
+.ap-auto-dry:hover:not(:disabled) { text-decoration-color: var(--accent); }
+.ap-auto-dry:disabled { cursor: default; color: var(--muted); text-decoration: none; }
 .ap-auto-result {
-  margin-top: 6px;
-  font-size: 9px;
-  line-height: 1.45;
-  color: var(--muted-dim);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+  min-width: 0;
 }
+/* The one outcome worth interrupting for. */
+.ap-auto-result.would { color: var(--warn); }
+
 /* Text-weight, because holding an account out of rotation is a preference to
    flip, not an action to fire. */
 .ap-rotate {
@@ -2914,16 +3014,20 @@ button.tool.clickable:last-child { border-bottom: none; }
   padding: 0;
   font: inherit;
   font-size: 9px;
-  color: var(--muted-dim);
+  color: var(--muted);
   cursor: pointer;
   text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
-.ap-rotate:hover:not(:disabled) { color: var(--fg); }
+.ap-rotate:hover:not(:disabled) { color: var(--accent); }
 .ap-rotate:disabled { cursor: default; opacity: 0.6; }
 
 .ap-footnote {
-  padding: 8px 14px 0;
+  margin: 0;
+  padding: 9px 14px 2px;
+  border-top: 1px solid var(--line-soft);
   font-size: 9px;
-  line-height: 1.45;
-  color: var(--muted-dim);
+  line-height: 1.5;
+  color: var(--muted);
+  cursor: help;
 }
