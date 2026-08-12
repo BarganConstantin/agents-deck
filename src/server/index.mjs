@@ -1095,16 +1095,26 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
       // already. Just keep the buffer + seq counter primed.
     }
   }
+  // The async handlers below are dispatched as floating promises. Node's
+  // default for an unhandled rejection is to kill the process, which would
+  // take the whole deck down — SSE stream, hook ingest and all — because one
+  // background quota poll hit a network error. Answer the request instead.
+  const guard = (p, res) => Promise.resolve(p).catch(err => {
+    console.error("agents-deck: request handler failed:", err?.message ?? err);
+    if (!res.headersSent) send(res, 500, { error: "internal error" });
+    else res.end();
+  });
+
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? host}`);
 
-    if (req.method === "POST" && url.pathname === "/api/event") return handleEventIngest(req, res);
+    if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
-    if (req.method === "GET"  && url.pathname === "/api/quota")       return handleQuota(req, res);
-    if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return handleCodexUsage(req, res);
-    if (req.method === "GET"  && url.pathname === "/api/codex-quota") return handleCodexQuota(req, res);
-    if (req.method === "GET"  && url.pathname === "/api/ccusage")     return handleCcusage(req, res);
+    if (req.method === "GET"  && url.pathname === "/api/quota")       return guard(handleQuota(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return guard(handleCodexUsage(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/codex-quota") return guard(handleCodexQuota(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/ccusage")     return guard(handleCcusage(req, res), res);
 
     if (req.method === "GET" && url.pathname === "/api/events") {
       const since = Number(url.searchParams.get("since") ?? 0);

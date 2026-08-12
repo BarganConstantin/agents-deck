@@ -4,28 +4,30 @@
 // so agents-deck keeps a live token instead of going dark the moment the one
 // written by `codex login` rotates server-side.
 //
-// The important subtlety: OpenAI ROTATES the refresh token. A refresh whose
-// result is not written back to auth.json burns the credential — the next use
-// of the old refresh token fails permanently with `refresh_token_reused`, and
-// the user has to re-run `codex login`. So refreshing and persisting are one
-// operation here, never two, and the write is atomic (tmp + rename) rather
-// than the CLI's own truncate-in-place.
-import { readFile, writeFile, rename, chmod, copyFile, access } from "node:fs/promises";
+// The important subtlety: OpenAI ROTATES the refresh token, single-use. A
+// refresh whose result does not reach disk burns the credential outright —
+// the next attempt fails with `refresh_token_reused` and the user has to run
+// `codex login` again. Everything defensive in this file follows from that:
+// refreshes are serialized, the token is re-read from disk inside the lock
+// immediately before it is spent, a response that does not clearly carry a
+// new access token is never treated as success, and nothing here throws —
+// a rejected promise from a background poll would take the server down.
+import { readFile, writeFile, rename, chmod, unlink, realpath, open } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const AUTH_PATH  = join(CODEX_HOME, "auth.json");
-const BACKUP_PATH = `${AUTH_PATH}.agents-deck-bak`;
 
 // Same client id + endpoint the Codex CLI uses (codex-rs/login/src/auth/manager.rs).
 const CLIENT_ID   = process.env.CODEX_APP_SERVER_LOGIN_CLIENT_ID ?? "app_EMoamEEZ73f0CkXaXp7hrann";
 const REFRESH_URL = process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE ?? "https://auth.openai.com/oauth/token";
 
-// Refresh once the access token is within this much of expiring. The CLI uses
-// 5 minutes; matching it means both refresh on the same schedule instead of
-// fighting over the rotation.
-const EXPIRY_SKEW_MS   = 5 * 60 * 1000;
+// Refresh once the access token is within this much of expiring. Deliberately
+// tighter than the CLI's 5 minutes: matching it would wake both processes into
+// the same window to race for the same single-use token, and the loser gets a
+// `refresh_token_reused` that reads to the user as "your login is broken".
+const EXPIRY_SKEW_MS   = 90 * 1000;
 // Fallback only, for tokens whose `exp` we cannot read.
 const MAX_TOKEN_AGE_MS = 8 * 24 * 60 * 60 * 1000;
 
@@ -35,6 +37,7 @@ const PERMANENT_CODES = new Set([
   "refresh_token_expired",
   "refresh_token_reused",
   "refresh_token_invalidated",
+  "invalid_grant",
 ]);
 
 /** Decode a JWT payload. Returns null for anything that isn't a 3-part JWT. */
@@ -43,7 +46,8 @@ export function decodeJwt(token) {
   const parts = token.split(".");
   if (parts.length !== 3 || !parts[1]) return null;
   try {
-    return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return (payload && typeof payload === "object") ? payload : null;
   } catch {
     return null;
   }
@@ -57,28 +61,43 @@ function expiryMs(accessToken) {
 
 async function readAuthFile() {
   try {
-    return JSON.parse(await readFile(AUTH_PATH, "utf8"));
+    const parsed = JSON.parse(await readFile(AUTH_PATH, "utf8"));
+    return (parsed && typeof parsed === "object") ? parsed : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Write auth.json back. Atomic (write tmp in the same directory, then rename)
- * so a crash mid-write cannot leave the user without credentials, and 0600 so
- * the rotated tokens are no more readable than the ones they replace.
+ * Write auth.json back atomically: write a sibling tmp file, fsync it, then
+ * rename over the target. A reader can never observe a half-written file, and
+ * the fsync means a machine crash cannot leave an empty one behind after we
+ * have already spent the old refresh token.
  *
- * The first write also snapshots the original next to it, once — cheap
- * insurance for the one file the user cannot regenerate without re-logging in.
+ * Resolves symlinks first — `~/.codex/auth.json` is often a link into a
+ * dotfiles repo or an encrypted volume, and renaming onto the link would
+ * replace it with a regular file, quietly detaching the user's setup.
+ *
+ * Throws on failure; the caller must treat that as "the refresh did not
+ * happen" rather than swallowing it.
  */
 async function persistAuth(auth) {
-  try { await access(BACKUP_PATH); }
-  catch { await copyFile(AUTH_PATH, BACKUP_PATH).catch(() => {}); }
+  const target = await realpath(AUTH_PATH).catch(() => AUTH_PATH);
+  const tmp    = `${target}.agents-deck-${process.pid}.tmp`;
 
-  const tmp = `${AUTH_PATH}.agents-deck-${process.pid}.tmp`;
-  await writeFile(tmp, JSON.stringify(auth, null, 2), { mode: 0o600 });
-  await chmod(tmp, 0o600).catch(() => {});
-  await rename(tmp, AUTH_PATH);
+  let ok = false;
+  try {
+    await writeFile(tmp, JSON.stringify(auth, null, 2), { mode: 0o600 });
+    // writeFile ignores `mode` when the file already exists, so pin it again.
+    await chmod(tmp, 0o600);
+    const fd = await open(tmp, "r+");
+    try { await fd.sync(); } finally { await fd.close(); }
+    await rename(tmp, target);
+    ok = true;
+  } finally {
+    // A tmp left behind holds a live rotated refresh token in cleartext.
+    if (!ok) await unlink(tmp).catch(() => {});
+  }
 }
 
 /** True when the stored access token is expired, near-expiry, or stale. */
@@ -104,49 +123,122 @@ function refreshErrorCode(body) {
   return typeof raw === "string" ? raw.toLowerCase() : null;
 }
 
-// One refresh at a time per process. Concurrent callers await the same promise
-// rather than each spending the (single-use) refresh token.
-let _inFlight = null;
-
+/**
+ * Spend the refresh token. Never throws — every failure is a return value,
+ * because callers include a 60s background poll whose rejection would reach
+ * the HTTP router as an unhandled rejection and kill the process.
+ */
 async function doRefresh(auth) {
-  const res = await fetch(REFRESH_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id:     CLIENT_ID,
-      grant_type:    "refresh_token",
-      refresh_token: auth.tokens.refresh_token,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  const body = await res.json().catch(() => null);
+  let res, body;
+  try {
+    res = await fetch(REFRESH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id:     CLIENT_ID,
+        grant_type:    "refresh_token",
+        refresh_token: auth.tokens.refresh_token,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    body = await res.json().catch(() => null);
+  } catch {
+    // Network error or timeout: the server may or may not have rotated the
+    // token. Nothing is written, so the next attempt retries with what we
+    // have — the only safe move when the outcome is unknown.
+    return { ok: false, reason: "refresh_failed" };
+  }
 
   if (!res.ok) {
     const code = refreshErrorCode(body);
     const permanent = (code && PERMANENT_CODES.has(code)) || res.status === 401;
-    return { ok: false, reason: permanent ? "refresh_rejected" : "refresh_failed", code, permanent };
+    return { ok: false, reason: permanent ? "refresh_rejected" : "refresh_failed", code };
   }
 
-  // Every field is optional — write back only what came in, leaving the rest
-  // of auth.json (OPENAI_API_KEY, auth_mode, account_id, …) untouched.
+  // A 2xx whose body did not survive the trip (truncated response, captive
+  // portal, proxy error page) is NOT success: writing here would persist the
+  // old, now-consumed token plus a fresh `last_refresh`, reporting a working
+  // login while guaranteeing the next call fails as `refresh_token_reused`.
+  if (typeof body?.access_token !== "string" || body.access_token === "") {
+    return { ok: false, reason: "refresh_failed", code: "no_access_token" };
+  }
+
+  // Write back only the fields that came in, leaving the rest of auth.json
+  // (OPENAI_API_KEY, auth_mode, account_id, anything unknown) untouched.
   const next = { ...auth, tokens: { ...auth.tokens } };
-  if (body?.id_token)      next.tokens.id_token      = body.id_token;
-  if (body?.access_token)  next.tokens.access_token  = body.access_token;
-  if (body?.refresh_token) next.tokens.refresh_token = body.refresh_token;
+  next.tokens.access_token = body.access_token;
+  if (body.id_token)      next.tokens.id_token      = body.id_token;
+  if (body.refresh_token) next.tokens.refresh_token = body.refresh_token;
   next.last_refresh = new Date().toISOString();
 
-  await persistAuth(next);
+  try {
+    await persistAuth(next);
+  } catch (err) {
+    // The rotated token exists server-side but never reached disk. Say so
+    // plainly — the credential on disk is now dead and only a re-login fixes
+    // it, so reporting a transient failure would just mislead.
+    console.error("agents-deck codex-auth: could not write auth.json:", err?.message ?? err);
+    return { ok: false, reason: "refresh_rejected", code: "persist_failed" };
+  }
+
   return { ok: true, auth: next };
+}
+
+// Refreshes run strictly one at a time per process. A queue rather than a
+// shared promise: callers that arrive during a refresh must be able to make
+// their own decision afterwards (see the staleness checks below) instead of
+// inheriting a result produced before their token failed.
+let _chain = Promise.resolve();
+function serialize(fn) {
+  const run = _chain.then(fn, fn);
+  _chain = run.then(() => {}, () => {});
+  return run;
+}
+
+/**
+ * Refresh under the lock.
+ *
+ * `ifStale` — only refresh when the credentials on disk still look expiring.
+ * `staleAccessToken` — only refresh when disk still holds the token the caller
+ * saw fail. Both exist for the same reason: auth.json is re-read *inside* the
+ * lock, so a caller that queued behind another refresh discovers it already
+ * got what it needed and does not spend a second single-use token.
+ */
+function refreshCredentials({ ifStale = false, staleAccessToken = null } = {}) {
+  return serialize(async () => {
+    const auth = await readAuthFile();
+    if (!auth?.tokens?.refresh_token) return { ok: false, reason: "no_token" };
+    if (ifStale && !shouldRefresh(auth)) return { ok: true, auth };
+    if (staleAccessToken && auth.tokens.access_token !== staleAccessToken) {
+      return { ok: true, auth };  // someone else already rotated past it
+    }
+    return doRefresh(auth);
+  });
+}
+
+function identityFrom(auth, refreshed) {
+  // Claims live in the id_token, not the access token. account_id is seeded at
+  // login into tokens.account_id; the id_token claim is the fallback for
+  // credential files written before that field existed.
+  const claims = decodeJwt(auth.tokens.id_token) ?? {};
+  const oai    = claims["https://api.openai.com/auth"] ?? {};
+  return {
+    ok:          true,
+    accessToken: auth.tokens.access_token,
+    accountId:   auth.tokens.account_id ?? oai.chatgpt_account_id ?? null,
+    isFedramp:   oai.chatgpt_account_is_fedramp === true,
+    planType:    oai.chatgpt_plan_type ?? null,
+    email:       claims.email ?? null,
+    refreshed,
+  };
 }
 
 /**
  * Current Codex credentials, refreshed if needed.
  *
- * Returns { ok: true, accessToken, accountId, isFedramp, planType, email,
- *           refreshed } or { ok: false, reason } where reason is one of
- * `no_token` (never logged in) / `refresh_rejected` (re-login required) /
- * `refresh_failed` (transient).
+ * Returns { ok: true, accessToken, accountId, … } or { ok: false, reason }
+ * where reason is `no_token` (never logged in) / `refresh_rejected` (re-login
+ * required) / `refresh_failed` (transient). Never throws.
  */
 export async function getCodexAuth({ allowRefresh = true } = {}) {
   let auth = await readAuthFile();
@@ -163,38 +255,24 @@ export async function getCodexAuth({ allowRefresh = true } = {}) {
 
   let refreshed = false;
   if (allowRefresh && shouldRefresh(auth)) {
-    _inFlight ??= doRefresh(auth).finally(() => { _inFlight = null; });
-    const r = await _inFlight;
+    const r = await refreshCredentials({ ifStale: true });
     if (!r.ok) return r;
+    refreshed = r.auth.tokens.access_token !== auth.tokens.access_token;
     auth = r.auth;
-    refreshed = true;
   }
 
-  // Claims live in the id_token, not the access token. account_id is seeded at
-  // login into tokens.account_id; the id_token claim is the fallback for
-  // credential files written before that field existed.
-  const claims = decodeJwt(auth.tokens.id_token) ?? {};
-  const oai    = claims["https://api.openai.com/auth"] ?? {};
-
-  return {
-    ok:          true,
-    accessToken: auth.tokens.access_token,
-    accountId:   auth.tokens.account_id ?? oai.chatgpt_account_id ?? null,
-    isFedramp:   oai.chatgpt_account_is_fedramp === true,
-    planType:    oai.chatgpt_plan_type ?? null,
-    email:       claims.email ?? null,
-    refreshed,
-  };
+  return identityFrom(auth, refreshed);
 }
 
 /**
- * Force a refresh regardless of expiry — used when the backend rejects a token
- * it considers expired even though its own `exp` claim says otherwise (OpenAI
- * revokes server-side, so the JWT is not the last word).
+ * Refresh because the backend rejected a token that looked valid locally —
+ * OpenAI revokes server-side, so the JWT's own `exp` is not the last word.
+ *
+ * Pass the access token that was rejected: if disk has already moved past it
+ * (a concurrent refresh, or the Codex CLI), this returns the newer credentials
+ * without spending another single-use refresh token.
  */
-export async function forceCodexRefresh() {
-  const auth = await readAuthFile();
-  if (!auth?.tokens?.refresh_token) return { ok: false, reason: "no_token" };
-  _inFlight ??= doRefresh(auth).finally(() => { _inFlight = null; });
-  return _inFlight;
+export async function forceCodexRefresh(rejectedAccessToken = null) {
+  const r = await refreshCredentials({ staleAccessToken: rejectedAccessToken });
+  return r.ok ? identityFrom(r.auth, true) : r;
 }

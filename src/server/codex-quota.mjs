@@ -219,48 +219,63 @@ async function requestUsage(base, auth) {
   });
 }
 
-export async function fetchCodexQuota({ force = false } = {}) {
-  const now = Date.now();
-  if (!force && _cache && now - _cacheAt < CACHE_MS) return _cache;
+// One outstanding fetch at a time. Several browser tabs mounting at once
+// otherwise each force their own round trip — and each one is another chance
+// to race over the single-use refresh token.
+let _inflight = null;
 
-  const finish = (r) => { _cache = r; _cacheAt = now; return r; };
+export function fetchCodexQuota({ force = false } = {}) {
+  if (!force && _cache && Date.now() - _cacheAt < CACHE_MS) return Promise.resolve(_cache);
+  _inflight ??= doFetchCodexQuota().finally(() => { _inflight = null; });
+  return _inflight;
+}
 
-  let auth = await getCodexAuth();
-  if (!auth.ok) return finish({ ok: false, reason: auth.reason, fetchedAt: now });
+async function doFetchCodexQuota() {
+  const started = Date.now();
+  // Stamped at completion, not at entry: the two calls below can take up to
+  // 17s between them, and a cache entry that is already stale on arrival
+  // shortens the effective TTL for no reason.
+  const finish = (r) => { _cache = r; _cacheAt = Date.now(); return r; };
+  const fail   = (reason) => finish({ ok: false, reason, fetchedAt: started });
 
-  // An API key in auth.json is a platform credential, not a ChatGPT session —
-  // sending it here only produces a confusing 401.
-  if (auth.apiKeyMode) return finish({ ok: false, reason: "api_key_mode", fetchedAt: now });
-
-  const base = await readBaseUrl();
-
-  let res;
+  let auth, base, res;
   try {
-    res = await requestUsage(base, auth);
+    auth = await getCodexAuth();
+    if (!auth.ok) return fail(auth.reason);
+
+    // An API key in auth.json is a platform credential, not a ChatGPT session —
+    // sending it here only produces a confusing 401.
+    if (auth.apiKeyMode) return fail("api_key_mode");
+
+    base = await readBaseUrl();
+    res  = await requestUsage(base, auth);
 
     // The JWT's own `exp` is not the last word: OpenAI revokes server-side, so
     // a token that looks valid locally can still come back expired. One forced
     // refresh + retry turns that from "bar goes dark" into a hiccup.
-    if (res.status === 401 || res.status === 403) {
-      const refreshed = await forceCodexRefresh();
-      if (!refreshed.ok) return finish({ ok: false, reason: refreshed.reason, fetchedAt: now });
-      auth = await getCodexAuth({ allowRefresh: false });
-      if (!auth.ok) return finish({ ok: false, reason: auth.reason, fetchedAt: now });
-      res = await requestUsage(base, auth);
+    //
+    // 401 only. A 403 from chatgpt.com is usually a bot check or a blocked
+    // egress IP rather than a bad token, and rotating a single-use credential
+    // once a minute against a network-layer block is how a working login gets
+    // destroyed.
+    if (res.status === 401) {
+      const refreshed = await forceCodexRefresh(auth.accessToken);
+      if (!refreshed.ok) return fail(refreshed.reason);
+      auth = refreshed;
+      res  = await requestUsage(base, auth);
     }
 
     if (!res.ok) {
-      const reason = (res.status === 401 || res.status === 403) ? "refresh_rejected" : `http_${res.status}`;
-      return finish({ ok: false, reason, fetchedAt: now });
+      return fail(res.status === 401 ? "refresh_rejected" : `http_${res.status}`);
     }
   } catch (err) {
     console.error("agents-deck codex-quota: fetch failed:", err?.message ?? err);
-    return finish({ ok: false, reason: "fetch_error", fetchedAt: now });
+    return fail("fetch_error");
   }
 
   let data;
   try { data = await res.json(); }
-  catch { return finish({ ok: false, reason: "decode_error", fetchedAt: now }); }
+  catch { return fail("decode_error"); }
 
   const rl              = data?.rate_limit;
   const windows         = windowsFrom(rl);
@@ -295,7 +310,7 @@ export async function fetchCodexQuota({ force = false } = {}) {
     // rather than pretending the missing lanes do not exist.
     partial:   damaged || windows.length === 0,
     refreshed: auth.refreshed === true,
-    fetchedAt: now,
+    fetchedAt: started,
   };
 
   result.resetCredits = await fetchResetCredits(base, auth);
