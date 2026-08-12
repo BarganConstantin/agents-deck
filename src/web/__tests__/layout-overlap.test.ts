@@ -289,3 +289,34 @@ describe("separateOverlaps — cluster boxes, not just cards", () => {
     expect(separateOverlaps(nodes, pos, new Map(), sizes(["a", "b"]))).toEqual([]);
   });
 });
+
+describe("breathing room between sessions", () => {
+  const PAD = 18, HEADER_H = 26, LABEL_LIFT = 12;
+
+  it("leaves a visible gap between one session's box and the next one's label", () => {
+    // What the eye sees: the bottom edge of A's cluster box to the top of B's
+    // label tab. Card-origin distance is not the same thing — the chrome sits
+    // between them.
+    const nodes = [agent("a", "sa"), agent("b", "sb")];
+    const measured = sizes(["a", "b"]);
+    const out = autoLayout(nodes, [], { measured });
+
+    const a = out.find(n => n.id === "a")!.position;
+    const b = out.find(n => n.id === "b")!.position;
+    const aBoxBottom = a.y + H + PAD;
+    const bLabelTop = b.y - PAD - HEADER_H - LABEL_LIFT;
+
+    expect(bLabelTop - aBoxBottom).toBeGreaterThanOrEqual(30);
+  });
+
+  it("holds that gap when the repair pass moves a session too", () => {
+    const nodes = [agent("a", "sa"), agent("b", "sb")];
+    const measured = sizes(["a", "b"]);
+    const pos = new Map([["a", { x: 0, y: 0 }], ["b", { x: 0, y: H + 10 }]]);
+    separateOverlaps(nodes, pos, new Map(), measured);
+
+    const aBoxBottom = pos.get("a")!.y + H + PAD;
+    const bLabelTop = pos.get("b")!.y - PAD - HEADER_H - LABEL_LIFT;
+    expect(bLabelTop - aBoxBottom).toBeGreaterThanOrEqual(30);
+  });
+});

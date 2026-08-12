@@ -10,12 +10,17 @@ import type { Node, Edge } from "reactflow";
 const NODE_W = 240;
 const NODE_H = 130;
 
-// Vertical breathing room between two session subgraphs. Has to cover the
-// cluster chrome drawn around each one — outer padding on both sides, the
-// label header, and the label tab that sits above the box's top edge (PAD 18,
-// HEADER_H 26, LABEL_LIFT 12 in SessionClusters.tsx) — plus a visible gap.
+// Chrome drawn around a session beyond its cards: outer padding on both sides,
+// the label header, and the label tab that sits above the box's top edge
+// (PAD 18, HEADER_H 26, LABEL_LIFT 12 in SessionClusters.tsx).
 const SESSION_CHROME = 18 * 2 + 26 + 12;
-const SESSION_GAP = SESSION_CHROME + 36;
+
+// Clear space wanted between one session's box and the next one's label tab.
+// Measured as what the eye sees, not as the distance between card origins —
+// the chrome is added on top, so changing this changes the visible gap by the
+// same amount.
+const SESSION_VISIBLE_GAP = 72;
+const SESSION_GAP = SESSION_CHROME + SESSION_VISIBLE_GAP;
 
 // Horizontal room between two session columns: a full card width. At 80px the
 // columns read as one crowded field, with cluster boxes and their label tabs
@@ -255,7 +260,7 @@ export function separateOverlaps(
   // drawn inside a cluster box that extends past it — padding on every side,
   // a header strip, and a label tab above that. Cards 30px apart look fine and
   // their boxes still cross, which is what "one on another" actually was.
-  const CROSS_SESSION_Y = SESSION_CHROME + MARGIN;
+  const CROSS_SESSION_Y = SESSION_CHROME + SESSION_VISIBLE_GAP;
   const CROSS_SESSION_X = 18 * 2 + MARGIN;
 
   const sizeOf = (id: string) => {
