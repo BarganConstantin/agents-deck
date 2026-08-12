@@ -747,12 +747,10 @@ function Inner() {
   /**
    * Frame the graph against the left edge of the canvas.
    *
-   * React Flow's fitView centres, and on this canvas it also silently no-ops
-   * in some states — returning without moving the viewport and without
-   * throwing, so there is nothing to catch or log. Rather than depend on it,
-   * this measures what is actually drawn and sets the viewport outright:
-   * predictable, and left-anchored because a graph parked mid-canvas leaves
-   * dead space on the side the eye starts from.
+   * React Flow's fitView centres, and there is no asymmetric-padding option,
+   * so this measures what is actually drawn and sets the viewport outright.
+   * Left-anchored because a graph parked mid-canvas leaves dead space on the
+   * side the eye starts from.
    */
   const fitLeft = useCallback((duration = 500) => {
     const MARGIN = 40, MAX_ZOOM = 1.6, MIN_ZOOM = 0.2;
@@ -909,6 +907,44 @@ function Inner() {
     return measuredVersionRef.current;
   }, []);
   const sizeVersion = useStore(measuredSelector);
+  const [domSizeVersion, setDomSizeVersion] = useState(0);
+
+  // Measure the rendered cards directly, as a source that does not depend on
+  // React Flow's store holding on to them.
+  //
+  // It does not: createNodeInternals rebuilds every entry as `{...node}` from
+  // the incoming `nodes` prop, carrying over handleBounds but NOT width and
+  // height. This canvas replaces that prop on every tick, so a measurement
+  // taken by the ResizeObserver survives until the next render and is then
+  // dropped. That closed a loop — the store lost the sizes, so the selector
+  // above read null and skipped, so the map stayed empty, so the nodes we
+  // passed carried no sizes for the store to keep. fitView needs dimensions
+  // to compute bounds and silently returns false without them, which is why
+  // nothing was ever framed.
+  useEffect(() => {
+    let raf = 0;
+    const measure = () => {
+      const map = measuredRef.current;
+      let changed = false;
+      for (const el of document.querySelectorAll<HTMLElement>(".react-flow__node[data-id]")) {
+        const id = el.getAttribute("data-id");
+        if (!id) continue;
+        const w = el.offsetWidth, h = el.offsetHeight;
+        if (!w || !h) continue;
+        const prev = map.get(id);
+        // Same 4px deadband as the store selector: sub-pixel jitter must not
+        // trigger a relayout.
+        if (!prev || Math.abs(prev.width - w) > 4 || Math.abs(prev.height - h) > 4) {
+          map.set(id, { width: w, height: h });
+          changed = true;
+        }
+      }
+      if (changed) setDomSizeVersion(v => v + 1);
+    };
+    // After paint, so the cards have their final size.
+    raf = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(raf);
+  });
 
   // Position cache + structural signature. Layout reruns only when the set
   // of visible agents OR sizes OR pin-set changes — NOT on every event.
@@ -927,8 +963,8 @@ function Inner() {
       ids.push(a.id + (a.parentId ? `>${a.parentId}` : ""));
     }
     ids.sort();
-    return `${ids.join("|")}#sv${sizeVersion}`;
-  }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion]);
+    return `${ids.join("|")}#sv${sizeVersion}.${domSizeVersion}`;
+  }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion, domSizeVersion]);
 
   // Persist the arrangement whenever it changes, not only when the user drags.
   // Auto-placed nodes are part of what gets restored on reload, so a session
