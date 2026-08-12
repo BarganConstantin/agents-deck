@@ -219,6 +219,64 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
   return finish({ ok: true, accounts, activeNum: seq.activeAccountNumber ?? null, fetchedAt: now });
 }
 
+/**
+ * claude-swap's last good usage for whichever account is active right now.
+ *
+ * The Usage panel wants the same numbers for one account that this panel shows
+ * for all of them, and claude-swap has already paid for them. Reading its row
+ * instead of asking Anthropic again is the difference between one collector on
+ * this machine and two competing for the same per-token budget — the second
+ * one is what was 429ing the first.
+ *
+ * Returns null rather than a partial when anything about the row is unsure:
+ * the caller's fallback is to fetch for itself, and a wrong number is worse
+ * than a slow one.
+ */
+export async function activeAccountUsage() {
+  const root = backupRoot();
+  const seq  = await readJson(join(root, "sequence.json"));
+  const num  = seq?.activeAccountNumber != null ? String(seq.activeAccountNumber) : null;
+  const acct = num ? seq?.accounts?.[num] : null;
+  if (!acct) return null;
+
+  const usage = await readJson(join(root, "cache", "usage.json"));
+  if (usage?.schemaVersion !== 2) return null;
+
+  const row = usage.accounts?.[num];
+  // Same identity guard the panel uses: rows are keyed by slot, and slots are
+  // reused, so a row can outlive the account it was written for.
+  if (!row?.lastGood
+      || row.email !== acct.email
+      || (row.organizationUuid ?? "") !== (acct.organizationUuid ?? "")
+      || typeof row.fetchedAt !== "number") return null;
+
+  return {
+    num:       Number(num),
+    email:     acct.email ?? null,
+    lastGood:  row.lastGood,
+    fetchedAt: Math.round(row.fetchedAt * 1000),
+  };
+}
+
+/**
+ * Ask claude-swap to collect now, if its own schedule agrees.
+ *
+ * Exported for the Usage panel's refresh button, which has no other way to ask
+ * for fresher numbers once it stopped fetching them itself. Goes through the
+ * same throttle and the same `cswap list` as the accounts panel, so pressing
+ * refresh cannot outrun the request budget either.
+ */
+export async function requestCollection() {
+  const root  = backupRoot();
+  const seq   = await readJson(join(root, "sequence.json"));
+  if (!seq?.accounts) return false;
+  const usage = await readJson(join(root, "cache", "usage.json"));
+  const rows  = usage?.schemaVersion === 2 ? (usage.accounts ?? {}) : {};
+  const before = _lastNudge;
+  nudgeCollector(rows, Object.keys(seq.accounts), Date.now());
+  return _lastNudge !== before;
+}
+
 export function invalidateClaudeAccountsCache() {
   _cache = null;
   _cacheAt = 0;
