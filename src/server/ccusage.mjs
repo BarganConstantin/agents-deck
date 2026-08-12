@@ -27,6 +27,13 @@ const MARKER = path.join(CACHE_DIR, ".last-update-check");
 
 const _cache = new Map(); // key `${since}|${until}` → { result, at }
 
+// npm is a .cmd shim on Windows, which spawn can only launch through a shell.
+// Everywhere else shell:false — with a shell, Node warns that arguments are
+// concatenated rather than escaped, and the warning lands in our startup
+// banner now that these run at boot.
+const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+const NPM_SHELL = process.platform === "win32";
+
 let _installing = null;   // Promise guard so concurrent calls share one install
 let _checkedThisRun = false; // only kick the daily check once per process boot
 
@@ -52,10 +59,10 @@ function resolveEntry() {
 function installSync(spec = "latest") {
   mkdirSync(CACHE_DIR, { recursive: true });
   const r = spawnSync(
-    "npm",
+    NPM,
     ["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
      "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"],
-    { shell: true, windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8" },
+    { shell: NPM_SHELL, windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8" },
   );
   if (r.status !== 0) {
     throw new Error(`npm install ccusage failed: ${(r.stderr || "").trim() || r.status}`);
@@ -67,10 +74,10 @@ function installAsync(spec = "latest") {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
     const child = spawn(
-      "npm",
+      NPM,
       ["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
        "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"],
-      { shell: true, windowsHide: true, detached: false, stdio: "ignore" },
+      { shell: NPM_SHELL, windowsHide: true, detached: false, stdio: "ignore" },
     );
     child.on("error", () => {});
     child.unref?.();
@@ -100,8 +107,8 @@ function maybeBackgroundUpdate(installedVersion) {
   _checkedThisRun = true;
   touchMarker();
   try {
-    const child = spawn("npm", ["view", "ccusage", "version"],
-      { shell: true, windowsHide: true });
+    const child = spawn(NPM, ["view", "ccusage", "version"],
+      { shell: NPM_SHELL, windowsHide: true });
     let out = "";
     child.stdout.on("data", d => { out += d; });
     child.on("error", () => {});
@@ -210,6 +217,34 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
 
   _cache.set(key, { result, at: now });
   return result;
+}
+
+/**
+ * Get ccusage ready at startup instead of on first use.
+ *
+ * The lazy path is fine for correctness but means the first person to open the
+ * usage-history modal on a fresh machine waits out an npm install with no
+ * explanation. Called from the CLI so that cost is paid while the deck is
+ * still booting.
+ *
+ * Returns { state: "present" | "installing" | "updating" | "unavailable" }.
+ * Never throws and never blocks on the install itself — a slow registry must
+ * not hold up the server.
+ */
+export function primeCcusage() {
+  const resolved = resolveEntry();
+  if (resolved) {
+    // Already installed: the daily check may still queue a background upgrade.
+    const due = !_checkedThisRun && updateCheckDue();
+    maybeBackgroundUpdate(resolved.version);
+    return { state: due ? "updating" : "present", version: resolved.version };
+  }
+  if (!_installing) {
+    _installing = (async () => { installSync("latest"); })()
+      .catch(e => { console.error("agents-deck ccusage: install failed:", e?.message ?? e); })
+      .finally(() => { _installing = null; });
+  }
+  return { state: "installing" };
 }
 
 export function invalidateCcusageCache() {

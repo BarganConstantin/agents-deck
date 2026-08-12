@@ -938,6 +938,20 @@ async function serveStatic(req, res, url) {
   }
 }
 
+/** Collect a request body as a string, capped so a bad client can't fill memory. */
+function readBody(req, limit = 64_000) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", c => {
+      body += c;
+      if (body.length > limit) { req.destroy(); reject(new Error("body too large")); }
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
 function handleEventIngest(req, res) {
   let body = "";
   req.setEncoding("utf8");
@@ -1035,6 +1049,31 @@ async function handleCcusage(req, res) {
   send(res, 200, data);
 }
 
+async function handleClaudeAccounts(req, res) {
+  const { fetchClaudeAccounts } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/claude-accounts.mjs")).href
+  );
+  const url = new URL(req.url, "http://localhost");
+  const force = url.searchParams.get("refresh") === "1";
+  send(res, 200, await fetchClaudeAccounts({ force }));
+}
+
+async function handleClaudeAccountSwitch(req, res) {
+  const { switchClaudeAccount, invalidateClaudeAccountsCache } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/claude-accounts.mjs")).href
+  );
+  const body = await readBody(req).catch(() => null);
+  let parsed = null;
+  try { parsed = JSON.parse(body ?? ""); } catch { /* handled below */ }
+  if (!parsed || typeof parsed !== "object") return send(res, 400, { ok: false, reason: "bad_request" });
+
+  const result = await switchClaudeAccount(parsed.account);
+  // The active account just moved; the next poll should see it immediately
+  // rather than serving the pre-switch roster for another few seconds.
+  invalidateClaudeAccountsCache();
+  send(res, result.ok ? 200 : 400, result);
+}
+
 function handleHealth(_req, res) {
   send(res, 200, {
     ok: true,
@@ -1115,6 +1154,8 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return guard(handleCodexUsage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-quota") return guard(handleCodexQuota(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/ccusage")     return guard(handleCcusage(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/claude-accounts") return guard(handleClaudeAccounts(req, res), res);
+    if (req.method === "POST" && url.pathname === "/api/claude-accounts/switch") return guard(handleClaudeAccountSwitch(req, res), res);
 
     if (req.method === "GET" && url.pathname === "/api/events") {
       const since = Number(url.searchParams.get("since") ?? 0);

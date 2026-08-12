@@ -1,0 +1,203 @@
+// AccountsPanel — every managed Claude account, its usage, and one click to
+// switch between them. Toggled via the topbar button or the A shortcut.
+//
+// The data comes from claude-swap's local store, which the server reads rather
+// than fetching: Anthropic's usage endpoint has a per-account request budget
+// shared across every tool on the machine, so a dashboard that polled it
+// directly would rate-limit the user's actual account. That has a visible
+// consequence here — numbers can be minutes old, and saying so is part of the
+// display rather than a caveat to hide.
+import React, { useCallback, useEffect, useRef, useState } from "react";
+
+interface Lane {
+  id: string;
+  label: string;
+  pct: number;
+  resetAt: number | null;   // unix seconds
+}
+
+interface Account {
+  num: number;
+  email: string | null;
+  alias: string | null;
+  org: string | null;
+  active: boolean;
+  disabled: boolean;
+  lanes: Lane[];
+  headroom: number | null;
+  fetchedAt: number | null;  // unix ms
+  stale: boolean;
+  error: string | null;
+}
+
+interface AccountsData {
+  ok: boolean;
+  accounts?: Account[];
+  activeNum?: number | null;
+  reason?: string;
+  fetchedAt?: number;
+}
+
+const POLL_MS = 15_000;
+
+/** "3h 43m" / "6d 21h" — recomputed client-side so it never shows a stale countdown. */
+function countdown(resetAtSec: number, nowSec: number): string | null {
+  const diff = resetAtSec - nowSec;
+  if (diff <= 0) return null;
+  const d = Math.floor(diff / 86400);
+  const h = Math.floor((diff % 86400) / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function ago(ms: number, nowSec: number): string {
+  const s = nowSec - Math.floor(ms / 1000);
+  if (s < 60)    return "just now";
+  if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** Plain-language version of claude-swap's error codes. */
+function errorText(code: string): string {
+  if (code === "http-429") return "rate limited";
+  if (code === "http-401") return "re-login needed";
+  if (code === "timeout")  return "timed out";
+  if (code === "network")  return "unreachable";
+  return code;
+}
+
+function LaneBar({ lane, nowSec }: { lane: Lane; nowSec: number }) {
+  const capped = Math.min(100, Math.max(0, lane.pct));
+  const color  = capped >= 90 ? "var(--err)" : capped >= 70 ? "var(--warn)" : "var(--accent)";
+  const reset  = lane.resetAt ? countdown(lane.resetAt, nowSec) : null;
+  return (
+    <div className="ap-lane">
+      <span className="ap-lane-label">{lane.label}</span>
+      <div className="ap-lane-track">
+        <div className="ap-lane-fill" style={{ width: `${capped === 0 ? 1.5 : capped}%`, background: color, opacity: capped === 0 ? 0.4 : 1 }} />
+      </div>
+      <span className="ap-lane-pct" style={{ color }}>{capped}%</span>
+      <span className="ap-lane-reset">{reset ? `resets ${reset}` : ""}</span>
+    </div>
+  );
+}
+
+interface Props { onClose: () => void }
+
+export default function AccountsPanel({ onClose }: Props) {
+  const [data, setData] = useState<AccountsData | null>(null);
+  const [switching, setSwitching] = useState<number | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const timerRef = useRef<number | null>(null);
+
+  const load = useCallback(async (force = false) => {
+    try {
+      const res = await fetch(`/api/claude-accounts${force ? "?refresh=1" : ""}`);
+      if (res.ok) setData(await res.json());
+    } catch { /* server unreachable */ }
+  }, []);
+
+  useEffect(() => {
+    load(true);
+    timerRef.current = window.setInterval(() => load(false), POLL_MS);
+    return () => { if (timerRef.current != null) window.clearInterval(timerRef.current); };
+  }, [load]);
+
+  // Countdowns tick independently of the fetch so they stay honest between polls.
+  useEffect(() => {
+    const t = window.setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const doSwitch = async (num: number) => {
+    setSwitching(num);
+    setFailure(null);
+    try {
+      const res = await fetch("/api/claude-accounts/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account: num }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!body?.ok) setFailure(body?.output || body?.reason || "switch failed");
+      await load(true);
+    } catch {
+      setFailure("server unreachable");
+    } finally {
+      setSwitching(null);
+    }
+  };
+
+  return (
+    <div className="accounts-panel" aria-label="Claude accounts">
+      <div className="ap-header">
+        <h3>Accounts</h3>
+        <div className="ap-header-right">
+          <button type="button" className="btn ap-refresh" onClick={() => load(true)} title="Reload from claude-swap">↻</button>
+          <button type="button" className="btn icon-btn" onClick={onClose} aria-label="Close accounts panel" title="Close (A)">×</button>
+        </div>
+      </div>
+
+      {data == null ? (
+        <div className="ap-empty">Checking…</div>
+      ) : !data.ok ? (
+        <div className="ap-empty">
+          <span>No accounts found.</span>
+          <span className="ap-hint">
+            {data.reason === "no_store"
+              ? "This panel reads claude-swap's store. Install it with uv tool install claude-swap, then run cswap add."
+              : "claude-swap's store could not be read."}
+          </span>
+        </div>
+      ) : (
+        <>
+          {data.accounts?.map(a => (
+            <div key={a.num} className={`ap-account${a.active ? " active" : ""}${a.disabled ? " disabled" : ""}`}>
+              <div className="ap-account-head">
+                <span className="ap-num">{a.num}</span>
+                {a.alias && <span className="ap-alias">{a.alias}</span>}
+                <span className="ap-email" title={a.org ?? undefined}>{a.email}</span>
+                {a.active
+                  ? <span className="ap-badge-active">● active</span>
+                  : (
+                    <button
+                      type="button"
+                      className="btn ap-switch"
+                      disabled={switching != null || a.disabled}
+                      onClick={() => doSwitch(a.num)}
+                      title={a.disabled ? "Held out of rotation" : `Switch to ${a.alias ?? a.email}`}
+                    >{switching === a.num ? "…" : "switch"}</button>
+                  )}
+              </div>
+
+              {a.lanes.length > 0
+                ? a.lanes.map(l => <LaneBar key={l.id} lane={l} nowSec={nowSec} />)
+                : <div className="ap-hint">No usage recorded yet.</div>}
+
+              {/* Freshness is load-bearing here, not a footnote: an account
+                  that has been rate-limited for hours still shows its last
+                  good numbers, and switching to it on that basis would be a
+                  decision made on old information. */}
+              <div className="ap-meta">
+                {a.error && <span className="ap-err">{errorText(a.error)}</span>}
+                {a.fetchedAt
+                  ? <span className={a.stale ? "ap-stale" : undefined}>{ago(a.fetchedAt, nowSec)}</span>
+                  : <span className="ap-stale">never fetched</span>}
+              </div>
+            </div>
+          ))}
+
+          {failure && <div className="ap-failure">{failure}</div>}
+
+          <div className="ap-footnote">
+            Usage collected by claude-swap. The deck reads its store rather than
+            polling Anthropic, which shares one per-account request budget.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

@@ -88,14 +88,20 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   grid-template-rows: 52px auto 1fr;
   height: 100vh;
 }
-/* When the session-list sidebar is open, add a 240px left column. The
-   .app:has() check keeps everything declarative — no extra body class
-   plumbing needed. */
+/* When a left sidebar is open, add a left column. The .app:has() check keeps
+   everything declarative — no extra body class plumbing needed. Sessions and
+   Accounts share the slot and are mutually exclusive, so only one width rule
+   can ever apply; accounts gets more room for its bars and email addresses. */
 .app:has(.session-list) {
   grid-template-columns: 240px 1fr 360px;
 }
-.app:has(.session-list) .canvas-wrap { grid-column: 2; }
-.app:has(.session-list) .conn-banner { grid-column: 2; }
+.app:has(.accounts-panel) {
+  grid-template-columns: 288px 1fr 360px;
+}
+.app:has(.session-list) .canvas-wrap,
+.app:has(.accounts-panel) .canvas-wrap { grid-column: 2; }
+.app:has(.session-list) .conn-banner,
+.app:has(.accounts-panel) .conn-banner { grid-column: 2; }
 .canvas-wrap { grid-column: 1; grid-row: 3; }
 .detail { grid-column: 2; grid-row: 2 / -1; }
 .app:has(.session-list) .detail { grid-column: 3; }
@@ -535,6 +541,7 @@ button.btn.icon-btn {
    reclaims the space. Keyed off the reopen tab, which only renders when closed. */
 .app:has(.detail-reopen) { grid-template-columns: 1fr; }
 .app:has(.session-list):has(.detail-reopen) { grid-template-columns: 240px 1fr; }
+.app:has(.accounts-panel):has(.detail-reopen) { grid-template-columns: 288px 1fr; }
 /* Floating reopen tab pinned to the right edge. */
 .detail-reopen {
   position: fixed;
@@ -2735,3 +2742,129 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-model-cost { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
 :root[data-theme="light"] .uh-backdrop { background: rgba(15,23,42,0.30); }
+
+/* ---------------- accounts panel (claude-swap) ---------------- */
+/* Sits left of the usage panel so both can be open — comparing accounts is
+   usually something you do while watching your current spend. */
+/* Left sidebar, in the same slot as the session list — the two are alternate
+   answers to "what should this column show", so they swap rather than stack. */
+.accounts-panel {
+  grid-column: 1;
+  grid-row: 2 / -1;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ap-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 10px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.ap-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.ap-header-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.ap-refresh { padding: 1px 6px; font-size: 11px; }
+
+.ap-account {
+  padding: 9px 14px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+/* The active account is the one answer the panel exists to give, so it gets a
+   marker readable without parsing any text. */
+.ap-account.active { border-left: 2px solid var(--accent); padding-left: 12px; }
+.ap-account.disabled { opacity: 0.5; }
+
+.ap-account-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ap-num {
+  font-size: 10px;
+  color: var(--muted-dim);
+  min-width: 9px;
+}
+.ap-alias {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.ap-email {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.ap-badge-active { font-size: 10px; color: var(--accent); flex-shrink: 0; }
+.ap-switch { padding: 1px 7px; font-size: 10px; flex-shrink: 0; }
+
+.ap-lane {
+  display: grid;
+  grid-template-columns: 30px 1fr 32px;
+  grid-template-areas: "label track pct" ".  reset reset";
+  align-items: center;
+  gap: 2px 6px;
+  margin-bottom: 3px;
+}
+.ap-lane-label { grid-area: label; font-size: 10px; color: var(--muted-dim); }
+.ap-lane-track {
+  grid-area: track;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.ap-lane-fill { height: 100%; border-radius: 2px; }
+.ap-lane-pct { grid-area: pct; font-size: 10px; text-align: right; }
+.ap-lane-reset { grid-area: reset; font-size: 9px; color: var(--muted-dim); }
+.ap-lane-reset:empty { display: none; }
+
+.ap-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 9px;
+  color: var(--muted-dim);
+}
+.ap-err { color: var(--warn); }
+.ap-stale { color: var(--warn); }
+
+.ap-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ap-hint { font-size: 10px; color: var(--muted-dim); }
+.ap-failure {
+  margin: 8px 14px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  color: var(--err);
+  font-size: 10px;
+  word-break: break-word;
+}
+.ap-footnote {
+  padding: 8px 14px 0;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--muted-dim);
+}
