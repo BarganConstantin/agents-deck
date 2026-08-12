@@ -11,9 +11,11 @@ const NODE_W = 240;
 const NODE_H = 130;
 
 // Vertical breathing room between two session subgraphs. Has to cover the
-// cluster's outer padding (PAD) on both sides plus its label header
-// (HEADER_H) — see SessionClusters.tsx — plus a visible gap.
-const SESSION_GAP = 110;
+// cluster chrome drawn around each one — outer padding on both sides, the
+// label header, and the label tab that sits above the box's top edge (PAD 18,
+// HEADER_H 26, LABEL_LIFT 12 in SessionClusters.tsx) — plus a visible gap.
+const SESSION_CHROME = 18 * 2 + 26 + 12;
+const SESSION_GAP = SESSION_CHROME + 36;
 
 export interface LayoutOptions {
   direction?: "LR" | "TB";
@@ -33,6 +35,7 @@ function layoutSession(
   edges: Edge[],
   direction: "LR" | "TB",
   measured: Map<string, { width: number; height: number }>,
+  pinned: Map<string, { x: number; y: number }>,
 ): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -44,8 +47,14 @@ function layoutSession(
     ranksep: 160,
     edgesep: 30,
   });
-  const idSet = new Set(ids);
-  for (const id of ids) {
+  // A dragged node is not part of the flow — it renders wherever the user
+  // dropped it. Handing it to dagre anyway makes the session reserve an empty
+  // slot at a position the node has already left, so the rest of the session
+  // is laid out around a phantom and the real node lands on whatever is at
+  // its saved coordinate. Lay out only what still flows.
+  const free = ids.filter(id => !pinned.has(id));
+  const idSet = new Set(free);
+  for (const id of free) {
     const m = measured.get(id);
     g.setNode(id, { width: m?.width ?? NODE_W, height: m?.height ?? NODE_H });
   }
@@ -56,7 +65,7 @@ function layoutSession(
 
   const positions = new Map<string, { x: number; y: number }>();
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const id of ids) {
+  for (const id of free) {
     const p = g.node(id);
     if (!p) continue;
     const m = measured.get(id);
@@ -75,8 +84,20 @@ function layoutSession(
   if (Number.isFinite(minX) && Number.isFinite(minY)) {
     for (const [id, p] of positions) positions.set(id, { x: p.x - minX, y: p.y - minY });
   }
-  const width = Number.isFinite(maxX) ? maxX - minX : 0;
-  const height = Number.isFinite(maxY) ? maxY - minY : 0;
+  let width = Number.isFinite(maxX) ? maxX - minX : 0;
+  let height = Number.isFinite(maxY) ? maxY - minY : 0;
+
+  // The session's cluster box is drawn around every member, pinned ones
+  // included, so the space it claims has to account for them too — otherwise
+  // the next session is stacked under the flowing content and straight
+  // through a node that was dragged below it.
+  for (const id of ids) {
+    const p = pinned.get(id);
+    if (!p) continue;
+    const m = measured.get(id);
+    width  = Math.max(width,  p.x + (m?.width  ?? NODE_W));
+    height = Math.max(height, p.y + (m?.height ?? NODE_H));
+  }
   return { positions, width, height };
 }
 
@@ -101,7 +122,7 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   let cursorY = 0;
   for (const sid of sessionOrder) {
     const ids = sessions.get(sid)!;
-    const { positions, height } = layoutSession(ids, edges, direction, measured);
+    const { positions, height } = layoutSession(ids, edges, direction, measured, pinned);
     for (const [id, p] of positions) finalPositions.set(id, { x: p.x, y: p.y + cursorY });
     cursorY += height + SESSION_GAP;
   }

@@ -395,6 +395,14 @@ function snapshotToFlow(
   for (const id of Array.from(positions.keys())) {
     if (!state.agents.has(id)) positions.delete(id);
   }
+  // Drop pins for agents that are gone. Pinned positions are restored from
+  // localStorage on every load, so without this a drag from some previous run
+  // outlives the agent it belonged to and keeps claiming that spot on the
+  // canvas — where a later session, laid out from the top, gets stacked
+  // straight onto it.
+  for (const id of Array.from(pinned.keys())) {
+    if (!state.agents.has(id)) pinned.delete(id);
+  }
   // Never silently drop a visible node — if its position is missing, place
   // it at {0,0} for THIS frame and force a fresh dagre pass on the next
   // frame by invalidating lastLayoutSigRef. The previous skip-this-frame
