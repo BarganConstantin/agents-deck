@@ -292,40 +292,40 @@ export default function AccountsPanel({ onClose }: Props) {
             <div className="ap-auto">
               <div className="ap-auto-head">
                 <span className="ap-auto-title">Auto-switch</span>
-                {auto.external ? (
-                  // Two engines would not corrupt anything — claude-swap
-                  // serializes decisions under its state lock — but they would
-                  // double the tick rate against the request budget and leave
-                  // no single place explaining why an account moved. The deck
-                  // reports the running loop instead of competing with it.
-                  <span
-                    className="ap-auto-state live"
-                    title="A cswap auto loop is running in your terminal. Stop it there to control auto-switching from here."
-                  >
-                    <i className="ap-pulse" aria-hidden /> live
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    className={`ap-auto-state toggle${auto.enabled ? " live" : ""}`}
-                    role="switch"
-                    aria-checked={auto.enabled}
-                    disabled={busy != null}
-                    onClick={() => post({ action: "enable", enabled: !auto.enabled }, "enable").then(() => load(true))}
-                    title={auto.enabled
-                      ? "Stop switching accounts automatically"
-                      : "Switch accounts automatically when the active one nears its limit"}
-                  >
-                    <i className={auto.enabled ? "ap-pulse" : "ap-dot"} aria-hidden />
-                    {auto.enabled ? "live" : "off"}
-                  </button>
-                )}
+                {/* Always a control, never a read-out. An earlier version
+                    hid the toggle whenever a terminal loop was detected, on
+                    the grounds that the deck's own loop would be redundant —
+                    but a setting you cannot see is worse than a redundant
+                    one, and the toggle still decides what happens the moment
+                    that terminal loop stops. The terminal's state is shown
+                    beside it instead of replacing it. */}
+                <button
+                  type="button"
+                  className={`ap-auto-state toggle${auto.enabled ? " live" : ""}`}
+                  role="switch"
+                  aria-checked={auto.enabled}
+                  disabled={busy != null}
+                  onClick={() => post({ action: "enable", enabled: !auto.enabled }, "enable").then(() => load(true))}
+                  title={auto.enabled
+                    ? "Stop switching accounts automatically"
+                    : "Switch accounts automatically when the active one nears its limit"}
+                >
+                  <i className={auto.enabled ? "ap-pulse" : "ap-dot"} aria-hidden />
+                  {auto.enabled ? "on" : "off"}
+                </button>
               </div>
 
-              {/* Said outright, not just in a tooltip: the missing toggle is
-                  otherwise unexplained, and the reason is actionable. */}
+              {/* Which engine is actually switching right now. Two would not
+                  corrupt anything — claude-swap serializes under its state
+                  lock — but they double the tick rate against a request budget
+                  that is already the scarce resource, so the deck stands down
+                  while the terminal loop runs and says so. */}
               {auto.external && (
-                <p className="ap-auto-note">Started from your terminal — stop it there to control it here.</p>
+                <p className="ap-auto-note">
+                  <i className="ap-pulse" aria-hidden /> A <code>cswap auto</code> loop in your terminal is
+                  doing the switching. The deck stands down while it runs
+                  {auto.enabled ? " — this toggle takes over when you stop it." : "."}
+                </p>
               )}
 
               {/* Same label-left / value-right rhythm as the usage lanes above,
