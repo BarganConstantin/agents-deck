@@ -165,11 +165,14 @@ if (wantCodex) {
     csp.stop(true, `claude-swap      ${C.dim}not installed (AGENTS_DECK_NO_INSTALL=1)${C.reset}`);
   } else {
     const how = cs.reason === "no_installer"
-      ? "needs uv or pipx — see https://github.com/realiti4/claude-swap"
+      ? "not installed — the accounts panel needs it"
       : cs.reason === "not_on_path"
         ? `installed via ${cs.via} but not on PATH — add ~/.local/bin`
         : `install failed via ${cs.via}`;
     csp.stop(false, `claude-swap      ${C.dim}${how}${C.reset}`);
+    // A URL is not an answer when someone just wants the panel to work. Print
+    // the command for THIS machine, picked from what is already on it.
+    if (cs.hint) process.stdout.write(`    ${C.dim}${cs.hint}${C.reset}\n`);
   }
 }
 

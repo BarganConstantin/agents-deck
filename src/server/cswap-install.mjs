@@ -37,18 +37,83 @@ export async function cswapVersion() {
  * Python environment where it can collide with their own dependencies, which
  * is not a thing to do to someone without asking.
  */
-async function installCswap() {
-  for (const [cmd, args] of [
-    ["uv",   ["tool", "install", "claude-swap"]],
-    ["pipx", ["install", "claude-swap"]],
-  ]) {
-    const probe = await run(cmd, ["--version"], { timeout: 5_000 });
-    if (!probe.ok) continue;
-    const r = await run(cmd, args, { timeout: INSTALL_TIMEOUT_MS });
-    if (r.ok) return { ok: true, via: cmd };
-    return { ok: false, reason: "install_failed", via: cmd, detail: (r.stderr || r.stdout).trim().slice(0, 300) };
+const PY = process.platform === "win32" ? ["py", "python"] : ["python3", "python"];
+
+/**
+ * Whether it is safe to execute a python interpreter here.
+ *
+ * On macOS, /usr/bin/python3 is a shim: with the Command Line Tools absent it
+ * does not run python, it pops the "install developer tools?" dialog. Probing
+ * for python in the background would throw that dialog at someone who only
+ * wanted a dashboard, so on darwin nothing python-shaped is executed until
+ * xcode-select confirms the tools are actually there. That check is a plain
+ * path lookup and triggers nothing itself.
+ */
+let _pyOk = null;
+async function pythonProbeSafe() {
+  if (_pyOk != null) return _pyOk;
+  _pyOk = process.platform !== "darwin"
+    ? true
+    : (await run("xcode-select", ["-p"], { timeout: 5_000 })).ok;
+  return _pyOk;
+}
+
+/**
+ * Ways to install a Python application, best first.
+ *
+ * `python -m pipx` matters more than it looks: pipx is very often present as a
+ * module without a `pipx` on PATH — every Debian/Ubuntu `apt install pipx`, and
+ * any `pip install --user pipx` where ~/.local/bin was never added to PATH. The
+ * two-entry version of this list reported "needs uv or pipx" to people who had
+ * pipx installed, which is the kind of wrong answer that stops someone looking.
+ */
+async function installers() {
+  const out = [
+    { cmd: "uv",   probe: ["--version"], args: ["tool", "install", "claude-swap"], via: "uv" },
+    { cmd: "pipx", probe: ["--version"], args: ["install", "claude-swap"],         via: "pipx" },
+  ];
+  if (!(await pythonProbeSafe())) return out;
+  for (const py of PY) {
+    out.push({
+      cmd: py,
+      probe: ["-m", "pipx", "--version"],
+      args: ["-m", "pipx", "install", "claude-swap"],
+      via: `${py} -m pipx`,
+    });
   }
-  return { ok: false, reason: "no_installer" };
+  return out;
+}
+
+async function installCswap() {
+  for (const { cmd, probe, args, via } of await installers()) {
+    if (!(await run(cmd, probe, { timeout: 8_000 })).ok) continue;
+    const r = await run(cmd, args, { timeout: INSTALL_TIMEOUT_MS });
+    if (r.ok) return { ok: true, via };
+    return { ok: false, reason: "install_failed", via, detail: (r.stderr || r.stdout).trim().slice(0, 300) };
+  }
+  return { ok: false, reason: "no_installer", hint: await installHint() };
+}
+
+/**
+ * What to actually type, for this machine.
+ *
+ * "needs uv or pipx" is a dead end for the person who has neither and no
+ * opinion about Python packaging — which is most people running a Node CLI.
+ * uv is a single self-contained binary and is what claude-swap documents, so
+ * that is what gets recommended; if the machine already has Python, pipx via
+ * pip is offered instead because it uses something already installed.
+ */
+export async function installHint() {
+  const uv = process.platform === "win32"
+    ? 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  (then: uv tool install claude-swap)'
+    : "curl -LsSf https://astral.sh/uv/install.sh | sh  (then: uv tool install claude-swap)";
+  if (!(await pythonProbeSafe())) return uv;
+  for (const py of PY) {
+    if ((await run(py, ["-c", "import sys"], { timeout: 5_000 })).ok) {
+      return `${py} -m pip install --user pipx && ${py} -m pipx install claude-swap`;
+    }
+  }
+  return uv;
 }
 
 function updateCheckDue() {
@@ -94,15 +159,20 @@ function isOlder(a, b) {
  * take tens of seconds, which is not a thing to put in front of the server
  * starting. The running copy keeps working; the new one is there next launch.
  */
-function upgradeInBackground(via) {
-  const args = via === "uv" ? ["tool", "upgrade", "claude-swap"] : ["upgrade", "claude-swap"];
-  runDetached(via, args);
+function upgradeInBackground(found) {
+  const { cmd, via } = found;
+  const args = via === "uv"
+    ? ["tool", "upgrade", "claude-swap"]
+    : via === "pipx"
+      ? ["upgrade", "claude-swap"]
+      : ["-m", "pipx", "upgrade", "claude-swap"];   // python -m pipx
+  runDetached(cmd, args);
 }
 
 /** Whichever Python tool installer is available, or null. */
 async function findInstaller() {
-  for (const cmd of ["uv", "pipx"]) {
-    if ((await run(cmd, ["--version"], { timeout: 5_000 })).ok) return cmd;
+  for (const { cmd, probe, via } of await installers()) {
+    if ((await run(cmd, probe, { timeout: 8_000 })).ok) return { cmd, via };
   }
   return null;
 }
@@ -127,10 +197,10 @@ export async function ensureCswap() {
     touchMarker();
     const latest = await latestOnPypi();
     if (latest && existing !== "installed" && isOlder(existing, latest)) {
-      const via = await findInstaller();
-      if (via) {
-        upgradeInBackground(via);
-        return { state: "upgrading", version: existing, latest, via };
+      const found = await findInstaller();
+      if (found) {
+        upgradeInBackground(found);
+        return { state: "upgrading", version: existing, latest, via: found.via };
       }
     }
     return { state: "present", version: existing };

@@ -103,8 +103,11 @@ function lane(id, label, win) {
 /**
  * Every managed account with whatever usage claude-swap last saw for it.
  *
- * Returns { ok: false, reason: "no_store" } when claude-swap isn't installed —
- * the panel then explains itself rather than showing an empty list.
+ * When there is nothing to show, says which of the two reasons it is:
+ * "no_cswap" (the tool is not installed, and here is the command for this
+ * machine) or "no_accounts" (it is installed but nothing has been added yet).
+ * They need different things from the user, and reporting both as one empty
+ * panel leaves whichever one they are in with nowhere to go.
  */
 export async function fetchClaudeAccounts({ force = false } = {}) {
   const now = Date.now();
@@ -114,7 +117,13 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
 
   const root = backupRoot();
   const seq  = await readJson(join(root, "sequence.json"));
-  if (!seq?.accounts) return finish({ ok: false, reason: "no_store", fetchedAt: now });
+  if (!seq?.accounts) {
+    const { cswapVersion, installHint } = await import("./cswap-install.mjs");
+    const version = await cswapVersion();
+    return finish(version
+      ? { ok: false, reason: "no_accounts", version, fetchedAt: now }
+      : { ok: false, reason: "no_cswap", hint: await installHint(), fetchedAt: now });
+  }
 
   const usage = await readJson(join(root, "cache", "usage.json"));
   // A schema bump means the rows may not mean what this code thinks they do.
