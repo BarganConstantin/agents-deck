@@ -14,7 +14,7 @@
 // and cannot lose a login. Switching shells out to `cswap` rather than
 // reimplementing the lock protocol its correctness depends on.
 import { readFile } from "node:fs/promises";
-import { execFile, spawn } from "node:child_process";
+import { run, runDetached } from "./exec.mjs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 
@@ -68,11 +68,7 @@ function nudgeCollector(rows, now) {
   if (!due) return;
 
   _lastNudge = now;
-  try {
-    const child = spawn("cswap", ["list"], { stdio: "ignore", shell: false, windowsHide: true });
-    child.on("error", () => {});   // not installed — the panel already says so
-    child.unref?.();
-  } catch { /* best-effort */ }
+  runDetached("cswap", ["list"]);   // not installed — the panel already says so
 }
 
 async function readJson(path) {
@@ -203,18 +199,11 @@ export function switchClaudeAccount(accountNum) {
     return Promise.resolve({ ok: false, reason: "bad_account" });
   }
 
-  return new Promise((resolve) => {
-    execFile("cswap", ["switch", String(num)], {
-      timeout: 30_000,
-      // Argument array, never a shell — and PATH-resolved rather than pinned
-      // because cswap installs to a handful of different places.
-      shell: false,
-    }, (err, stdout, stderr) => {
-      if (!err) return resolve({ ok: true, output: String(stdout).trim() });
-      const reason = err.code === "ENOENT" ? "no_cswap"
-                   : err.killed              ? "timeout"
-                   : "switch_failed";
-      resolve({ ok: false, reason, output: String(stderr || stdout).trim().slice(0, 500) });
-    });
+  // Argument vector, never a shell — and resolved through exec.mjs so the
+  // Windows `.exe`/`.cmd` shim is found too.
+  return run("cswap", ["switch", String(num)], { timeout: 30_000 }).then(r => {
+    if (r.ok) return { ok: true, output: r.stdout.trim() };
+    const reason = r.code === "ENOENT" ? "no_cswap" : r.killed ? "timeout" : "switch_failed";
+    return { ok: false, reason, output: (r.stderr || r.stdout).trim().slice(0, 500) };
   });
 }
