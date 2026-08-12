@@ -91,8 +91,8 @@ function ago(ms: number, nowSec: number): string {
 function due(nextAt: number | null, nowSec: number): string {
   if (!nextAt) return "";
   const s = Math.floor(nextAt / 1000) - nowSec;
-  if (s <= 0) return "";
-  if (s < 60) return ` · next in ${s}s`;
+  if (s <= 0)  return " · due";
+  if (s < 60)  return ` · next in ${s}s`;
   return ` · next in ${Math.round(s / 60)}m`;
 }
 
@@ -390,8 +390,8 @@ export default function AccountsPanel({ onClose }: Props) {
 
           {failure && <div className="ap-failure">{failure}</div>}
 
-          <p className="ap-footnote" title="Anthropic's usage endpoint allows roughly 28–30 requests per hour per account, shared by every tool on this machine. Polling it from here would rate-limit your account, so the deck reads what claude-swap already collected.">
-            Read from claude-swap, not polled.
+          <p className="ap-footnote" title="Anthropic's usage endpoint allows roughly 28–30 requests per hour per account, shared by every tool on this machine — polling it from here would rate-limit your account. So the deck never fetches: it asks claude-swap to collect while this panel is open, at most once every three minutes, and claude-swap decides whether that touches the network at all.">
+            Collected by claude-swap while this panel is open.
           </p>
         </>
       )}

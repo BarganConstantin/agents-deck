@@ -42,9 +42,31 @@ const CACHE_MS = 5_000;
 // without a marker would misrepresent them (its own trust ceiling is 3600s).
 const STALE_AFTER_MS = 15 * 60_000;
 
-// Nudging the collector: at most this often, however many times the panel asks.
-const NUDGE_EVERY_MS = 60_000;
+// Nudging the collector.
+//
+// Two throttles, because the cost of asking is not the cost of fetching. When
+// claude-swap's plan says nothing is due, `cswap list` fetches nothing — the
+// spawn rate is bounded by the plan (one per 180-600s), not by how often we
+// ask. So asking often is cheap in requests and only costs a subprocess, and
+// asking often is exactly how `cswap watch` stays current: it re-asks every
+// three seconds and therefore collects the moment a plan comes due.
+//
+// The exception is an ask that changes nothing — a claim held by another
+// collector, a backoff, a plan that stays overdue. Repeating that every few
+// seconds is pure spawn churn, so a second, slower throttle applies until the
+// store actually moves.
+const NUDGE_EVERY_MS = 15_000;         // when the last ask produced new data
+const NUDGE_QUIET_MS = 60_000;         // when it did not
 let _lastNudge = 0;
+let _lastSeenFetch = 0;                // newest fetchedAt observed, in seconds
+
+// claude-swap's SERVE_TTL_S (180s) plus slack: below this age it serves from
+// the store and fetches nothing, so asking earlier only costs a subprocess.
+const FRESH_MIN_AGE_MS = 190_000;
+
+// claude-swap's RECENT_429_WINDOW_S. While a 429 is this recent, its own
+// congestion control is deliberately holding back, and so do we.
+const RECENT_429_MS = 3_600_000;
 
 /**
  * Ask claude-swap to collect, if its own schedule says anything is due.
@@ -91,14 +113,107 @@ export function collectionDue(rows, slots, now) {
   return false;
 }
 
-function nudgeCollector(rows, slots, now) {
-  if (now - _lastNudge < NUDGE_EVERY_MS) return;
-  if (!collectionDue(rows, slots, now)) return;
+/**
+ * Whether the engine path may be used to refresh this row now.
+ *
+ * claude-swap gates fetches two different ways (usage_store._row_eligible).
+ * On-demand surfaces — `cswap list`, status, switch — need the row to be BOTH
+ * stale and past its planned poll time. The auto engine needs it to be stale
+ * OR due, and stale means older than SERVE_TTL_S, which is 180 seconds. That
+ * OR is the whole difference: it is why a plan stretched out to 30 minutes
+ * still yields three-minute-old numbers to the engine, and why `cswap list`
+ * cannot do the same however often it is called.
+ *
+ * The plan is stretched for a reason, though, and one of those reasons must be
+ * respected rather than routed around: claude-swap runs AIMD congestion
+ * control on a budget it shares with every other machine holding the same
+ * account (POST_429_BACKOFF_MULT, RECENT_429_WINDOW_S). While an account is
+ * recovering from a 429, backing off IS the correct behaviour, and polling
+ * every 180 seconds through it would re-saturate exactly the window that needs
+ * to drain. So the engine path is used only for a healthy row: no live
+ * backoff, no failures, and no 429 seen within claude-swap's own recovery
+ * window.
+ *
+ * Exported for tests.
+ */
+export function freshenAllowed(row, now, recent429Ms = RECENT_429_MS) {
+  if (!row || typeof row.fetchedAt !== "number") return false;   // the list path owns this case
+  if (process.env.AGENTS_DECK_NO_FRESHEN === "1") return false;
+  if (typeof row.backoffUntil === "number" && row.backoffUntil * 1000 > now) return false;
+  if ((row.consecutiveFailures ?? 0) > 0) return false;
+  if (typeof row.last429At === "number" && now - row.last429At * 1000 < recent429Ms) return false;
+  return true;
+}
+
+/** freshenAllowed, plus old enough that asking would actually fetch. */
+export function freshenDue(row, now, { minAgeMs = FRESH_MIN_AGE_MS, recent429Ms = RECENT_429_MS } = {}) {
+  if (!freshenAllowed(row, now, recent429Ms)) return false;
+  // Younger than the serve TTL: claude-swap would answer from the store
+  // without fetching, so asking achieves nothing but a subprocess.
+  return now - row.fetchedAt * 1000 >= minAgeMs;
+}
+
+/**
+ * When this account's numbers will next be refreshed, in epoch ms.
+ *
+ * claude-swap's plan, except for a healthy active account, where the deck's
+ * own freshen tick gets there first. Exported for tests.
+ */
+export function nextReadAt(row, matches, fetchedAtMs, isActive, now) {
+  const planned = matches && typeof row?.nextPollAt === "number"
+    ? Math.round(row.nextPollAt * 1000)
+    : null;
+  const freshenAt = (isActive && fetchedAtMs != null && freshenAllowed(row, now))
+    ? fetchedAtMs + FRESH_MIN_AGE_MS
+    : null;
+  if (planned == null) return freshenAt;
+  if (freshenAt == null) return planned;
+  return Math.min(planned, freshenAt);
+}
+
+/**
+ * Keep the store moving while someone is looking at it.
+ *
+ * Two ways to ask, and the cheaper one is preferred:
+ *   - something is due by claude-swap's own plan → `cswap list`, the ordinary
+ *     on-demand pass every surface uses;
+ *   - nothing is due but the active account's numbers have aged past the serve
+ *     TTL → one `cswap auto --once --dry-run`, which is the engine path and so
+ *     is judged on staleness rather than on the plan.
+ *
+ * What dry run guarantees is narrower than the name suggests, and worth stating
+ * exactly: it never switches accounts and never writes autoswitch state — the
+ * switch call is unreachable behind its dry-run return. Its collect pass, on
+ * the other hand, runs unconditionally, which is the point: it fetches, writes
+ * usage rows, and can rotate and persist an OAuth token exactly as `cswap list`
+ * does. So this is not a read-only call; it is the same collection every other
+ * surface performs, minus the switch.
+ *
+ * Either way claude-swap decides whether a network call actually happens, and
+ * this is throttled on top of that.
+ */
+function nudgeCollector(rows, slots, now, activeNum) {
+  // Did the last ask accomplish anything? Cheap proxy: the newest collection
+  // timestamp in the store.
+  let newest = 0;
+  for (const slot of slots) {
+    const f = rows[slot]?.fetchedAt;
+    if (typeof f === "number" && f > newest) newest = f;
+  }
+  const moved = newest > _lastSeenFetch;
+  _lastSeenFetch = Math.max(_lastSeenFetch, newest);
+
+  if (now - _lastNudge < (moved ? NUDGE_EVERY_MS : NUDGE_QUIET_MS)) return;
+
+  const due = collectionDue(rows, slots, now);
+  const freshen = !due && freshenDue(rows[String(activeNum)], now);
+  if (!due && !freshen) return;
 
   _lastNudge = now;
+  const args = due ? ["list"] : ["auto", "--once", "--dry-run", "--json"];
   // Fire-and-forget: this function is deliberately synchronous so callers never
   // wait on it, and resolving the binary is the only async part.
-  cswapBin().then(bin => runDetached(bin, ["list"])).catch(() => {});
+  cswapBin().then(bin => runDetached(bin, args)).catch(() => {});
 }
 
 async function readJson(path) {
@@ -161,7 +276,7 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
   // Kick a collection for the NEXT poll if anything is due — either because
   // claude-swap's schedule says so, or because an account has never been
   // fetched at all.
-  nudgeCollector(rows, Object.keys(seq.accounts), now);
+  nudgeCollector(rows, Object.keys(seq.accounts), now, seq.activeAccountNumber);
 
   const order = Array.isArray(seq.sequence) && seq.sequence.length
     ? seq.sequence.map(String)
@@ -203,12 +318,11 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
       // this account is worth switching to.
       headroom: lanes.length ? Math.max(0, 100 - Math.max(...lanes.map(l => l.pct))) : null,
       fetchedAt: fetchedAtMs,
-      // When claude-swap plans to read this account again. It sets the
-      // interval per account (180s floor, out to 1800s while a token is
-      // recovering from a 429), and every surface — this panel, the TUI,
-      // `cswap watch` — inherits the same plan. Showing it turns "collected
-      // 13m ago" from a complaint into a schedule.
-      nextAt: matches && typeof row.nextPollAt === "number" ? Math.round(row.nextPollAt * 1000) : null,
+      // When this account will next be read — the earlier of claude-swap's own
+      // plan and, for a healthy active account, the deck's freshen tick. The
+      // plan alone would promise "next in 15m" while the panel actually
+      // updates in three.
+      nextAt: nextReadAt(row, matches, fetchedAtMs, String(seq.activeAccountNumber) === num, now),
       stale:     fetchedAtMs == null || now - fetchedAtMs > STALE_AFTER_MS,
       // Surfaced rather than hidden: a rate-limited or re-login-needed account
       // is exactly the one the user is about to try switching to.
@@ -279,7 +393,7 @@ export async function requestCollection() {
   const usage = await readJson(join(root, "cache", "usage.json"));
   const rows  = usage?.schemaVersion === 2 ? (usage.accounts ?? {}) : {};
   const before = _lastNudge;
-  nudgeCollector(rows, Object.keys(seq.accounts), Date.now());
+  nudgeCollector(rows, Object.keys(seq.accounts), Date.now(), seq.activeAccountNumber);
   return _lastNudge !== before;
 }
 
