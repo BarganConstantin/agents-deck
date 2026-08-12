@@ -17,12 +17,42 @@ const NODE_H = 130;
 const SESSION_CHROME = 18 * 2 + 26 + 12;
 const SESSION_GAP = SESSION_CHROME + 36;
 
+// Horizontal room between two session columns.
+const COLUMN_GAP = 80;
+
+/**
+ * Width the tool-burst lane needs to the right of every agent card.
+ *
+ * Bursts are drawn by <ToolBursts/> as an overlay, not as React Flow nodes, so
+ * dagre cannot see them and a session measured from its cards alone reports a
+ * width that stops at the card's right edge. Packing columns on that number
+ * puts the next column straight through this session's tool chips — which is
+ * exactly what a second column made visible.
+ *
+ * Derived from ToolBursts: BUBBLE_OFFSET_X (60) + a primary bubble + SUB_GAP
+ * (28) + a chained sub-bubble, with headroom for the long Codex labels that
+ * size themselves from the label text.
+ */
+const TOOL_LANE_W = 420;
+
+/**
+ * Ceiling on columns. Two is enough to use a wide screen without shrinking the
+ * fit-to-view zoom to the point where the cards stop being readable, which is
+ * the whole reason to look at this canvas.
+ */
+const MAX_COLUMNS = 2;
+
 export interface LayoutOptions {
   direction?: "LR" | "TB";
   /** Nodes the user has dragged — keep their position; don't re-layout. */
   pinned?: Map<string, { x: number; y: number }>;
   /** Real per-node sizes (measured by React Flow). Overrides defaults. */
   measured?: Map<string, { width: number; height: number }>;
+  /**
+   * Canvas width available for the graph, in flow units. Sessions are packed
+   * into as many columns as fit; omitted or 0 keeps the single column.
+   */
+  availableWidth?: number;
 }
 
 function sessionOfNode(n: Node): string {
@@ -114,17 +144,39 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
     else sessions.set(sid, [n.id]);
   }
 
-  // Lay out each session in its own dagre graph, then stack the subgraphs
-  // vertically. Sessions are ordered by id so the layout is stable across
-  // events.
+  // Lay out each session in its own dagre graph, then pack the subgraphs into
+  // columns. Sessions are ordered by id so the layout is stable across events.
   const sessionOrder = Array.from(sessions.keys()).sort();
+  const laid = sessionOrder.map(sid => ({
+    sid,
+    ...layoutSession(sessions.get(sid)!, edges, direction, measured, pinned),
+  }));
+
+  // One column per session-width that fits the canvas. Columns are as wide as
+  // the widest session so a session is never split across the boundary, which
+  // wastes some room when widths vary but keeps every session readable as one
+  // block — the thing the canvas exists to show.
+  const widest = laid.reduce((w, s) => Math.max(w, s.width), 0);
+  const columnWidth = widest + TOOL_LANE_W + COLUMN_GAP;
+  const columnCount = (opts.availableWidth && columnWidth > 0)
+    ? Math.min(MAX_COLUMNS, Math.max(1, Math.floor(opts.availableWidth / columnWidth)))
+    : 1;
+
+  // Masonry rather than round-robin: each session goes to whichever column is
+  // currently shortest. Round-robin leaves one column running far past the
+  // others whenever session heights differ, which they always do.
+  const columnBottoms = new Array(columnCount).fill(0);
   const finalPositions = new Map<string, { x: number; y: number }>();
-  let cursorY = 0;
-  for (const sid of sessionOrder) {
-    const ids = sessions.get(sid)!;
-    const { positions, height } = layoutSession(ids, edges, direction, measured, pinned);
-    for (const [id, p] of positions) finalPositions.set(id, { x: p.x, y: p.y + cursorY });
-    cursorY += height + SESSION_GAP;
+  for (const { positions, width, height } of laid) {
+    let col = 0;
+    for (let i = 1; i < columnCount; i++) {
+      if (columnBottoms[i] < columnBottoms[col]) col = i;
+    }
+    const offsetX = col * columnWidth;
+    const offsetY = columnBottoms[col];
+    for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + offsetY });
+    columnBottoms[col] = offsetY + height + SESSION_GAP;
+    void width;
   }
 
   return nodes.map(n => {

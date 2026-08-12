@@ -153,3 +153,95 @@ describe("separateOverlaps — repairs only what is wrong", () => {
     expect(separateOverlaps(nodes, pos, new Map(), sizes(["a", "b"]))).toEqual([]);
   });
 });
+
+describe("autoLayout — packs sessions into columns", () => {
+  /** n sessions of one node each. */
+  const sessions = (n: number) =>
+    Array.from({ length: n }, (_, i) => agent(`s${i}n0`, `s${i}`));
+
+  const colsUsed = (out: Node[]) => new Set(out.map(n => Math.round(n.position.x))).size;
+
+  it("stays single-column when nothing is passed", () => {
+    const nodes = sessions(4);
+    const out = autoLayout(nodes, [], { measured: sizes(nodes.map(n => n.id)) });
+    expect(colsUsed(out)).toBe(1);
+  });
+
+  it("adds a second column on a wide canvas and stops there", () => {
+    const nodes = sessions(6);
+    const measured = sizes(nodes.map(n => n.id));
+    expect(colsUsed(autoLayout(nodes, [], { measured, availableWidth: 400 }))).toBe(1);
+    expect(colsUsed(autoLayout(nodes, [], { measured, availableWidth: 1600 }))).toBe(2);
+    // Capped: a very wide canvas must not keep splitting into thin columns,
+    // which shrinks the fit zoom until the cards are unreadable.
+    expect(colsUsed(autoLayout(nodes, [], { measured, availableWidth: 6000 }))).toBe(2);
+  });
+
+  it("leaves room for the tool-burst lane beside each card", () => {
+    // Bursts render as an overlay rather than nodes, so the column pitch has
+    // to allow for them or the next column lands on this session's chips.
+    const nodes = sessions(4);
+    const measured = sizes(nodes.map(n => n.id));
+    const out = autoLayout(nodes, [], { measured, availableWidth: 4000 });
+    const xs = [...new Set(out.map(n => Math.round(n.position.x)))].sort((a, b) => a - b);
+    expect(xs.length).toBe(2);
+    expect(xs[1] - xs[0]).toBeGreaterThan(W + 400);
+  });
+
+  it("never overlaps, at any width", () => {
+    const nodes = sessions(9);
+    const measured = sizes(nodes.map(n => n.id));
+    for (const availableWidth of [0, 300, 700, 1100, 1900, 3000, 5000]) {
+      const out = autoLayout(nodes, [], { measured, availableWidth });
+      expect(overlaps(out, measured), `width ${availableWidth}`).toEqual([]);
+    }
+  });
+
+  it("balances columns instead of filling one", () => {
+    // Round-robin would leave the last column far short; masonry should keep
+    // the columns within one session of each other.
+    const nodes = sessions(8);
+    const measured = sizes(nodes.map(n => n.id));
+    const out = autoLayout(nodes, [], { measured, availableWidth: 1200 });
+
+    const byColumn = new Map<number, number>();
+    for (const n of out) {
+      const x = Math.round(n.position.x);
+      byColumn.set(x, (byColumn.get(x) ?? 0) + 1);
+    }
+    const counts = [...byColumn.values()];
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps a session's own nodes in one column", () => {
+    // A session is read as one block; splitting it across the column boundary
+    // would defeat the point of the cluster box.
+    const nodes = [
+      agent("a1", "sa"), agent("a2", "sa"),
+      agent("b1", "sb"), agent("b2", "sb"),
+    ];
+    const edges: Edge[] = [
+      { id: "e1", source: "a1", target: "a2" },
+      { id: "e2", source: "b1", target: "b2" },
+    ];
+    const measured = sizes(nodes.map(n => n.id));
+    const out = autoLayout(nodes, edges, { measured, availableWidth: 2000 });
+
+    const spanOf = (ids: string[]) => {
+      const xs = out.filter(n => ids.includes(n.id)).map(n => n.position.x);
+      return Math.max(...xs) - Math.min(...xs);
+    };
+    // Within a session, dagre's own LR spread is far smaller than a column.
+    expect(spanOf(["a1", "a2"])).toBeLessThan(600);
+    expect(spanOf(["b1", "b2"])).toBeLessThan(600);
+    expect(overlaps(out, measured)).toEqual([]);
+  });
+
+  it("is stable for the same inputs", () => {
+    const nodes = sessions(7);
+    const measured = sizes(nodes.map(n => n.id));
+    const a = autoLayout(nodes, [], { measured, availableWidth: 1600 }).map(n => n.position);
+    const b = autoLayout(nodes, [], { measured, availableWidth: 1600 }).map(n => n.position);
+    expect(b).toEqual(a);
+  });
+});

@@ -327,6 +327,7 @@ function spotlightLineage(state: GraphState, selectedId: string | null): Set<str
 function snapshotToFlow(
   state: GraphState,
   now: number,
+  availableWidth: number,
   pinned: Map<string, { x: number; y: number }>,
   query: string,
   measured: Map<string, { width: number; height: number }>,
@@ -415,7 +416,7 @@ function snapshotToFlow(
   const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
   if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
-      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
+      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
     }
     separateOverlaps(nodes, positions, pinned, measured);
@@ -729,6 +730,72 @@ function Inner() {
   // Auto-fit-related refs (see effect after layoutSig is computed below).
   const fitTimerRef = useRef<number | null>(null);
   const lastFitTimeRef = useRef(0);
+  // Matches TOOL_LANE_W in layout.ts — the burst lane drawn beside each card.
+  const TOOL_LANE_ALLOWANCE = 420;
+
+  /**
+   * Frame the graph against the left edge of the canvas.
+   *
+   * React Flow's fitView centres, and on this canvas it also silently no-ops
+   * in some states — returning without moving the viewport and without
+   * throwing, so there is nothing to catch or log. Rather than depend on it,
+   * this measures what is actually drawn and sets the viewport outright:
+   * predictable, and left-anchored because a graph parked mid-canvas leaves
+   * dead space on the side the eye starts from.
+   */
+  const fitLeft = useCallback((duration = 500) => {
+    const MARGIN = 40, MAX_ZOOM = 1.6, MIN_ZOOM = 0.2;
+    try {
+      const pane = document.querySelector(".canvas-wrap");
+      const drawn = Array.from(document.querySelectorAll(".react-flow__node"))
+        .filter(el => (el as HTMLElement).offsetWidth > 0);
+      if (!pane || drawn.length === 0) return;
+
+      const paneRect = pane.getBoundingClientRect();
+      const vp = rf.getViewport();
+      if (!Number.isFinite(vp.zoom) || vp.zoom <= 0) return;
+
+      // Screen rects back through the current viewport into flow space, so
+      // this works from any starting zoom and never consults the node store —
+      // which also holds the invisible per-session drag handles.
+      const fx = (sx: number) => (sx - paneRect.left - vp.x) / vp.zoom;
+      const fy = (sy: number) => (sy - paneRect.top - vp.y) / vp.zoom;
+      const rects = drawn.map(el => el.getBoundingClientRect());
+      const minX = Math.min(...rects.map(r => fx(r.left)));
+      const maxX = Math.max(...rects.map(r => fx(r.right)));
+      const minY = Math.min(...rects.map(r => fy(r.top)));
+      const maxY = Math.max(...rects.map(r => fy(r.bottom)));
+      const w = maxX - minX, h = maxY - minY;
+      if (!(w > 0 && h > 0)) return;
+
+      // Tool bursts are an overlay rather than nodes, so they are absent from
+      // these rects — leave room or the last column's chips get clipped.
+      const zoom = Math.max(MIN_ZOOM, Math.min(
+        MAX_ZOOM,
+        (paneRect.width - MARGIN * 2) / (w + TOOL_LANE_ALLOWANCE),
+        (paneRect.height - MARGIN * 2) / h,
+      ));
+
+      rf.setViewport({
+        x: MARGIN - minX * zoom,
+        y: Math.max(MARGIN, (paneRect.height - h * zoom) / 2) - minY * zoom,
+        zoom,
+      }, { duration });
+      lastFitTimeRef.current = Date.now();
+      // setViewport is currently not moving the viewport on this canvas (see
+      // the note on fitLeft). Fall back to React Flow's own fit so behaviour
+      // is no worse than before this function existed, and so the graph is
+      // still framed once whatever is wedging the viewport is fixed.
+      window.setTimeout(() => {
+        try {
+          const vpNow = rf.getViewport();
+          if (Math.abs(vpNow.zoom - zoom) > 0.01 || Math.abs(vpNow.x - (MARGIN - minX * zoom)) > 2) {
+            rf.fitView({ padding: 0.12, duration });
+          }
+        } catch { /* ignore */ }
+      }, 30);
+    } catch { /* viewport not ready */ }
+  }, [rf]);
   const lastLayoutSigForFitRef = useRef("");
   // Debounce timer for persisting the viewport on pan/zoom.
   const vpSaveTimerRef = useRef<number | null>(null);
@@ -760,8 +827,8 @@ function Inner() {
     autoFitDisabledRef.current = false;
     setAutoFitDisabled(false);
     try { window.localStorage.removeItem(AUTOFIT_KEY); } catch {}
-    try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
-  }, [rf]);
+    fitLeft(400);
+  }, [rf, fitLeft]);
   useEffect(() => {
     const id = setInterval(() => {
       if (autoFitDisabledRef.current) return;
@@ -800,7 +867,7 @@ function Inner() {
       // Only attempt a fit if at least one agent is measured AND none of the
       // measured ones intersect the viewport — that's the genuine drift case.
       if (anyMeasured && !anyInView) {
-        try { rf.fitView({ padding: 0.25, duration: 600 }); } catch {}
+        fitLeft(600);
       }
     }, 1500);
     return () => clearInterval(id);
@@ -879,16 +946,14 @@ function Inner() {
     if (autoFitDisabledRef.current) return;
     const tnow = Date.now();
     if (tnow - lastFitTimeRef.current > 1200) {
-      try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
-      lastFitTimeRef.current = tnow;
+      fitLeft(400);
     }
     if (fitTimerRef.current) window.clearTimeout(fitTimerRef.current);
     fitTimerRef.current = window.setTimeout(() => {
       if (autoFitDisabledRef.current) return;
-      try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-      lastFitTimeRef.current = Date.now();
+      fitLeft(500);
     }, 280);
-  }, [layoutSig, rf]);
+  }, [layoutSig, rf, fitLeft]);
 
   // Union spotlight set — lineage of every selected agent merged. Multi-
   // select widens the spotlight without losing the "follow the chain"
@@ -912,13 +977,33 @@ function Inner() {
     [stateRef.current, stateRef.current.lastSeq, now],
   );
 
+  // Width of the canvas column, not the window: the side panels come and go,
+  // and a layout packed for the whole window would run under them. Measured
+  // rather than derived from the panel flags so it stays right however the
+  // grid is configured.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [canvasWidth, setCanvasWidth] = useState(0);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      // Quantised so a one-pixel resize doesn't reflow the canvas.
+      setCanvasWidth(prev => (Math.abs(prev - w) > 40 ? w : prev));
+    });
+    ro.observe(el);
+    setCanvasWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  const availableWidth = canvasWidth > 0 ? canvasWidth * 0.92 : 0;
+
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
-      stateRef.current, now, pinnedRef.current, query,
+      stateRef.current, now, availableWidth, pinnedRef.current, query,
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
+    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
 
   // Invisible per-session drag-handle nodes. One per session, sized to the
@@ -1054,16 +1139,12 @@ function Inner() {
     rerender();
     // After dagre runs on the next render, fit-view so the user sees the
     // result. 80ms gives React + RF one paint to settle the new positions.
-    window.setTimeout(() => {
-      try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-      lastFitTimeRef.current = Date.now();
-    }, 80);
-  }, [rerender, rf]);
+    // 80ms gives React + RF one paint to settle the new positions.
+    window.setTimeout(() => fitLeft(500), 80);
+  }, [rerender, rf, fitLeft]);
 
-  const handleFit = useCallback(() => {
-    try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-    lastFitTimeRef.current = Date.now();
-  }, [rf]);
+  // Same anchoring as relayout — F and the fit button land where it does.
+  const handleFit = useCallback(() => fitLeft(500), [fitLeft]);
 
   /** Step through visible agents in render order. `direction` is +1 for
    *  next (j) or -1 for previous (k). Selecting moves the canvas to keep
@@ -1361,7 +1442,7 @@ function Inner() {
           onClose={() => setSessionListOpen(false)}
         />
       )}
-      <div className="canvas-wrap">
+      <div className="canvas-wrap" ref={canvasRef}>
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
         {presentCats.length > 1 && (
           <div className="cat-filter-bar" role="toolbar" aria-label="Filter tools by category">
@@ -1400,9 +1481,11 @@ function Inner() {
           }}
           onPaneClick={() => clearSelection()}
           onMoveStart={() => {
-            // User-initiated pan/zoom only (programmatic fitView doesn't
-            // fire onMoveStart). Sticky-disable autofit until the recenter
-            // button is hit.
+            // React Flow fires this for animated programmatic viewport
+            // changes too, not just user gestures — so our own fit was
+            // switching auto-fit off the first time it ran, permanently and
+            // silently. Ignore anything that lands during a fit we started.
+            if (Date.now() - lastFitTimeRef.current < 1200) return;
             disableAutoFit();
           }}
           onMove={(_, vp) => {
