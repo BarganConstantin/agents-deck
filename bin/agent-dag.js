@@ -176,6 +176,19 @@ if (wantCodex) {
     // the command for THIS machine, picked from what is already on it.
     if (cs.hint) process.stdout.write(`    ${C.dim}${cs.hint}${C.reset}\n`);
   }
+
+  // A working claude-swap with an empty store still leaves the panel useless,
+  // so the account already signed in is registered once. Bounded inside
+  // seedFirstAccount: empty store only, once ever, never with NO_INSTALL set.
+  if (cs.state === "present" || cs.state === "installed" || cs.state === "upgrading") {
+    const { seedFirstAccount } = await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-accounts.mjs")).href);
+    const seed = await seedFirstAccount().catch(() => ({ state: "failed" }));
+    if (seed.state === "added") {
+      process.stdout.write(`  ${C.green}✓${C.reset} accounts         ${C.dim}registered the signed-in account (cswap add)${C.reset}\n`);
+    } else if (seed.state === "failed" || seed.state === "nothing-to-add") {
+      process.stdout.write(`  ${C.dim}  accounts panel empty — sign in to Claude Code, then run cswap add${C.reset}\n`);
+    }
+  }
 }
 
 // ccusage backs the usage-history modal. Primed here rather than on first
