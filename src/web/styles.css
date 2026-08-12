@@ -2952,11 +2952,25 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 }
 
 /* Why the toggle is missing, in the panel rather than only in a tooltip. */
+/* Flowing text, not a flex row — a flex container makes each child its own
+   item, which split the inline <code> onto its own line mid-sentence. */
 .ap-auto-note {
   margin: 0 0 9px;
   font-size: 9px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--muted);
+}
+.ap-auto-note .ap-pulse {
+  display: inline-block;
+  margin-right: 5px;
+  vertical-align: 1px;
+  color: var(--accent);
+}
+.ap-auto-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  color: var(--fg);
+  white-space: nowrap;   /* "cswap auto" is one name; never break it in half */
 }
 
 /* Settings share the lanes' label-left / value-right rhythm above them, and

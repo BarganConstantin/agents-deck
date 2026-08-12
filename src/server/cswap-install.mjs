@@ -7,7 +7,7 @@
 // caller prints what this returns, and AGENTS_DECK_NO_INSTALL=1 turns it off
 // entirely. It is always best-effort — the deck's core function does not
 // depend on it, so a failure is reported and then ignored.
-import { execFile, spawn } from "node:child_process";
+import { run, runDetached } from "./exec.mjs";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -18,14 +18,6 @@ const INSTALL_TIMEOUT_MS = 180_000; // uv resolves + builds a Python env
 // marker file's mtime so the interval survives restarts.
 const UPDATE_CHECK_MS = 24 * 3600_000;
 const MARKER = join(homedir(), ".agents-deck", ".cswap-update-check");
-
-function run(cmd, args, timeout = 10_000) {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout, shell: false, windowsHide: true }, (err, stdout, stderr) => {
-      resolve({ ok: !err, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
-    });
-  });
-}
 
 /** Installed version string, or null when cswap isn't on PATH. */
 export async function cswapVersion() {
@@ -50,9 +42,9 @@ async function installCswap() {
     ["uv",   ["tool", "install", "claude-swap"]],
     ["pipx", ["install", "claude-swap"]],
   ]) {
-    const probe = await run(cmd, ["--version"], 5_000);
+    const probe = await run(cmd, ["--version"], { timeout: 5_000 });
     if (!probe.ok) continue;
-    const r = await run(cmd, args, INSTALL_TIMEOUT_MS);
+    const r = await run(cmd, args, { timeout: INSTALL_TIMEOUT_MS });
     if (r.ok) return { ok: true, via: cmd };
     return { ok: false, reason: "install_failed", via: cmd, detail: (r.stderr || r.stdout).trim().slice(0, 300) };
   }
@@ -104,17 +96,13 @@ function isOlder(a, b) {
  */
 function upgradeInBackground(via) {
   const args = via === "uv" ? ["tool", "upgrade", "claude-swap"] : ["upgrade", "claude-swap"];
-  try {
-    const child = spawn(via, args, { stdio: "ignore", shell: false, windowsHide: true, detached: false });
-    child.on("error", () => {});
-    child.unref?.();
-  } catch { /* best-effort */ }
+  runDetached(via, args);
 }
 
 /** Whichever Python tool installer is available, or null. */
 async function findInstaller() {
   for (const cmd of ["uv", "pipx"]) {
-    if ((await run(cmd, ["--version"], 5_000)).ok) return cmd;
+    if ((await run(cmd, ["--version"], { timeout: 5_000 })).ok) return cmd;
   }
   return null;
 }

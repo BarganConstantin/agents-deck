@@ -14,6 +14,13 @@ const os = require("os");
 // Hard cap so a stuck server can never wedge the host CLI.
 setTimeout(() => process.exit(0), 1500);
 
+// The deck reads the Claude quota by running `claude --print /usage`, which is
+// a full Claude Code invocation and therefore fires these hooks. Reporting it
+// drew a session onto the canvas for every quota poll — no prompt, no tools,
+// a few seconds long — so the deck filled up with its own measurements. The
+// probe sets this in the environment and hooks inherit it.
+if (process.env.AGENTS_DECK_INTERNAL === "1") process.exit(0);
+
 // Single shared discovery dir — Claude Code and Codex CLI both register here
 // via the installer. Lets one running agent-dag server receive both providers.
 const DIR = path.join(os.homedir(), ".claude", "agent-dag");

@@ -10,19 +10,67 @@ import type { Node, Edge } from "reactflow";
 const NODE_W = 240;
 const NODE_H = 130;
 
-// Vertical breathing room between two session subgraphs. Has to cover the
-// cluster chrome drawn around each one — outer padding on both sides, the
-// label header, and the label tab that sits above the box's top edge (PAD 18,
-// HEADER_H 26, LABEL_LIFT 12 in SessionClusters.tsx) — plus a visible gap.
+// Chrome drawn around a session beyond its cards: outer padding on both sides,
+// the label header, and the label tab that sits above the box's top edge
+// (PAD 18, HEADER_H 26, LABEL_LIFT 12 in SessionClusters.tsx).
 const SESSION_CHROME = 18 * 2 + 26 + 12;
-const SESSION_GAP = SESSION_CHROME + 36;
+
+// Clear space wanted between one session's box and the next one's label tab.
+// Measured as what the eye sees, not as the distance between card origins —
+// the chrome is added on top, so changing this changes the visible gap by the
+// same amount.
+const SESSION_VISIBLE_GAP = 72;
+const SESSION_GAP = SESSION_CHROME + SESSION_VISIBLE_GAP;
+
+// Horizontal room between two session columns: a full card width. At 80px the
+// columns read as one crowded field, with cluster boxes and their label tabs
+// close enough to look joined. A whole node of clear space is where the eye
+// stops trying to relate them. Measured from the widest card actually on
+// screen rather than the default, so the gap holds when cards are wider.
+function columnGap(measured: Map<string, { width: number; height: number }>): number {
+  let widest = NODE_W;
+  for (const m of measured.values()) widest = Math.max(widest, m.width);
+  return widest;
+}
+
+/**
+ * Width the tool-burst lane needs to the right of every agent card.
+ *
+ * Bursts are drawn by <ToolBursts/> as an overlay, not as React Flow nodes, so
+ * dagre cannot see them and a session measured from its cards alone reports a
+ * width that stops at the card's right edge. Packing columns on that number
+ * puts the next column straight through this session's tool chips — which is
+ * exactly what a second column made visible.
+ *
+ * Derived from ToolBursts: BUBBLE_OFFSET_X (60) + a primary bubble + SUB_GAP
+ * (28) + a chained sub-bubble, with headroom for the long Codex labels that
+ * size themselves from the label text.
+ */
+const TOOL_LANE_W = 420;
+
+/**
+ * Ceiling on columns. Two is enough to use a wide screen without shrinking the
+ * fit-to-view zoom to the point where the cards stop being readable, which is
+ * the whole reason to look at this canvas.
+ */
+const MAX_COLUMNS = 2;
 
 export interface LayoutOptions {
+  /**
+   * Canvas height available, in flow units. A column is filled to this before
+   * the next one is started; omitted or 0 keeps everything in one column.
+   */
+  availableHeight?: number;
   direction?: "LR" | "TB";
   /** Nodes the user has dragged — keep their position; don't re-layout. */
   pinned?: Map<string, { x: number; y: number }>;
   /** Real per-node sizes (measured by React Flow). Overrides defaults. */
   measured?: Map<string, { width: number; height: number }>;
+  /**
+   * Canvas width available for the graph, in flow units. Sessions are packed
+   * into as many columns as fit; omitted or 0 keeps the single column.
+   */
+  availableWidth?: number;
 }
 
 function sessionOfNode(n: Node): string {
@@ -114,17 +162,65 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
     else sessions.set(sid, [n.id]);
   }
 
-  // Lay out each session in its own dagre graph, then stack the subgraphs
-  // vertically. Sessions are ordered by id so the layout is stable across
-  // events.
+  // Lay out each session in its own dagre graph, then pack the subgraphs into
+  // columns. Sessions are ordered by id so the layout is stable across events.
   const sessionOrder = Array.from(sessions.keys()).sort();
+  const laid = sessionOrder.map(sid => ({
+    sid,
+    ...layoutSession(sessions.get(sid)!, edges, direction, measured, pinned),
+  }));
+
+  // One column per session-width that fits the canvas. Columns are as wide as
+  // the widest session so a session is never split across the boundary, which
+  // wastes some room when widths vary but keeps every session readable as one
+  // block — the thing the canvas exists to show.
+  // Assign sessions to columns first, then size each column to what actually
+  // landed in it. Sizing every column to the widest session in the graph made
+  // one wide session set the pitch for all of them, so two columns never fit
+  // and everything stacked into one very tall strip that fit-to-view then
+  // shrank to nothing.
+  const gap = columnGap(measured);
+  const overflowAt = opts.availableHeight && opts.availableHeight > 0
+    ? opts.availableHeight
+    : Number.POSITIVE_INFINITY;
+
+  const assign = (maxColumns: number) => {
+    const cols: Array<Array<typeof laid[number]>> = [[]];
+    let cursorY = 0;
+    for (const item of laid) {
+      // Wrap only when something is already in this column — a session taller
+      // than the screen has to start somewhere, and moving it to a fresh
+      // column would leave the previous one short and the next still over.
+      if (cols.length < maxColumns && cursorY > 0 && cursorY + item.height > overflowAt) {
+        cols.push([]);
+        cursorY = 0;
+      }
+      cols[cols.length - 1].push(item);
+      cursorY += item.height + SESSION_GAP;
+    }
+    return cols;
+  };
+
+  const widthOf = (col: Array<typeof laid[number]>) =>
+    col.reduce((w, s) => Math.max(w, s.width), 0) + TOOL_LANE_W;
+
+  // Try the wider arrangement; fall back to one column when the real widths
+  // don't fit rather than letting columns run off the canvas.
+  let columns = assign(opts.availableWidth ? MAX_COLUMNS : 1);
+  if (columns.length > 1) {
+    const total = columns.reduce((w, c) => w + widthOf(c), 0) + gap * (columns.length - 1);
+    if (total > (opts.availableWidth ?? 0)) columns = assign(1);
+  }
+
   const finalPositions = new Map<string, { x: number; y: number }>();
-  let cursorY = 0;
-  for (const sid of sessionOrder) {
-    const ids = sessions.get(sid)!;
-    const { positions, height } = layoutSession(ids, edges, direction, measured, pinned);
-    for (const [id, p] of positions) finalPositions.set(id, { x: p.x, y: p.y + cursorY });
-    cursorY += height + SESSION_GAP;
+  let offsetX = 0;
+  for (const col of columns) {
+    let cursorY = 0;
+    for (const { positions, height } of col) {
+      for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + cursorY });
+      cursorY += height + SESSION_GAP;
+    }
+    offsetX += widthOf(col) + gap;
   }
 
   return nodes.map(n => {
@@ -160,6 +256,12 @@ export function separateOverlaps(
   measured: Map<string, { width: number; height: number }>,
 ): string[] {
   const MARGIN = 24;
+  // Two cards in DIFFERENT sessions need more than card clearance: each is
+  // drawn inside a cluster box that extends past it — padding on every side,
+  // a header strip, and a label tab above that. Cards 30px apart look fine and
+  // their boxes still cross, which is what "one on another" actually was.
+  const CROSS_SESSION_Y = SESSION_CHROME + SESSION_VISIBLE_GAP;
+  const CROSS_SESSION_X = 18 * 2 + MARGIN;
 
   const sizeOf = (id: string) => {
     const m = measured.get(id);
@@ -168,7 +270,9 @@ export function separateOverlaps(
 
   // Stable order: by y, then x, then id. Same input always yields the same
   // result, so a re-render cannot make nodes drift.
-  const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const sessionOf = new Map(nodes.map(n => [n.id, sessionOfNode(n)]));
+
+  const placed: Array<{ x: number; y: number; w: number; h: number; sid: string }> = [];
   const ordered = nodes
     .map(n => ({ id: n.id, pos: pinned.get(n.id) ?? positions.get(n.id) }))
     .filter((n): n is { id: string; pos: { x: number; y: number } } => n.pos != null)
@@ -177,22 +281,126 @@ export function separateOverlaps(
   const moved: string[] = [];
   for (const { id, pos } of ordered) {
     const { w, h } = sizeOf(id);
+    const sid = sessionOf.get(id) ?? "_default";
     // A dragged node is an obstacle for everything else but is never itself
     // relocated.
-    if (pinned.has(id)) { placed.push({ x: pos.x, y: pos.y, w, h }); continue; }
+    if (pinned.has(id)) { placed.push({ x: pos.x, y: pos.y, w, h, sid }); continue; }
 
     let y = pos.y;
     // Re-check from the start after each shift: sliding clear of one node can
     // push into another that was already checked.
     for (let guard = 0; guard < placed.length + 1; guard++) {
-      const clash = placed.find(r =>
-        pos.x < r.x + r.w + MARGIN && r.x < pos.x + w + MARGIN &&
-        y     < r.y + r.h + MARGIN && r.y < y     + h + MARGIN);
+      const clash = placed.find(r => {
+        const mx = r.sid === sid ? MARGIN : CROSS_SESSION_X;
+        const my = r.sid === sid ? MARGIN : CROSS_SESSION_Y;
+        return pos.x < r.x + r.w + mx && r.x < pos.x + w + mx &&
+               y     < r.y + r.h + my && r.y < y     + h + my;
+      });
       if (!clash) break;
-      y = clash.y + clash.h + MARGIN;
+      y = clash.y + clash.h + (clash.sid === sid ? MARGIN : CROSS_SESSION_Y);
     }
     if (y !== pos.y) { positions.set(id, { x: pos.x, y }); moved.push(id); }
-    placed.push({ x: pos.x, y, w, h });
+    placed.push({ x: pos.x, y, w, h, sid });
+  }
+  return moved;
+}
+
+
+/**
+ * Drop newly-arrived sessions into the gaps left by ones that finished.
+ *
+ * Sessions are pruned as they complete, which punches holes in a column while
+ * new work keeps being appended below the last thing placed. Left alone the
+ * canvas grows downward forever with empty bands through the middle, and the
+ * fit zoom shrinks to cover space that holds nothing.
+ *
+ * A session is moved as a whole — its cards keep their arrangement relative to
+ * each other, only the block moves — and it is only ever moved into a gap that
+ * fits it outright. Anything that does not fit stays where the layout put it,
+ * below everything else.
+ *
+ * Mutates `positions`; returns the session ids it relocated.
+ */
+export function fillGapsWithNewSessions(
+  nodes: Node[],
+  positions: Map<string, { x: number; y: number }>,
+  pinned: Map<string, { x: number; y: number }>,
+  measured: Map<string, { width: number; height: number }>,
+  newIds: Set<string>,
+): string[] {
+  const sizeOf = (id: string) => {
+    const m = measured.get(id);
+    return { w: m?.width ?? NODE_W, h: m?.height ?? NODE_H };
+  };
+  const posOf = (id: string) => pinned.get(id) ?? positions.get(id);
+
+  // Group the arrivals, and keep anything already placed as an obstacle.
+  const arriving = new Map<string, Node[]>();
+  const settled: Array<{ x: number; y: number; w: number; h: number }> = [];
+  for (const n of nodes) {
+    const p = posOf(n.id);
+    if (!p) continue;
+    const { w, h } = sizeOf(n.id);
+    if (newIds.has(n.id) && !pinned.has(n.id)) {
+      const sid = sessionOfNode(n);
+      (arriving.get(sid) ?? arriving.set(sid, []).get(sid)!).push(n);
+    } else {
+      settled.push({ x: p.x, y: p.y, w, h });
+    }
+  }
+  if (arriving.size === 0) return [];
+
+  // Session boxes are what must not touch, so obstacles are inflated by the
+  // chrome and the gap the layout would have left between two sessions.
+  const PADDING = SESSION_CHROME + SESSION_VISIBLE_GAP;
+  const clashes = (x: number, y: number, w: number, h: number) =>
+    settled.some(r =>
+      x < r.x + r.w + SESSION_CHROME && r.x < x + w + SESSION_CHROME &&
+      y < r.y + r.h + PADDING        && r.y < y + h + PADDING);
+
+  const moved: string[] = [];
+  // Oldest session first, so arrival order still reads top-to-bottom among
+  // the ones that land in gaps.
+  for (const sid of [...arriving.keys()].sort()) {
+    const members = arriving.get(sid)!;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of members) {
+      const p = posOf(n.id)!;
+      const { w, h } = sizeOf(n.id);
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + w); maxY = Math.max(maxY, p.y + h);
+    }
+    const w = maxX - minX, h = maxY - minY;
+
+    // Candidate tops: the very top of a column, and just under everything
+    // already there. Any gap big enough starts at one of those edges, so
+    // there is nothing to gain from stepping pixel by pixel.
+    const columns = [...new Set(settled.map(r => Math.round(r.x)))].sort((a, b) => a - b);
+    const xs = columns.length ? columns : [minX];
+    const ys = [0, ...settled.map(r => r.y + r.h + PADDING)].sort((a, b) => a - b);
+
+    let target: { x: number; y: number } | null = null;
+    outer: for (const x of xs) {
+      for (const y of ys) {
+        if (y >= minY) break;               // not a gap — that is where it already is
+        if (!clashes(x, y, w, h)) { target = { x, y }; break outer; }
+      }
+    }
+
+    if (target) {
+      const dx = target.x - minX, dy = target.y - minY;
+      for (const n of members) {
+        const p = posOf(n.id)!;
+        positions.set(n.id, { x: p.x + dx, y: p.y + dy });
+      }
+      moved.push(sid);
+    }
+    // Placed or not, it is an obstacle for the next arrival.
+    for (const n of members) {
+      const p = posOf(n.id)!;
+      const { w: nw, h: nh } = sizeOf(n.id);
+      settled.push({ x: p.x, y: p.y, w: nw, h: nh });
+    }
   }
   return moved;
 }

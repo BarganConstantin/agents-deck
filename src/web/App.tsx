@@ -22,7 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import UsageHistoryModal from "./components/UsageHistoryModal";
-import { autoLayout, separateOverlaps } from "./layout";
+import { autoLayout, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -327,6 +327,8 @@ function spotlightLineage(state: GraphState, selectedId: string | null): Set<str
 function snapshotToFlow(
   state: GraphState,
   now: number,
+  availableWidth: number,
+  availableHeight: number,
   pinned: Map<string, { x: number; y: number }>,
   query: string,
   measured: Map<string, { width: number; height: number }>,
@@ -415,8 +417,16 @@ function snapshotToFlow(
   const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
   if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
-      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
+      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
+      // Finished sessions are pruned as they complete, so the column they were
+      // in has holes while new work keeps being appended underneath. Offer the
+      // arrivals those holes before letting the canvas grow downward past
+      // bands that hold nothing.
+      fillGapsWithNewSessions(
+        nodes, positions, pinned, measured,
+        new Set(missing.map(n => n.id)),
+      );
     }
     separateOverlaps(nodes, positions, pinned, measured);
     lastLayoutSigRef.current = layoutSig;
@@ -547,6 +557,9 @@ function Inner() {
   // turning ours on alongside one that works here means two sounds per turn,
   // and the cause is in a settings file the user is not looking at.
   const [soundClash, setSoundClash] = useState(0);
+  // The user's own sound hooks that the toggle has set aside. Surfaced so
+  // "moved, not deleted" is something they can see and act on.
+  const [soundParked, setSoundParked] = useState(0);
   useEffect(() => {
     fetch("/api/sound-hook")
       .then(r => r.ok ? r.json() : null)
@@ -554,6 +567,7 @@ function Inner() {
         if (!d?.ok) return;
         setSoundOn(d.enabled === true);
         setSoundClash((d.foreign ?? []).filter((f: { worksHere?: boolean }) => f.worksHere).length);
+        setSoundParked(typeof d.parked === "number" ? d.parked : 0);
       })
       .catch(() => {});
   }, []);
@@ -567,6 +581,12 @@ function Inner() {
       });
       const out = await res.json().catch(() => null);
       if (out?.ok) setSoundOn(out.enabled === true);
+      // Re-read: toggling parks or unparks the user's own hooks.
+      fetch("/api/sound-hook").then(r => r.ok ? r.json() : null).then(d => {
+        if (!d?.ok) return;
+        setSoundClash((d.foreign ?? []).filter((f: { worksHere?: boolean }) => f.worksHere).length);
+        setSoundParked(typeof d.parked === "number" ? d.parked : 0);
+      }).catch(() => {});
     } catch { /* server unreachable */ }
     finally { setSoundBusy(false); }
   }, [soundOn]);
@@ -729,6 +749,77 @@ function Inner() {
   // Auto-fit-related refs (see effect after layoutSig is computed below).
   const fitTimerRef = useRef<number | null>(null);
   const lastFitTimeRef = useRef(0);
+  // Matches TOOL_LANE_W in layout.ts — the burst lane drawn beside each card.
+  const TOOL_LANE_ALLOWANCE = 420;
+
+  /**
+   * Frame the graph against the left edge of the canvas.
+   *
+   * React Flow's fitView centres, and there is no asymmetric-padding option,
+   * so this measures what is actually drawn and sets the viewport outright.
+   * Left-anchored because a graph parked mid-canvas leaves dead space on the
+   * side the eye starts from.
+   */
+  const fitLeft = useCallback((duration = 500) => {
+    // MAX_ZOOM 1: cards are drawn at their natural size, so magnifying past
+    // 1:1 only makes a small graph look coarse. FILL leaves the frame a little
+    // loose — a fit that touches the margins reads as "already too big" and
+    // gives the eye nowhere to land when the next session appears.
+    const MARGIN = 80, MAX_ZOOM = 1, MIN_ZOOM = 0.2, FILL = 0.86;
+    try {
+      const pane = document.querySelector(".canvas-wrap");
+      const drawn = Array.from(document.querySelectorAll(".react-flow__node"))
+        .filter(el => (el as HTMLElement).offsetWidth > 0);
+      if (!pane || drawn.length === 0) return;
+
+      const paneRect = pane.getBoundingClientRect();
+      const vp = rf.getViewport();
+      if (!Number.isFinite(vp.zoom) || vp.zoom <= 0) return;
+
+      // Screen rects back through the current viewport into flow space, so
+      // this works from any starting zoom and never consults the node store —
+      // which also holds the invisible per-session drag handles.
+      const fx = (sx: number) => (sx - paneRect.left - vp.x) / vp.zoom;
+      const fy = (sy: number) => (sy - paneRect.top - vp.y) / vp.zoom;
+      const rects = drawn.map(el => el.getBoundingClientRect());
+      const minX = Math.min(...rects.map(r => fx(r.left)));
+      const maxX = Math.max(...rects.map(r => fx(r.right)));
+      const minY = Math.min(...rects.map(r => fy(r.top)));
+      const maxY = Math.max(...rects.map(r => fy(r.bottom)));
+      const w = maxX - minX, h = maxY - minY;
+      if (!(w > 0 && h > 0)) return;
+
+      // Tool bursts are an overlay rather than nodes, so they are absent from
+      // these rects — leave room or the last column's chips get clipped.
+      const zoom = Math.max(MIN_ZOOM, Math.min(
+        MAX_ZOOM,
+        ((paneRect.width - MARGIN * 2) / (w + TOOL_LANE_ALLOWANCE)) * FILL,
+        ((paneRect.height - MARGIN * 2) / h) * FILL,
+      ));
+
+      rf.setViewport({
+        x: MARGIN - minX * zoom,
+        y: Math.max(MARGIN, (paneRect.height - h * zoom) / 2) - minY * zoom,
+        zoom,
+      }, { duration });
+      lastFitTimeRef.current = Date.now();
+      // An animated setViewport runs through d3's transition, which is driven
+      // by requestAnimationFrame — so it lands late, or not at all if the tab
+      // is in the background when the fit is requested. Check afterwards and,
+      // if nothing moved, set the same viewport without animation. Not
+      // fitView: that centres, which is the one thing this function exists to
+      // avoid.
+      window.setTimeout(() => {
+        try {
+          const want = { x: MARGIN - minX * zoom, y: Math.max(MARGIN, (paneRect.height - h * zoom) / 2) - minY * zoom, zoom };
+          const vpNow = rf.getViewport();
+          if (Math.abs(vpNow.zoom - zoom) > 0.01 || Math.abs(vpNow.x - want.x) > 2) {
+            rf.setViewport(want, { duration: 0 });
+          }
+        } catch { /* ignore */ }
+      }, duration + 60);
+    } catch { /* viewport not ready */ }
+  }, [rf]);
   const lastLayoutSigForFitRef = useRef("");
   // Debounce timer for persisting the viewport on pan/zoom.
   const vpSaveTimerRef = useRef<number | null>(null);
@@ -760,8 +851,8 @@ function Inner() {
     autoFitDisabledRef.current = false;
     setAutoFitDisabled(false);
     try { window.localStorage.removeItem(AUTOFIT_KEY); } catch {}
-    try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
-  }, [rf]);
+    fitLeft(400);
+  }, [rf, fitLeft]);
   useEffect(() => {
     const id = setInterval(() => {
       if (autoFitDisabledRef.current) return;
@@ -800,7 +891,7 @@ function Inner() {
       // Only attempt a fit if at least one agent is measured AND none of the
       // measured ones intersect the viewport — that's the genuine drift case.
       if (anyMeasured && !anyInView) {
-        try { rf.fitView({ padding: 0.25, duration: 600 }); } catch {}
+        fitLeft(600);
       }
     }, 1500);
     return () => clearInterval(id);
@@ -831,6 +922,44 @@ function Inner() {
     return measuredVersionRef.current;
   }, []);
   const sizeVersion = useStore(measuredSelector);
+  const [domSizeVersion, setDomSizeVersion] = useState(0);
+
+  // Measure the rendered cards directly, as a source that does not depend on
+  // React Flow's store holding on to them.
+  //
+  // It does not: createNodeInternals rebuilds every entry as `{...node}` from
+  // the incoming `nodes` prop, carrying over handleBounds but NOT width and
+  // height. This canvas replaces that prop on every tick, so a measurement
+  // taken by the ResizeObserver survives until the next render and is then
+  // dropped. That closed a loop — the store lost the sizes, so the selector
+  // above read null and skipped, so the map stayed empty, so the nodes we
+  // passed carried no sizes for the store to keep. fitView needs dimensions
+  // to compute bounds and silently returns false without them, which is why
+  // nothing was ever framed.
+  useEffect(() => {
+    let raf = 0;
+    const measure = () => {
+      const map = measuredRef.current;
+      let changed = false;
+      for (const el of document.querySelectorAll<HTMLElement>(".react-flow__node[data-id]")) {
+        const id = el.getAttribute("data-id");
+        if (!id) continue;
+        const w = el.offsetWidth, h = el.offsetHeight;
+        if (!w || !h) continue;
+        const prev = map.get(id);
+        // Same 4px deadband as the store selector: sub-pixel jitter must not
+        // trigger a relayout.
+        if (!prev || Math.abs(prev.width - w) > 4 || Math.abs(prev.height - h) > 4) {
+          map.set(id, { width: w, height: h });
+          changed = true;
+        }
+      }
+      if (changed) setDomSizeVersion(v => v + 1);
+    };
+    // After paint, so the cards have their final size.
+    raf = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(raf);
+  });
 
   // Position cache + structural signature. Layout reruns only when the set
   // of visible agents OR sizes OR pin-set changes — NOT on every event.
@@ -849,8 +978,8 @@ function Inner() {
       ids.push(a.id + (a.parentId ? `>${a.parentId}` : ""));
     }
     ids.sort();
-    return `${ids.join("|")}#sv${sizeVersion}`;
-  }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion]);
+    return `${ids.join("|")}#sv${sizeVersion}.${domSizeVersion}`;
+  }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion, domSizeVersion]);
 
   // Persist the arrangement whenever it changes, not only when the user drags.
   // Auto-placed nodes are part of what gets restored on reload, so a session
@@ -879,16 +1008,14 @@ function Inner() {
     if (autoFitDisabledRef.current) return;
     const tnow = Date.now();
     if (tnow - lastFitTimeRef.current > 1200) {
-      try { rf.fitView({ padding: 0.25, duration: 400 }); } catch {}
-      lastFitTimeRef.current = tnow;
+      fitLeft(400);
     }
     if (fitTimerRef.current) window.clearTimeout(fitTimerRef.current);
     fitTimerRef.current = window.setTimeout(() => {
       if (autoFitDisabledRef.current) return;
-      try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-      lastFitTimeRef.current = Date.now();
+      fitLeft(500);
     }, 280);
-  }, [layoutSig, rf]);
+  }, [layoutSig, rf, fitLeft]);
 
   // Union spotlight set — lineage of every selected agent merged. Multi-
   // select widens the spotlight without losing the "follow the chain"
@@ -912,13 +1039,43 @@ function Inner() {
     [stateRef.current, stateRef.current.lastSeq, now],
   );
 
+  // Width of the canvas column, not the window: the side panels come and go,
+  // and a layout packed for the whole window would run under them. Measured
+  // rather than derived from the panel flags so it stays right however the
+  // grid is configured.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0]?.contentRect;
+      if (!r) return;
+      // Quantised so a one-pixel resize doesn't reflow the canvas.
+      setCanvasSize(prev =>
+        (Math.abs(prev.w - r.width) > 40 || Math.abs(prev.h - r.height) > 40)
+          ? { w: r.width, h: r.height } : prev);
+    });
+    ro.observe(el);
+    setCanvasSize({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
+  const availableWidth = canvasSize.w > 0 ? canvasSize.w * 0.92 : 0;
+  // A column is filled to one screen before the next one starts. An earlier
+  // version allowed 1.6 screens on the theory that a fitted graph zooms out
+  // and shows more — true, but it meant a column had to run well past the
+  // viewport before wrapping, so the second column almost never appeared and
+  // the width stayed empty. One screen is the threshold that actually fills
+  // the canvas.
+  const availableHeight = canvasSize.h > 0 ? canvasSize.h : 0;
+
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
-      stateRef.current, now, pinnedRef.current, query,
+      stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
+    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
 
   // Invisible per-session drag-handle nodes. One per session, sized to the
@@ -1054,16 +1211,12 @@ function Inner() {
     rerender();
     // After dagre runs on the next render, fit-view so the user sees the
     // result. 80ms gives React + RF one paint to settle the new positions.
-    window.setTimeout(() => {
-      try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-      lastFitTimeRef.current = Date.now();
-    }, 80);
-  }, [rerender, rf]);
+    // 80ms gives React + RF one paint to settle the new positions.
+    window.setTimeout(() => fitLeft(500), 80);
+  }, [rerender, rf, fitLeft]);
 
-  const handleFit = useCallback(() => {
-    try { rf.fitView({ padding: 0.25, duration: 500 }); } catch {}
-    lastFitTimeRef.current = Date.now();
-  }, [rf]);
+  // Same anchoring as relayout — F and the fit button land where it does.
+  const handleFit = useCallback(() => fitLeft(500), [fitLeft]);
 
   /** Step through visible agents in render order. `direction` is +1 for
    *  next (j) or -1 for previous (k). Selecting moves the canvas to keep
@@ -1260,14 +1413,35 @@ function Inner() {
           {soundOn !== null && (
             <button
               className={`btn icon-btn ${soundOn ? "primary" : ""}`}
-              onClick={toggleSound}
+              onClick={(e) => {
+                // Shift-click restores the user's own hooks. A modifier rather
+                // than another button: it is a one-off recovery, not a control
+                // that earns permanent space in the toolbar.
+                if (e.shiftKey && soundParked > 0) {
+                  setSoundBusy(true);
+                  fetch("/api/sound-hook", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "restore" }),
+                  }).then(() => fetch("/api/sound-hook"))
+                    .then(r => r.ok ? r.json() : null)
+                    .then(d => { if (d?.ok) { setSoundOn(d.enabled === true); setSoundParked(d.parked ?? 0); } })
+                    .catch(() => {})
+                    .finally(() => setSoundBusy(false));
+                  return;
+                }
+                toggleSound();
+              }}
               disabled={soundBusy}
               title={
                 (soundOn
                   ? "Sound on turn finish: on — click to remove the hook"
                   : "Sound on turn finish: off — click to add a Stop hook") +
                 (soundClash > 0
-                  ? `\n\nYou already have ${soundClash} sound hook${soundClash > 1 ? "s" : ""} in settings.json that run${soundClash > 1 ? "" : "s"} on this machine — turning this on will play two sounds per turn.`
+                  ? `\n\n${soundClash} sound hook${soundClash > 1 ? "s" : ""} of your own in settings.json also run${soundClash > 1 ? "" : "s"} here.`
+                  : "") +
+                (soundParked > 0
+                  ? `\n\n${soundParked} of your own sound hook${soundParked > 1 ? "s were" : " was"} set aside so this switch actually controls the sound. Nothing was deleted — shift-click to put ${soundParked > 1 ? "them" : "it"} back.`
                   : "")
               }
               aria-label="Toggle finish sound"
@@ -1361,7 +1535,7 @@ function Inner() {
           onClose={() => setSessionListOpen(false)}
         />
       )}
-      <div className="canvas-wrap">
+      <div className="canvas-wrap" ref={canvasRef}>
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
         {presentCats.length > 1 && (
           <div className="cat-filter-bar" role="toolbar" aria-label="Filter tools by category">
@@ -1400,9 +1574,11 @@ function Inner() {
           }}
           onPaneClick={() => clearSelection()}
           onMoveStart={() => {
-            // User-initiated pan/zoom only (programmatic fitView doesn't
-            // fire onMoveStart). Sticky-disable autofit until the recenter
-            // button is hit.
+            // React Flow fires this for animated programmatic viewport
+            // changes too, not just user gestures — so our own fit was
+            // switching auto-fit off the first time it ran, permanently and
+            // silently. Ignore anything that lands during a fit we started.
+            if (Date.now() - lastFitTimeRef.current < 1200) return;
             disableAutoFit();
           }}
           onMove={(_, vp) => {

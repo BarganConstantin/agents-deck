@@ -1123,13 +1123,14 @@ async function handleSoundHook(req, res) {
 }
 
 async function handleSoundHookSet(req, res) {
-  const { setSoundHook } = await import(
+  const { setSoundHook, restoreParkedSoundHooks } = await import(
     pathToFileURL(join(PKG_ROOT, "src/server/sound-hook.mjs")).href
   );
   const body = await readBody(req).catch(() => null);
   let parsed = null;
   try { parsed = JSON.parse(body ?? ""); } catch { /* handled below */ }
   if (!parsed || typeof parsed !== "object") return send(res, 400, { ok: false, reason: "bad_request" });
+  if (parsed.action === "restore") return send(res, 200, await restoreParkedSoundHooks());
   send(res, 200, await setSoundHook(parsed.enabled === true));
 }
 

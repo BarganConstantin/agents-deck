@@ -10,7 +10,7 @@
 // A tick can move the user's live Claude account, so it is off unless turned
 // on, the setting survives restarts, and the UI can always ask what a tick
 // WOULD do (--dry-run) before committing to letting it happen.
-import { execFile } from "node:child_process";
+import { run } from "./exec.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -32,18 +32,6 @@ const SETTINGS = {
   "autoswitch.strategy":        { type: "enum",   values: ["best", "consume-first"] },
   "autoswitch.model":           { type: "model" },
 };
-
-function run(cmd, args, timeout = 20_000) {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout, shell: false, windowsHide: true, maxBuffer: 4 << 20 },
-      (err, stdout, stderr) => resolve({
-        ok: !err,
-        code: err?.code ?? 0,
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? ""),
-      }));
-  });
-}
 
 // ── settings ───────────────────────────────────────────────────────────────
 
@@ -116,7 +104,7 @@ function summarise(stdout) {
  * never switches and never writes claude-swap's state.
  */
 export async function previewAutoSwitch() {
-  const r = await run("cswap", ["auto", "--once", "--dry-run", "--json"], TICK_TIMEOUT_MS);
+  const r = await run("cswap", ["auto", "--once", "--dry-run", "--json"], { timeout: TICK_TIMEOUT_MS });
   if (!r.ok && !r.stdout) {
     return { ok: false, reason: r.code === "ENOENT" ? "no_cswap" : "tick_failed",
              detail: (r.stderr || "").trim().slice(0, 300) };
@@ -126,7 +114,7 @@ export async function previewAutoSwitch() {
 
 /** Evaluate a tick for real. May switch the active account. */
 async function runAutoTick() {
-  const r = await run("cswap", ["auto", "--once", "--json"], TICK_TIMEOUT_MS);
+  const r = await run("cswap", ["auto", "--once", "--json"], { timeout: TICK_TIMEOUT_MS });
   if (!r.ok && !r.stdout) {
     return { ok: false, reason: "tick_failed", detail: (r.stderr || "").trim().slice(0, 300) };
   }
@@ -145,15 +133,28 @@ async function runAutoTick() {
  * reports it and stays out of the way.
  */
 export async function externalAutoRunning() {
-  if (process.platform === "win32") return false;   // no cheap equivalent; assume not
+  // A line is the user's loop if it runs `cswap auto` without --once. Our own
+  // ticks are --once, and so is a cron user's.
+  const isLoop = (line) => /(^|[\\/])cswap(\.exe|\.cmd|\.bat)?\s+auto(\s|$)/i.test(line.trim())
+                        && !/--once/i.test(line);
+
+  if (process.platform === "win32") {
+    // No `ps` on Windows, and `tasklist` reports the image name only — every
+    // Python tool shows up as python.exe, which cannot tell cswap from
+    // anything else. CIM is the one place the full command line is available.
+    const r = await run("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine",
+    ], { timeout: 8_000 });
+    if (!r.ok) return false;   // no PowerShell, or the query was refused
+    return r.stdout.split("\n").some(isLoop);
+  }
+
   // `ps`, not `pgrep -a`: BSD pgrep ignores -a and prints bare PIDs, so a
   // command-line match against its output silently never fires.
-  const r = await run("ps", ["-Ao", "args="], 5_000);
+  const r = await run("ps", ["-Ao", "args="], { timeout: 5_000 });
   if (!r.stdout.trim()) return false;
-  return r.stdout.split("\n").some(line =>
-    /(^|\/)cswap\s+auto(\s|$)/.test(line.trim()) &&
-    !/--once/.test(line)   // our own ticks are --once, and so are cron users'
-  );
+  return r.stdout.split("\n").some(isLoop);
 }
 
 // ── deck-managed loop ──────────────────────────────────────────────────────
