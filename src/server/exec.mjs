@@ -6,10 +6,18 @@
 // ENOENT on Windows even though the tool is installed and on PATH — which
 // looks exactly like "not installed" and is why this is worth a module.
 //
-// The alternative, `shell: true`, would work but concatenates arguments into a
-// command line instead of passing them as a vector: an argument containing a
-// quote or an ampersand stops being an argument. Resolving the extension
-// ourselves keeps the argument vector intact.
+// Resolving the extension ourselves keeps the argument vector intact, which
+// blanket `shell: true` would not: it concatenates arguments into a command
+// line, so an argument containing a quote or an ampersand stops being an
+// argument.
+//
+// The exception is .cmd and .bat, which since Node 20.12 CANNOT be spawned
+// without a shell at all — the fix for CVE-2024-27980 makes that throw EINVAL,
+// synchronously, from inside execFile. Those are routed through cmd.exe the
+// same way Node's own `shell: true` does it, with the arguments quoted here
+// rather than pasted together. Getting this wrong is not a degraded feature:
+// the throw escaped the retry path and took the whole process down on Windows
+// before the server ever started.
 import { execFile, spawn } from "node:child_process";
 
 // Extensions Windows will execute, most specific first. `.com` is omitted —
@@ -28,29 +36,75 @@ function candidates(cmd) {
   return known ? [known] : WIN_EXTS.map(ext => cmd + ext);
 }
 
-const isMissing = (err) => err && (err.code === "ENOENT" || err.code === "EACCES");
+/** Exported for tests: the platform is a parameter so both can be checked. */
+export const isBatch = (file, platform = process.platform) =>
+  platform === "win32" && /\.(cmd|bat)$/i.test(file);
 
 /**
- * Run a command and collect its output. Never rejects — failures come back as
- * `{ ok: false }`, because every caller here is a poll or a UI action where a
- * missing tool is an expected state rather than an exception.
+ * Rewrite a batch-file invocation as a cmd.exe one.
+ *
+ * Mirrors what Node does internally for `shell: true` on Windows — comspec,
+ * /d /s /c, the whole command line as a single quoted argument, and
+ * windowsVerbatimArguments so Node does not quote it a second time. Each
+ * argument is quoted here, with embedded quotes doubled, which is the escape
+ * cmd.exe understands inside a quoted string.
+ */
+export function viaCmd(file, args) {
+  const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const line = [file, ...args].map(q).join(" ");
+  return {
+    file: process.env.comspec || process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", `"${line}"`],
+    opts: { windowsVerbatimArguments: true },
+  };
+}
+
+// Reasons to try the next candidate spelling rather than give up. EINVAL and
+// UNKNOWN show up on Windows for a file that exists but cannot be executed the
+// way it was asked for; both mean "not this one", not "no such tool".
+export const tryNext = (err) =>
+  Boolean(err) && (err.code === "ENOENT" || err.code === "EACCES" ||
+                   err.code === "EINVAL" || err.code === "UNKNOWN");
+
+/**
+ * Run a command and collect its output. Never rejects, and never throws —
+ * failures come back as `{ ok: false }`, because every caller here is a poll or
+ * a UI action where a missing tool is an expected state rather than an
+ * exception. execFile can throw synchronously on Windows, so the call itself is
+ * guarded as well as its callback.
  */
 export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
   const tries = candidates(cmd);
   return new Promise((resolve) => {
     const attempt = (i) => {
-      execFile(tries[i], args, { timeout, shell: false, windowsHide: true, maxBuffer },
-        (err, stdout, stderr) => {
-          if (err && isMissing(err) && i + 1 < tries.length) return attempt(i + 1);
-          if (!err) resolved.set(cmd, tries[i]);
-          resolve({
-            ok: !err,
-            code: err?.code ?? 0,
-            killed: Boolean(err?.killed),
-            stdout: String(stdout ?? ""),
-            stderr: String(stderr ?? ""),
-          });
+      if (i >= tries.length) {
+        return resolve({ ok: false, code: "ENOENT", killed: false, stdout: "", stderr: "" });
+      }
+      const raw = tries[i];
+      const { file, args: argv, opts } = isBatch(raw)
+        ? viaCmd(raw, args)
+        : { file: raw, args, opts: {} };
+
+      const done = (err, stdout, stderr) => {
+        if (err && tryNext(err) && i + 1 < tries.length) return attempt(i + 1);
+        if (!err) resolved.set(cmd, raw);
+        resolve({
+          ok: !err,
+          code: err?.code ?? 0,
+          killed: Boolean(err?.killed),
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? ""),
         });
+      };
+
+      try {
+        execFile(file, argv, { timeout, shell: false, windowsHide: true, maxBuffer, ...opts }, done);
+      } catch (err) {
+        // Synchronous throw — the EINVAL case. Same handling as a callback
+        // error; letting it propagate here is what crashed the server, because
+        // this runs inside the previous attempt's error handler.
+        done(err, "", "");
+      }
     };
     attempt(0);
   });
@@ -64,15 +118,18 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
 export function runDetached(cmd, args) {
   const tries = candidates(cmd);
   const attempt = (i) => {
+    if (i >= tries.length) return;
+    const raw = tries[i];
+    const { file, args: argv, opts } = isBatch(raw)
+      ? viaCmd(raw, args)
+      : { file: raw, args, opts: {} };
     try {
-      const child = spawn(tries[i], args, { stdio: "ignore", shell: false, windowsHide: true });
-      child.on("error", (err) => {
-        if (isMissing(err) && i + 1 < tries.length) attempt(i + 1);
-      });
-      child.on("spawn", () => resolved.set(cmd, tries[i]));
+      const child = spawn(file, argv, { stdio: "ignore", shell: false, windowsHide: true, ...opts });
+      child.on("error", (err) => { if (tryNext(err)) attempt(i + 1); });
+      child.on("spawn", () => resolved.set(cmd, raw));
       child.unref?.();
     } catch {
-      if (i + 1 < tries.length) attempt(i + 1);
+      attempt(i + 1);
     }
   };
   attempt(0);
