@@ -3,7 +3,7 @@
 // of asserting that dagre was called with the right arguments.
 import { describe, it, expect } from "vitest";
 import type { Node, Edge } from "reactflow";
-import { autoLayout } from "../layout";
+import { autoLayout, separateOverlaps } from "../layout";
 
 const W = 260, H = 120;
 
@@ -91,5 +91,65 @@ describe("autoLayout — nodes never share space", () => {
     const measured = sizes(["a1", "b1"]);
     const out = autoLayout(nodes, [], { measured, pinned: new Map([["a1", { x: 0, y: 0 }]]) });
     expect(overlaps(out, measured)).toEqual([]);
+  });
+});
+
+describe("separateOverlaps — repairs only what is wrong", () => {
+  const boxes = (pos: Map<string, { x: number; y: number }>, ids: string[]) =>
+    ids.map(id => ({ id, ...pos.get(id)!, w: W, h: H }));
+  const anyHit = (bs: ReturnType<typeof boxes>) => {
+    for (let i = 0; i < bs.length; i++)
+      for (let j = i + 1; j < bs.length; j++) {
+        const a = bs[i], b = bs[j];
+        if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) return true;
+      }
+    return false;
+  };
+
+  it("leaves a clean arrangement untouched", () => {
+    const nodes = ["a", "b"].map(id => agent(id, "s"));
+    const pos = new Map([["a", { x: 0, y: 0 }], ["b", { x: 0, y: 400 }]]);
+    expect(separateOverlaps(nodes, pos, new Map(), sizes(["a", "b"]))).toEqual([]);
+    expect(pos.get("b")).toEqual({ x: 0, y: 400 });
+  });
+
+  it("moves only the node that is on top of another", () => {
+    const nodes = ["a", "b", "c"].map(id => agent(id, "s"));
+    const pos = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["b", { x: 0, y: 10 }],    // sitting on a
+      ["c", { x: 0, y: 900 }],   // fine
+    ]);
+    const moved = separateOverlaps(nodes, pos, new Map(), sizes(["a", "b", "c"]));
+    expect(moved).toEqual(["b"]);
+    expect(pos.get("a")).toEqual({ x: 0, y: 0 });      // untouched
+    expect(pos.get("c")).toEqual({ x: 0, y: 900 });    // untouched
+    expect(anyHit(boxes(pos, ["a", "b", "c"]))).toBe(false);
+  });
+
+  it("never relocates a dragged node — it moves what landed on it", () => {
+    const nodes = ["p", "q"].map(id => agent(id, "s"));
+    const pinned = new Map([["p", { x: 0, y: 50 }]]);
+    const pos = new Map([["p", { x: 0, y: 50 }], ["q", { x: 0, y: 60 }]]);
+    const moved = separateOverlaps(nodes, pos, pinned, sizes(["p", "q"]));
+    expect(moved).toEqual(["q"]);
+    expect(pinned.get("p")).toEqual({ x: 0, y: 50 });
+    expect(anyHit([{ id: "p", x: 0, y: 50, w: W, h: H }, { id: "q", ...pos.get("q")!, w: W, h: H }])).toBe(false);
+  });
+
+  it("is idempotent — a second pass changes nothing", () => {
+    const nodes = ["a", "b", "c"].map(id => agent(id, "s"));
+    const pos = new Map([["a", { x: 0, y: 0 }], ["b", { x: 0, y: 5 }], ["c", { x: 0, y: 9 }]]);
+    separateOverlaps(nodes, pos, new Map(), sizes(["a", "b", "c"]));
+    const after = JSON.stringify([...pos]);
+    expect(separateOverlaps(nodes, pos, new Map(), sizes(["a", "b", "c"]))).toEqual([]);
+    expect(JSON.stringify([...pos])).toBe(after);
+  });
+
+  it("leaves side-by-side columns alone", () => {
+    // Different x, same y — a normal two-session-wide arrangement, not a clash.
+    const nodes = ["a", "b"].map(id => agent(id, "s"));
+    const pos = new Map([["a", { x: 0, y: 0 }], ["b", { x: 600, y: 0 }]]);
+    expect(separateOverlaps(nodes, pos, new Map(), sizes(["a", "b"]))).toEqual([]);
   });
 });

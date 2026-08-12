@@ -22,7 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import UsageHistoryModal from "./components/UsageHistoryModal";
-import { autoLayout } from "./layout";
+import { autoLayout, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -115,22 +115,54 @@ function saveDismissedSummaries(set: Set<string>): void {
   } catch {}
 }
 
-function loadLayout(): Array<[string, { x: number; y: number }]> {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (!raw) return [];
-    const obj = JSON.parse(raw) as Record<string, { x: number; y: number }>;
-    return Object.entries(obj).filter(([, v]) => v && typeof v.x === "number" && typeof v.y === "number");
-  } catch { return []; }
+/**
+ * Where every node sits, and which of those the user placed by hand.
+ *
+ * Only drags used to be stored, so a reload re-ran dagre over everything and
+ * the canvas came back rearranged — the arrangement you spent time reading is
+ * not something you should have to rebuild because you hit refresh. Auto
+ * positions are saved too, and `pins` records which were deliberate so a drag
+ * still outranks the layout pass.
+ */
+interface StoredLayout {
+  positions: Array<[string, { x: number; y: number }]>;
+  pins: string[];
 }
 
-function saveLayout(pinned: Map<string, { x: number; y: number }>): void {
+function loadLayout(): StoredLayout {
+  const empty: StoredLayout = { positions: [], pins: [] };
+  if (typeof window === "undefined") return empty;
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return empty;
+    const obj = JSON.parse(raw) as
+      | Record<string, { x: number; y: number }>
+      | { v: 2; positions: Record<string, { x: number; y: number }>; pins: string[] };
+
+    // v1 stored a bare id → point map of drags only. Read it as all-pinned so
+    // an upgrade keeps whatever the user had arranged.
+    if (!("v" in obj)) {
+      const entries = Object.entries(obj).filter(([, v]) => v && typeof v.x === "number" && typeof v.y === "number");
+      return { positions: entries, pins: entries.map(([id]) => id) };
+    }
+    const entries = Object.entries(obj.positions ?? {})
+      .filter(([, v]) => v && typeof v.x === "number" && typeof v.y === "number");
+    return { positions: entries, pins: Array.isArray(obj.pins) ? obj.pins : [] };
+  } catch { return empty; }
+}
+
+function saveLayout(
+  positions: Map<string, { x: number; y: number }>,
+  pinned: Map<string, { x: number; y: number }>,
+): void {
   if (typeof window === "undefined") return;
   try {
     const obj: Record<string, { x: number; y: number }> = {};
-    for (const [id, pos] of pinned) obj[id] = pos;
-    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(obj));
+    for (const [id, pos] of positions) obj[id] = pos;
+    for (const [id, pos] of pinned) obj[id] = pos;   // a drag wins over the layout
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
+      v: 2, positions: obj, pins: Array.from(pinned.keys()),
+    }));
   } catch { /* quota / private mode — ignore */ }
 }
 
@@ -374,17 +406,20 @@ function snapshotToFlow(
   // Only rerun dagre when the structure or measured sizes actually change.
   // Between layouts, reuse cached positions so per-event renders don't shift
   // nodes — that was the source of canvas flicker + drag-snap-back.
-  if (layoutSig !== lastLayoutSigRef.current) {
-    const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
-    for (const n of laidOut) positions.set(n.id, n.position);
-    lastLayoutSigRef.current = layoutSig;
-  } else {
-    // Lay out any brand-new nodes whose position is still missing.
-    const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
+  // A structural change no longer reshuffles the canvas. Nodes that already
+  // have a position keep it — the arrangement on screen is one the user has
+  // been reading, and rebuilding it under them costs more than the tidier
+  // result is worth. Only nodes without a position are laid out, and only
+  // nodes that end up overlapping get moved. The relayout button (R) is the
+  // way to ask for a full reflow.
+  const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
+  if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
       const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
     }
+    separateOverlaps(nodes, positions, pinned, measured);
+    lastLayoutSigRef.current = layoutSig;
   }
   // Evict cached positions for agents that aren't in state.agents anymore.
   // Stale positions for invisible-but-still-tracked agents are KEPT so a
@@ -400,8 +435,13 @@ function snapshotToFlow(
   // outlives the agent it belonged to and keeps claiming that spot on the
   // canvas — where a later session, laid out from the top, gets stacked
   // straight onto it.
-  for (const id of Array.from(pinned.keys())) {
-    if (!state.agents.has(id)) pinned.delete(id);
+  // Guarded on a non-empty graph: these are restored from storage before the
+  // event log has replayed, and pruning against an empty agent map would drop
+  // every position the user arranged.
+  if (state.agents.size > 0) {
+    for (const id of Array.from(pinned.keys())) {
+      if (!state.agents.has(id)) pinned.delete(id);
+    }
   }
   // Never silently drop a visible node — if its position is missing, place
   // it at {0,0} for THIS frame and force a fresh dagre pass on the next
@@ -559,7 +599,11 @@ function Inner() {
   // applied before snapshotToFlow runs autoLayout. Sessions outlast a
   // browser refresh (their session_id is stable), so dragged positions
   // come back where you left them.
-  const pinnedRef = useRef<Map<string, { x: number; y: number }>>(new Map(loadLayout()));
+  const storedLayout = useRef(loadLayout()).current;
+  const positionsSeeded = useRef(false);
+  const pinnedRef = useRef<Map<string, { x: number; y: number }>>(
+    new Map(storedLayout.positions.filter(([id]) => storedLayout.pins.includes(id))),
+  );
   /** Active session group-drag: the handle node's start position + each
    *  member's start position, captured at drag start. */
   const groupDragRef = useRef<{ start: { x: number; y: number }; members: Map<string, { x: number; y: number }> } | null>(null);
@@ -790,7 +834,10 @@ function Inner() {
 
   // Position cache + structural signature. Layout reruns only when the set
   // of visible agents OR sizes OR pin-set changes — NOT on every event.
-  const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // Seeded from storage so a reload resumes the arrangement that was on screen
+  // rather than re-deriving one. Anything without a stored position — a new
+  // agent, or one whose position was evicted — still gets laid out.
+  const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map(storedLayout.positions));
   const lastLayoutSigRef = useRef<string>("");
   const layoutSig = useMemo(() => {
     const ids: string[] = [];
@@ -804,6 +851,19 @@ function Inner() {
     ids.sort();
     return `${ids.join("|")}#sv${sizeVersion}`;
   }, [stateRef.current, stateRef.current.lastSeq, now, sizeVersion]);
+
+  // Persist the arrangement whenever it changes, not only when the user drags.
+  // Auto-placed nodes are part of what gets restored on reload, so a session
+  // that was never touched still comes back where it was. Debounced: layoutSig
+  // moves on every structural change and localStorage writes are synchronous.
+  const layoutSaveTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (layoutSaveTimerRef.current != null) window.clearTimeout(layoutSaveTimerRef.current);
+    layoutSaveTimerRef.current = window.setTimeout(() => {
+      saveLayout(positionsRef.current, pinnedRef.current);
+    }, 1500);
+    return () => { if (layoutSaveTimerRef.current != null) window.clearTimeout(layoutSaveTimerRef.current); };
+  }, [layoutSig]);
 
   // Auto-fit on layout-signature changes — the single source of truth for
   // structural shifts: agent added/removed, parent relationship changed, or
@@ -1408,13 +1468,13 @@ function Inner() {
                 }
               }
               groupDragRef.current = null;
-              saveLayout(pinnedRef.current);
+              saveLayout(positionsRef.current, pinnedRef.current);
               setDragTick(t => t + 1);
               return;
             }
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
-            saveLayout(pinnedRef.current);
+            saveLayout(positionsRef.current, pinnedRef.current);
           }}
         >
           <Background gap={28} size={1} color={cssVar("--grid-line")} />

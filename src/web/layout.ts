@@ -135,3 +135,64 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
     return { ...n, position: p };
   });
 }
+
+
+/**
+ * Push apart only the nodes that overlap, leaving everything else where it is.
+ *
+ * The layout pass runs once per node and then never again, so an arrangement
+ * survives reloads and structural changes. The cost of that is that a newly
+ * placed node can land on an older one, and two sessions can drift together.
+ * This is the repair: it walks the nodes in a stable order, and the first time
+ * a node covers ground already taken it slides down until it is clear.
+ *
+ * Deliberately minimal. Re-running the full layout would fix more and move
+ * everything; this fixes the specific thing that is wrong and touches nothing
+ * else, which is what makes it safe to run on every structural change.
+ *
+ * Pinned nodes are obstacles but never move — the user put them there. Mutates
+ * `positions`; returns the ids it had to move.
+ */
+export function separateOverlaps(
+  nodes: Node[],
+  positions: Map<string, { x: number; y: number }>,
+  pinned: Map<string, { x: number; y: number }>,
+  measured: Map<string, { width: number; height: number }>,
+): string[] {
+  const MARGIN = 24;
+
+  const sizeOf = (id: string) => {
+    const m = measured.get(id);
+    return { w: m?.width ?? NODE_W, h: m?.height ?? NODE_H };
+  };
+
+  // Stable order: by y, then x, then id. Same input always yields the same
+  // result, so a re-render cannot make nodes drift.
+  const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const ordered = nodes
+    .map(n => ({ id: n.id, pos: pinned.get(n.id) ?? positions.get(n.id) }))
+    .filter((n): n is { id: string; pos: { x: number; y: number } } => n.pos != null)
+    .sort((a, b) => a.pos.y - b.pos.y || a.pos.x - b.pos.x || a.id.localeCompare(b.id));
+
+  const moved: string[] = [];
+  for (const { id, pos } of ordered) {
+    const { w, h } = sizeOf(id);
+    // A dragged node is an obstacle for everything else but is never itself
+    // relocated.
+    if (pinned.has(id)) { placed.push({ x: pos.x, y: pos.y, w, h }); continue; }
+
+    let y = pos.y;
+    // Re-check from the start after each shift: sliding clear of one node can
+    // push into another that was already checked.
+    for (let guard = 0; guard < placed.length + 1; guard++) {
+      const clash = placed.find(r =>
+        pos.x < r.x + r.w + MARGIN && r.x < pos.x + w + MARGIN &&
+        y     < r.y + r.h + MARGIN && r.y < y     + h + MARGIN);
+      if (!clash) break;
+      y = clash.y + clash.h + MARGIN;
+    }
+    if (y !== pos.y) { positions.set(id, { x: pos.x, y }); moved.push(id); }
+    placed.push({ x: pos.x, y, w, h });
+  }
+  return moved;
+}
