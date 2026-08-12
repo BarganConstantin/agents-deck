@@ -3098,3 +3098,53 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   color: var(--muted);
   cursor: help;
 }
+
+/* ── displaced by a growing session ──────────────────────────────────────── */
+/*
+ * When a session fans out subagents it takes more room, and its neighbours are
+ * moved aside to make it. Jumping them there reads as the canvas glitching;
+ * carrying them there reads as one thing pushing another, which is what
+ * actually happened. The class is on for the length of the move only, so
+ * dragging a node never fights a transition.
+ *
+ * The curve settles without overshoot — cards that spring past their mark and
+ * come back look bouncy on one node and chaotic on eight at once.
+ */
+.canvas-wrap.bubbling .react-flow__node {
+  transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* The session box is a node too, so it travels with its cards rather than
+   snapping to the new bounding box a frame early. */
+.canvas-wrap.bubbling .react-flow__node.react-flow__node-sessionGroup {
+  transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+              width 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+              height 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-wrap.bubbling .react-flow__node,
+  .canvas-wrap.bubbling .react-flow__node.react-flow__node-sessionGroup {
+    transition: none;
+  }
+}
+
+/* The node under the cursor follows it exactly. React Flow writes the drag
+   transform every pointer move, and a transition on top of that renders the
+   card trailing the cursor by the transition's length. */
+.canvas-wrap.bubbling .react-flow__node.dragging {
+  transition: none;
+}
+
+/*
+ * Nothing animates during a drag.
+ *
+ * Must come after the .bubbling rules above: same specificity, so source order
+ * decides, and a gesture always wins over an animation. .dragging alone is not
+ * enough — React Flow only sets it on the node the pointer grabbed, while a
+ * session drag moves that session's cards through state.
+ */
+.canvas-wrap.dragging-any .react-flow__node,
+.canvas-wrap.dragging-any .react-flow__node.react-flow__node-sessionGroup {
+  transition: none;
+}

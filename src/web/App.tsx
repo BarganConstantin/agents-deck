@@ -22,7 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import UsageHistoryModal from "./components/UsageHistoryModal";
-import { autoLayout, fillGapsWithNewSessions, separateOverlaps } from "./layout";
+import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -40,6 +40,15 @@ function fmtTokens(n: number): string {
 }
 
 const nodeTypes = { agent: AgentNode, sessionGroup: SessionGroupNode };
+
+/**
+ * How long a session takes to slide out of the way of one that grew.
+ *
+ * Long enough to be followed — the point of animating it at all is that the
+ * user sees WHY a card moved — and short enough that the canvas is settled
+ * again before they act on it. Mirrored in the .bubbling rule in styles.css.
+ */
+const BUBBLE_MS = 420;
 
 // Padding of the invisible session drag-handle node. Matches SessionClusters'
 // PAD so the handle lines up with the card's body (the card's header strip is
@@ -332,6 +341,10 @@ function snapshotToFlow(
   pinned: Map<string, { x: number; y: number }>,
   query: string,
   measured: Map<string, { width: number; height: number }>,
+  prevSessionSize: Map<string, { w: number; h: number }>,
+  onBubble: (sessions: string[]) => void,
+  /** False while the page is still mounting and measuring. */
+  settled: boolean,
   positions: Map<string, { x: number; y: number }>,
   layoutSig: string,
   lastLayoutSigRef: { current: string },
@@ -431,6 +444,14 @@ function snapshotToFlow(
     separateOverlaps(nodes, positions, pinned, measured);
     lastLayoutSigRef.current = layoutSig;
   }
+  // A session that just fanned out subagents is wider and taller than it was a
+  // frame ago, and is now sitting on whatever was beside it. separateOverlaps
+  // would clear that by sliding the covered session down past the whole grown
+  // block; this nudges the neighbours aside by the least that works, which is
+  // both shorter and legible as a cause — the box grew, so the others moved.
+  // Self-gating: returns immediately unless something actually grew.
+  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled);
+  if (bubbled.length > 0) onBubble(bubbled);
   // Evict cached positions for agents that aren't in state.agents anymore.
   // Stale positions for invisible-but-still-tracked agents are KEPT so a
   // transient flicker out of visibleIds (e.g. one frame where isAgentVisible
@@ -956,9 +977,18 @@ function Inner() {
       }
       if (changed) setDomSizeVersion(v => v + 1);
     };
-    // After paint, so the cards have their final size.
-    raf = requestAnimationFrame(measure);
-    return () => cancelAnimationFrame(raf);
+    // After paint, so the cards have their final size — except in a background
+    // tab, where requestAnimationFrame never fires at all. The deck is a thing
+    // people leave open on a second monitor or behind their editor, so an
+    // rAF-only schedule means sizes stop updating exactly when nobody is
+    // looking, and the layout they come back to was computed from stale ones.
+    let timer = 0;
+    if (document.visibilityState === "hidden") {
+      timer = window.setTimeout(measure, 32);
+    } else {
+      raf = requestAnimationFrame(measure);
+    }
+    return () => { cancelAnimationFrame(raf); window.clearTimeout(timer); };
   });
 
   // Position cache + structural signature. Layout reruns only when the set
@@ -1060,6 +1090,45 @@ function Inner() {
     setCanvasSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
   }, []);
+  // How big each session was last frame, so a session that fans out subagents
+  // can be told apart from one that merely re-rendered. Owned here rather than
+  // in layout.ts because it is memory, not geometry.
+  const prevSessionSizeRef = useRef<Map<string, { w: number; h: number }>>(new Map());
+  // Sizes only mean something once the cards have all mounted and measured.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setSettled(true), 2500);
+    return () => window.clearTimeout(t);
+  }, []);
+  // While true, node movement is animated instead of instant. Held only for
+  // the length of the transition: a permanent transition would make dragging
+  // lag behind the cursor.
+  const [bubbling, setBubbling] = useState(false);
+  const bubbleTimerRef = useRef<number | null>(null);
+  // True for the length of any drag gesture. React Flow marks the node under
+  // the cursor with .dragging, and the stylesheet drops its transition — but
+  // dragging a SESSION moves its member cards through state rather than
+  // through the gesture, so they keep the transition and trail the cursor by
+  // its full duration. That is the "dragging isn't smooth" everyone notices
+  // and nobody can point at. A flag on the pane covers every node a gesture
+  // can move, whichever way it moves them.
+  const [dragging, setDragging] = useState(false);
+  const endBubble = useCallback(() => {
+    if (bubbleTimerRef.current) { window.clearTimeout(bubbleTimerRef.current); bubbleTimerRef.current = null; }
+    setBubbling(false);
+  }, []);
+  const onBubble = useCallback((movedSessions: string[]) => {
+    if (movedSessions.length === 0) return;
+    // Raised from inside a useMemo, so the state change has to leave the
+    // render pass before React sees it.
+    queueMicrotask(() => {
+      setBubbling(true);
+      if (bubbleTimerRef.current) window.clearTimeout(bubbleTimerRef.current);
+      bubbleTimerRef.current = window.setTimeout(() => setBubbling(false), BUBBLE_MS + 80);
+    });
+  }, []);
+  useEffect(() => () => { if (bubbleTimerRef.current) window.clearTimeout(bubbleTimerRef.current); }, []);
+
   const availableWidth = canvasSize.w > 0 ? canvasSize.w * 0.92 : 0;
   // A column is filled to one screen before the next one starts. An earlier
   // version allowed 1.6 screens on the theory that a fitted graph zooms out
@@ -1072,10 +1141,11 @@ function Inner() {
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
       stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
-      measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
+      measuredRef.current, prevSessionSizeRef.current, onBubble, settled,
+      positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
+    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, settled, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
 
   // Invisible per-session drag-handle nodes. One per session, sized to the
@@ -1535,7 +1605,10 @@ function Inner() {
           onClose={() => setSessionListOpen(false)}
         />
       )}
-      <div className="canvas-wrap" ref={canvasRef}>
+      <div
+        className={`canvas-wrap${bubbling ? " bubbling" : ""}${dragging ? " dragging-any" : ""}`}
+        ref={canvasRef}
+      >
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
         {presentCats.length > 1 && (
           <div className="cat-filter-bar" role="toolbar" aria-label="Filter tools by category">
@@ -1589,6 +1662,13 @@ function Inner() {
             vpSaveTimerRef.current = window.setTimeout(() => saveViewport(vp), 250);
           }}
           onNodeDragStart={(_, n) => {
+            // A drag must never inherit the push animation. The node under the
+            // cursor is excluded by CSS, but a session drag moves its members
+            // through state instead of the drag itself, and those would follow
+            // the cursor 420ms late. Ending the animation outright is simpler
+            // than enumerating which nodes a gesture will end up moving.
+            endBubble();
+            setDragging(true);
             markInteract();
             disableAutoFit();
             if (n.type === "sessionGroup") {
@@ -1632,6 +1712,7 @@ function Inner() {
           }}
           onNodeDragStop={(_, n) => {
             markInteract();
+            setDragging(false);
             if (n.type === "sessionGroup") {
               const g = groupDragRef.current;
               if (g) {
