@@ -345,6 +345,16 @@ function snapshotToFlow(
   onBubble: (sessions: string[]) => void,
   /** False while the page is still mounting and measuring. */
   settled: boolean,
+  /**
+   * A drag is in progress.
+   *
+   * Dragging a card out of its session makes that session's bounding box
+   * bigger, which is indistinguishable from the session growing — so the push
+   * fired on every pointer move and shoved the other sessions around while the
+   * user was still holding the mouse down. The new size is still recorded, so
+   * letting go does not then trigger a push for a change the user made by hand.
+   */
+  dragging: boolean,
   positions: Map<string, { x: number; y: number }>,
   layoutSig: string,
   lastLayoutSigRef: { current: string },
@@ -450,7 +460,7 @@ function snapshotToFlow(
   // block; this nudges the neighbours aside by the least that works, which is
   // both shorter and legible as a cause — the box grew, so the others moved.
   // Self-gating: returns immediately unless something actually grew.
-  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled);
+  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled || dragging);
   if (bubbled.length > 0) onBubble(bubbled);
   // Evict cached positions for agents that aren't in state.agents anymore.
   // Stale positions for invisible-but-still-tracked agents are KEPT so a
@@ -918,6 +928,11 @@ function Inner() {
     return () => clearInterval(id);
   }, [rf]);
 
+  // True for the length of a drag gesture. A ref as well as state: the
+  // measurement effect below reads it without wanting to re-run when it
+  // changes, and the layout memo needs the state to recompute.
+  const draggingRef = useRef(false);
+
   // Real per-node sizes — read from RF's internal store via a selector that
   // returns a monotonic counter. Counter only ticks when a measurement
   // actually changed (delta > 4px) or a new node was measured. No
@@ -982,6 +997,10 @@ function Inner() {
     // people leave open on a second monitor or behind their editor, so an
     // rAF-only schedule means sizes stop updating exactly when nobody is
     // looking, and the layout they come back to was computed from stale ones.
+    // offsetWidth/offsetHeight on every card forces a synchronous layout, and
+    // a drag re-renders on every pointer move. Cards do not change size while
+    // one is being dragged, so the whole pass is skipped for the gesture.
+    if (draggingRef.current) return;
     let timer = 0;
     if (document.visibilityState === "hidden") {
       timer = window.setTimeout(measure, 32);
@@ -1141,11 +1160,11 @@ function Inner() {
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
       stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
-      measuredRef.current, prevSessionSizeRef.current, onBubble, settled,
+      measuredRef.current, prevSessionSizeRef.current, onBubble, settled, dragging,
       positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, settled, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
+    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, settled, dragging, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
 
   // Invisible per-session drag-handle nodes. One per session, sized to the
@@ -1668,6 +1687,7 @@ function Inner() {
             // the cursor 420ms late. Ending the animation outright is simpler
             // than enumerating which nodes a gesture will end up moving.
             endBubble();
+            draggingRef.current = true;
             setDragging(true);
             markInteract();
             disableAutoFit();
@@ -1712,6 +1732,7 @@ function Inner() {
           }}
           onNodeDragStop={(_, n) => {
             markInteract();
+            draggingRef.current = false;
             setDragging(false);
             if (n.type === "sessionGroup") {
               const g = groupDragRef.current;
