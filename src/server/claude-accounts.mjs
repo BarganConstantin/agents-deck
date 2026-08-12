@@ -62,12 +62,28 @@ let _lastNudge = 0;
  * Fire-and-forget. The result lands in the store for the next poll to pick up;
  * making the caller wait would just delay the numbers it already has.
  */
-function nudgeCollector(rows, now) {
-  if (now - _lastNudge < NUDGE_EVERY_MS) return;
-  const due = Object.values(rows).some(r =>
+/**
+ * Whether anything is waiting to be collected.
+ *
+ * An account with a row is due when its own schedule says so. An account with
+ * NO row has never been fetched at all, which is due by definition — and that
+ * was the gap: a freshly added account has no usage.json entry, so nothing was
+ * ever "due", so the collector was never asked, so the row never appeared. The
+ * panel sat on "never fetched" indefinitely unless the user happened to run
+ * cswap themselves.
+ */
+export function collectionDue(rows, slots, now) {
+  for (const slot of slots) {
+    if (!rows[slot]) return true;                    // never fetched
+  }
+  return Object.values(rows).some(r =>
     typeof r?.nextPollAt === "number" && r.nextPollAt * 1000 <= now
   );
-  if (!due) return;
+}
+
+function nudgeCollector(rows, slots, now) {
+  if (now - _lastNudge < NUDGE_EVERY_MS) return;
+  if (!collectionDue(rows, slots, now)) return;
 
   _lastNudge = now;
   // Fire-and-forget: this function is deliberately synchronous so callers never
@@ -132,8 +148,10 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
   // A schema bump means the rows may not mean what this code thinks they do.
   const rows = usage?.schemaVersion === 2 ? (usage.accounts ?? {}) : {};
 
-  // Kick a collection for the NEXT poll if claude-swap says an account is due.
-  nudgeCollector(rows, now);
+  // Kick a collection for the NEXT poll if anything is due — either because
+  // claude-swap's schedule says so, or because an account has never been
+  // fetched at all.
+  nudgeCollector(rows, Object.keys(seq.accounts), now);
 
   const order = Array.isArray(seq.sequence) && seq.sequence.length
     ? seq.sequence.map(String)
@@ -295,5 +313,11 @@ export async function seedFirstAccount() {
 
   invalidateClaudeAccountsCache();
   const count = existsSync(seqPath) ? accountCount(await readJson(seqPath)) : 0;
+  if (count > 0) {
+    // Collect straight away. Otherwise the first thing the user sees is their
+    // account listed with "never fetched" beside it, waiting on a poll cycle
+    // for numbers that are the reason the panel exists.
+    runDetached(await cswapBin(), ["list"]);
+  }
   return count > 0 ? { state: "added", count } : { state: "nothing-to-add" };
 }
