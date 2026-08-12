@@ -761,7 +761,11 @@ function Inner() {
    * side the eye starts from.
    */
   const fitLeft = useCallback((duration = 500) => {
-    const MARGIN = 40, MAX_ZOOM = 1.6, MIN_ZOOM = 0.2;
+    // MAX_ZOOM 1: cards are drawn at their natural size, so magnifying past
+    // 1:1 only makes a small graph look coarse. FILL leaves the frame a little
+    // loose — a fit that touches the margins reads as "already too big" and
+    // gives the eye nowhere to land when the next session appears.
+    const MARGIN = 80, MAX_ZOOM = 1, MIN_ZOOM = 0.2, FILL = 0.86;
     try {
       const pane = document.querySelector(".canvas-wrap");
       const drawn = Array.from(document.querySelectorAll(".react-flow__node"))
@@ -789,8 +793,8 @@ function Inner() {
       // these rects — leave room or the last column's chips get clipped.
       const zoom = Math.max(MIN_ZOOM, Math.min(
         MAX_ZOOM,
-        (paneRect.width - MARGIN * 2) / (w + TOOL_LANE_ALLOWANCE),
-        (paneRect.height - MARGIN * 2) / h,
+        ((paneRect.width - MARGIN * 2) / (w + TOOL_LANE_ALLOWANCE)) * FILL,
+        ((paneRect.height - MARGIN * 2) / h) * FILL,
       ));
 
       rf.setViewport({
@@ -799,18 +803,21 @@ function Inner() {
         zoom,
       }, { duration });
       lastFitTimeRef.current = Date.now();
-      // setViewport is currently not moving the viewport on this canvas (see
-      // the note on fitLeft). Fall back to React Flow's own fit so behaviour
-      // is no worse than before this function existed, and so the graph is
-      // still framed once whatever is wedging the viewport is fixed.
+      // An animated setViewport runs through d3's transition, which is driven
+      // by requestAnimationFrame — so it lands late, or not at all if the tab
+      // is in the background when the fit is requested. Check afterwards and,
+      // if nothing moved, set the same viewport without animation. Not
+      // fitView: that centres, which is the one thing this function exists to
+      // avoid.
       window.setTimeout(() => {
         try {
+          const want = { x: MARGIN - minX * zoom, y: Math.max(MARGIN, (paneRect.height - h * zoom) / 2) - minY * zoom, zoom };
           const vpNow = rf.getViewport();
-          if (Math.abs(vpNow.zoom - zoom) > 0.01 || Math.abs(vpNow.x - (MARGIN - minX * zoom)) > 2) {
-            rf.fitView({ padding: 0.12, duration });
+          if (Math.abs(vpNow.zoom - zoom) > 0.01 || Math.abs(vpNow.x - want.x) > 2) {
+            rf.setViewport(want, { duration: 0 });
           }
         } catch { /* ignore */ }
-      }, 30);
+      }, duration + 60);
     } catch { /* viewport not ready */ }
   }, [rf]);
   const lastLayoutSigForFitRef = useRef("");
