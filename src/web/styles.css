@@ -2891,11 +2891,21 @@ button.tool.clickable:last-child { border-bottom: none; }
   padding: 12px 14px 11px;
   border-top: 1px solid var(--line);
 }
+/* One line: name on the left, the whole control cluster on the right. Nothing
+   follows it unless there is something to say, so the bottom margin belongs to
+   whatever comes next rather than to the head. */
 .ap-auto-head {
   display: flex;
   align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+.ap-auto-ctl {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 .ap-auto-title {
   font-size: 11px;
@@ -2909,7 +2919,6 @@ button.tool.clickable:last-child { border-bottom: none; }
    glance, the word confirms it. Same shape whether it's ours or external, so
    the eye doesn't have to relearn the corner. */
 .ap-auto-state {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2977,7 +2986,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 /* Flowing text, not a flex row — a flex container makes each child its own
    item, which split the inline <code> onto its own line mid-sentence. */
 .ap-auto-note {
-  margin: 0 0 9px;
+  margin: 9px 0 0;
   font-size: 9px;
   line-height: 1.6;
   color: var(--muted);
@@ -2995,26 +3004,22 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   white-space: nowrap;   /* "cswap auto" is one name; never break it in half */
 }
 
-/* Settings share the lanes' label-left / value-right rhythm above them, and
-   the same 30px label column, so the two blocks scan as one list. */
-.ap-auto-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 24px;
-}
-.ap-auto-key {
-  font-size: 10px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.ap-auto-row .ap-field { margin-left: auto; }
-/* Reads as ambient until it is close to tripping, at which point it is the
-   most useful number in the panel. */
+/* Current over trigger, the way a meter is written — "29% / 90%" says both
+   numbers and their relationship in the width one label used to take. The
+   slash is drawn here rather than typed into the markup so it cannot be
+   selected, read aloud, or left behind when the live number is unknown.
+   Ambient until it is close to tripping, at which point it is the most useful
+   number in the panel. */
 .ap-auto-now {
   font-size: 10px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+.ap-auto-now::after {
+  content: "/";
+  margin-left: 8px;
+  color: var(--muted);
+  opacity: 0.45;
 }
 .ap-auto-now.near { color: var(--warn); }
 /* Native select, restyled rather than replaced — it keeps keyboard, mobile and
@@ -3066,33 +3071,12 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   padding-top: 8px;
   border-top: 1px solid var(--line-soft);
 }
-/* Text-weight: running a dry run is safe and repeatable, so it should not
-   carry more visual weight than the switch buttons above it, which are not. */
-.ap-auto-dry {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  font-size: 10px;
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: var(--accent-dim);
-  flex-shrink: 0;
-}
-.ap-auto-dry:hover:not(:disabled) { text-decoration-color: var(--accent); }
-.ap-auto-dry:disabled { cursor: default; color: var(--muted); text-decoration: none; }
 .ap-auto-result {
-  margin-left: auto;
   font-size: 10px;
   line-height: 1.5;
   color: var(--muted);
-  text-align: right;
   min-width: 0;
 }
-/* The one outcome worth interrupting for. */
-.ap-auto-result.would { color: var(--warn); }
 
 /* Text-weight, because holding an account out of rotation is a preference to
    flip, not an action to fire. */

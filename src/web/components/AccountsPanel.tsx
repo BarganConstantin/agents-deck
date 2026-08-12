@@ -55,16 +55,6 @@ interface AutoStatus {
   settings: Record<string, { value: string | null; isDefault: boolean }>;
 }
 
-interface PreviewResult {
-  ok: boolean;
-  event?: string;
-  reason?: string | null;
-  detail?: string | null;
-  threshold?: number | null;
-  headroom?: Record<string, number> | null;
-  reasonText?: string;
-}
-
 const POLL_MS = 15_000;
 const THRESHOLDS = [70, 80, 85, 90, 95];
 
@@ -85,24 +75,6 @@ function ago(ms: number, nowSec: number): string {
   if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
-}
-
-/**
- * What a dry run concluded, in one phrase. claude-swap's own reason codes are
- * internal names — "below-threshold", "no-qualifying-candidate" — and its
- * `detail` is bare arithmetic like "17% < 90%", true but not an answer.
- */
-function previewText(p: PreviewResult): string {
-  if (p.event === "switch") return `would switch — ${p.detail ?? "another account"}`;
-  const why: Record<string, string> = {
-    "below-threshold":        "under threshold",
-    "no-qualifying-candidate": "no better account",
-    "all-exhausted":          "every account spent",
-    "cooldown":               "cooling down",
-    "external-engine":        "handled elsewhere",
-  };
-  const label = why[p.reason ?? ""] ?? p.reason ?? "nothing to do";
-  return p.detail ? `stays put · ${label}, ${p.detail}` : `stays put · ${label}`;
 }
 
 /** Plain-language version of claude-swap's error codes. */
@@ -135,7 +107,6 @@ interface Props { onClose: () => void }
 export default function AccountsPanel({ onClose }: Props) {
   const [data, setData] = useState<AccountsData | null>(null);
   const [auto, setAuto] = useState<AutoStatus | null>(null);
-  const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -313,29 +284,54 @@ export default function AccountsPanel({ onClose }: Props) {
           {/* ── auto-switch ── */}
           {auto?.ok && (
             <div className="ap-auto">
+              {/* Title, live number, threshold and switch on one line. The
+                  section is two facts and one control; stacked over three rows
+                  it read like a form, and the row label ("switch when") only
+                  restated the title. Left to right it now says what it is,
+                  where you are, where it trips, and whether it is armed. */}
               <div className="ap-auto-head">
                 <span className="ap-auto-title">Auto-switch</span>
-                {/* Always a control, never a read-out. An earlier version
-                    hid the toggle whenever a terminal loop was detected, on
-                    the grounds that the deck's own loop would be redundant —
-                    but a setting you cannot see is worse than a redundant
-                    one, and the toggle still decides what happens the moment
-                    that terminal loop stops. The terminal's state is shown
-                    beside it instead of replacing it. */}
-                <button
-                  type="button"
-                  className={`ap-auto-state toggle${auto.enabled ? " live" : ""}`}
-                  role="switch"
-                  aria-checked={auto.enabled}
-                  disabled={busy != null}
-                  onClick={() => post({ action: "enable", enabled: !auto.enabled }, "enable").then(() => load(true))}
-                  title={auto.enabled
-                    ? "Stop switching accounts automatically"
-                    : "Switch accounts automatically when the active one nears its limit"}
-                >
-                  <i className={auto.enabled ? "ap-pulse" : "ap-dot"} aria-hidden />
-                  {auto.enabled ? "on" : "off"}
-                </button>
+
+                <span className="ap-auto-ctl">
+                  {/* The live number belongs next to the threshold it is
+                      racing: the setting means nothing without knowing where
+                      you are. */}
+                  {activePct != null && (
+                    <span className={`ap-auto-now${nearTrigger ? " near" : ""}`}>{Math.round(activePct)}%</span>
+                  )}
+                  <span className="ap-field" title="Switch once the active account passes this much of its limit">
+                    <select
+                      aria-label="Switch threshold"
+                      value={threshold}
+                      disabled={busy != null}
+                      onChange={e => post({ action: "setting", key: "autoswitch.threshold", value: e.target.value }, "threshold").then(() => load(true))}
+                    >
+                      {THRESHOLDS.map(t => <option key={t} value={t}>{t}%</option>)}
+                    </select>
+                  </span>
+
+                  {/* Always a control, never a read-out. An earlier version
+                      hid the toggle whenever a terminal loop was detected, on
+                      the grounds that the deck's own loop would be redundant —
+                      but a setting you cannot see is worse than a redundant
+                      one, and the toggle still decides what happens the moment
+                      that terminal loop stops. The terminal's state is shown
+                      beside it instead of replacing it. */}
+                  <button
+                    type="button"
+                    className={`ap-auto-state toggle${auto.enabled ? " live" : ""}`}
+                    role="switch"
+                    aria-checked={auto.enabled}
+                    disabled={busy != null}
+                    onClick={() => post({ action: "enable", enabled: !auto.enabled }, "enable").then(() => load(true))}
+                    title={auto.enabled
+                      ? "Stop switching accounts automatically"
+                      : "Switch accounts automatically when the active one nears its limit"}
+                  >
+                    <i className={auto.enabled ? "ap-pulse" : "ap-dot"} aria-hidden />
+                    {auto.enabled ? "on" : "off"}
+                  </button>
+                </span>
               </div>
 
               {/* Which engine is actually switching right now. Two would not
@@ -351,66 +347,15 @@ export default function AccountsPanel({ onClose }: Props) {
                 </p>
               )}
 
-              {/* Same label-left / value-right rhythm as the usage lanes above,
-                  so the settings read as part of the panel rather than a form
-                  bolted to the bottom of it. An earlier pass wrote this as a
-                  prose sentence; at this width it wrapped and left the full
-                  stop stranded on its own line. */}
-              <div className="ap-auto-row">
-                <span className="ap-auto-key">switch when</span>
-                {/* The live number belongs next to the threshold it is racing:
-                    the setting means nothing without knowing where you are. */}
-                {activePct != null && (
-                  <span className={`ap-auto-now${nearTrigger ? " near" : ""}`}>now {Math.round(activePct)}%</span>
-                )}
-                <span className="ap-field">
-                  <select
-                    aria-label="Switch threshold"
-                    value={threshold}
-                    disabled={busy != null}
-                    onChange={e => post({ action: "setting", key: "autoswitch.threshold", value: e.target.value }, "threshold").then(() => load(true))}
-                  >
-                    {THRESHOLDS.map(t => <option key={t} value={t}>{t}%</option>)}
-                  </select>
-                </span>
-              </div>
-
-              <div className="ap-auto-row">
-                <span className="ap-auto-key">switch to</span>
-                <span className="ap-field">
-                  <select
-                    aria-label="Target account strategy"
-                    value={auto.settings["autoswitch.strategy"]?.value ?? "best"}
-                    disabled={busy != null}
-                    onChange={e => post({ action: "setting", key: "autoswitch.strategy", value: e.target.value }, "strategy").then(() => load(true))}
-                  >
-                    {/* claude-swap calls these "best" and "consume-first",
-                        which say nothing outside its own source. */}
-                    <option value="best">most quota left</option>
-                    <option value="consume-first">soonest reset</option>
-                  </select>
-                </span>
-              </div>
-
-              <div className="ap-auto-foot">
-                <button
-                  type="button"
-                  className="ap-auto-dry"
-                  disabled={busy != null}
-                  onClick={async () => setPreview(await post({ action: "preview" }, "preview"))}
-                  title="Evaluate a switch without performing one"
-                >{busy === "preview" ? "checking…" : "dry run"}</button>
-
-                {preview?.ok ? (
-                  <span className={`ap-auto-result${preview.event === "switch" ? " would" : ""}`}>
-                    {previewText(preview)}
-                  </span>
-                ) : auto.lastTick ? (
-                  <span className="ap-auto-result">
-                    checked {ago(auto.lastTick.at, nowSec)}
-                  </span>
-                ) : null}
-              </div>
+              {/* The one thing worth saying after the settings: that the loop
+                  is alive. Only shown once a tick has actually happened —
+                  before that there is nothing to report and an empty rule
+                  under the settings reads like something failed to load. */}
+              {auto.lastTick && (
+                <div className="ap-auto-foot">
+                  <span className="ap-auto-result">checked {ago(auto.lastTick.at, nowSec)}</span>
+                </div>
+              )}
             </div>
           )}
 
