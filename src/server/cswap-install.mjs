@@ -7,9 +7,17 @@
 // caller prints what this returns, and AGENTS_DECK_NO_INSTALL=1 turns it off
 // entirely. It is always best-effort — the deck's core function does not
 // depend on it, so a failure is reported and then ignored.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 const INSTALL_TIMEOUT_MS = 180_000; // uv resolves + builds a Python env
+
+// Same throttle the ccusage installer uses: check once a day, tracked by a
+// marker file's mtime so the interval survives restarts.
+const UPDATE_CHECK_MS = 24 * 3600_000;
+const MARKER = join(homedir(), ".agents-deck", ".cswap-update-check");
 
 function run(cmd, args, timeout = 10_000) {
   return new Promise((resolve) => {
@@ -51,11 +59,71 @@ async function installCswap() {
   return { ok: false, reason: "no_installer" };
 }
 
+function updateCheckDue() {
+  try { return Date.now() - statSync(MARKER).mtimeMs > UPDATE_CHECK_MS; }
+  catch { return true; }   // no marker yet
+}
+function touchMarker() {
+  try {
+    mkdirSync(join(homedir(), ".agents-deck"), { recursive: true });
+    writeFileSync(MARKER, String(Date.now()));
+  } catch { /* ignore */ }
+}
+
+/** Newest claude-swap on PyPI, or null if the check fails. */
+async function latestOnPypi() {
+  try {
+    const res = await fetch("https://pypi.org/pypi/claude-swap/json", {
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!res.ok) return null;
+    const v = (await res.json())?.info?.version;
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Numeric-segment version compare; returns true when `a` is older than `b`. */
+function isOlder(a, b) {
+  const seg = (v) => v.split(/[.\-+]/).map(n => parseInt(n, 10)).map(n => Number.isNaN(n) ? 0 : n);
+  const x = seg(a), y = seg(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d !== 0) return d < 0;
+  }
+  return false;
+}
+
 /**
- * Make sure cswap exists, installing it if it does not.
+ * Upgrade claude-swap in the background when a newer release exists.
+ *
+ * Detached and unawaited: an upgrade resolves a Python environment and can
+ * take tens of seconds, which is not a thing to put in front of the server
+ * starting. The running copy keeps working; the new one is there next launch.
+ */
+function upgradeInBackground(via) {
+  const args = via === "uv" ? ["tool", "upgrade", "claude-swap"] : ["upgrade", "claude-swap"];
+  try {
+    const child = spawn(via, args, { stdio: "ignore", shell: false, windowsHide: true, detached: false });
+    child.on("error", () => {});
+    child.unref?.();
+  } catch { /* best-effort */ }
+}
+
+/** Whichever Python tool installer is available, or null. */
+async function findInstaller() {
+  for (const cmd of ["uv", "pipx"]) {
+    if ((await run(cmd, ["--version"], 5_000)).ok) return cmd;
+  }
+  return null;
+}
+
+/**
+ * Make sure cswap exists and is reasonably current, installing it if missing.
  *
  * Returns a small status the CLI prints verbatim:
- *   { state: "present" | "installed" | "skipped" | "unavailable", ... }
+ *   { state: "present" | "installed" | "upgrading" | "skipped" | "unavailable", ... }
  */
 export async function ensureCswap() {
   if (process.env.AGENTS_DECK_NO_INSTALL === "1") {
@@ -64,7 +132,21 @@ export async function ensureCswap() {
   }
 
   const existing = await cswapVersion();
-  if (existing) return { state: "present", version: existing };
+  if (existing) {
+    // Installed — the only question left is whether it's stale. One PyPI
+    // request a day, and the upgrade itself never blocks startup.
+    if (!updateCheckDue()) return { state: "present", version: existing };
+    touchMarker();
+    const latest = await latestOnPypi();
+    if (latest && existing !== "installed" && isOlder(existing, latest)) {
+      const via = await findInstaller();
+      if (via) {
+        upgradeInBackground(via);
+        return { state: "upgrading", version: existing, latest, via };
+      }
+    }
+    return { state: "present", version: existing };
+  }
 
   const result = await installCswap();
   if (!result.ok) return { state: "unavailable", ...result };

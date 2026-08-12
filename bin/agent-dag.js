@@ -159,6 +159,8 @@ if (wantCodex) {
     csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version} (accounts panel enabled)${C.reset}`);
   } else if (cs.state === "installed") {
     csp.stop(true, `claude-swap      ${C.dim}→ installed v${cs.version} via ${cs.via}${C.reset}`);
+  } else if (cs.state === "upgrading") {
+    csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version}, upgrading to v${cs.latest} in background${C.reset}`);
   } else if (cs.state === "skipped") {
     csp.stop(true, `claude-swap      ${C.dim}not installed (AGENTS_DECK_NO_INSTALL=1)${C.reset}`);
   } else {
@@ -169,6 +171,16 @@ if (wantCodex) {
         : `install failed via ${cs.via}`;
     csp.stop(false, `claude-swap      ${C.dim}${how}${C.reset}`);
   }
+}
+
+// ccusage backs the usage-history modal. Primed here rather than on first
+// open so a cold machine pays the install while the deck is still booting.
+if (process.env.AGENTS_DECK_NO_INSTALL !== "1") {
+  const { primeCcusage } = await import(pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href);
+  const cu = primeCcusage();
+  if (cu.state === "present")         process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}→ v${cu.version}${C.reset}\n`);
+  else if (cu.state === "updating")   process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}→ v${cu.version}, checking for update${C.reset}\n`);
+  else if (cu.state === "installing") process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}installing in background${C.reset}\n`);
 }
 
 sp = spinner("starting server…");
