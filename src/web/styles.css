@@ -2735,3 +2735,136 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-model-cost { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
 :root[data-theme="light"] .uh-backdrop { background: rgba(15,23,42,0.30); }
+
+/* ---------------- accounts panel (claude-swap) ---------------- */
+/* Sits left of the usage panel so both can be open — comparing accounts is
+   usually something you do while watching your current spend. */
+.accounts-panel {
+  position: fixed;
+  top: 60px;
+  right: 660px;
+  width: 300px;
+  max-height: calc(100vh - 76px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  z-index: 20;
+  padding: 0 0 10px;
+}
+/* It needs 660 + 300 = 960px of right-hand room to sit beside the usage
+   panel. Below that it moves to the empty left side rather than stacking on
+   top of Usage — the two are meant to be read together. */
+@media (max-width: 1000px) {
+  .accounts-panel { right: auto; left: 12px; }
+}
+
+.ap-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ap-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.ap-header-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.ap-refresh { padding: 1px 6px; font-size: 11px; }
+
+.ap-account {
+  padding: 9px 14px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+/* The active account is the one answer the panel exists to give, so it gets a
+   marker readable without parsing any text. */
+.ap-account.active { border-left: 2px solid var(--accent); padding-left: 12px; }
+.ap-account.disabled { opacity: 0.5; }
+
+.ap-account-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ap-num {
+  font-size: 10px;
+  color: var(--muted-dim);
+  min-width: 9px;
+}
+.ap-alias {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.ap-email {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.ap-badge-active { font-size: 10px; color: var(--accent); flex-shrink: 0; }
+.ap-switch { padding: 1px 7px; font-size: 10px; flex-shrink: 0; }
+
+.ap-lane {
+  display: grid;
+  grid-template-columns: 30px 1fr 32px;
+  grid-template-areas: "label track pct" ".  reset reset";
+  align-items: center;
+  gap: 2px 6px;
+  margin-bottom: 3px;
+}
+.ap-lane-label { grid-area: label; font-size: 10px; color: var(--muted-dim); }
+.ap-lane-track {
+  grid-area: track;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.ap-lane-fill { height: 100%; border-radius: 2px; }
+.ap-lane-pct { grid-area: pct; font-size: 10px; text-align: right; }
+.ap-lane-reset { grid-area: reset; font-size: 9px; color: var(--muted-dim); }
+.ap-lane-reset:empty { display: none; }
+
+.ap-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 9px;
+  color: var(--muted-dim);
+}
+.ap-err { color: var(--warn); }
+.ap-stale { color: var(--warn); }
+
+.ap-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ap-hint { font-size: 10px; color: var(--muted-dim); }
+.ap-failure {
+  margin: 8px 14px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  color: var(--err);
+  font-size: 10px;
+  word-break: break-word;
+}
+.ap-footnote {
+  padding: 8px 14px 0;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--muted-dim);
+}

@@ -149,6 +149,28 @@ if (wantCodex) {
   process.stdout.write(`  ${C.dim}Codex watch skipped (no ~/.codex/, or --no-codex)${C.reset}\n`);
 }
 
+// claude-swap backs the multi-account panel. Installing it touches the user's
+// global tool path, so unlike the ccusage install this one announces itself.
+{
+  const { ensureCswap } = await import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-install.mjs")).href);
+  const csp = spinner("checking claude-swap…");
+  const cs = await ensureCswap();
+  if (cs.state === "present") {
+    csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version} (accounts panel enabled)${C.reset}`);
+  } else if (cs.state === "installed") {
+    csp.stop(true, `claude-swap      ${C.dim}→ installed v${cs.version} via ${cs.via}${C.reset}`);
+  } else if (cs.state === "skipped") {
+    csp.stop(true, `claude-swap      ${C.dim}not installed (AGENTS_DECK_NO_INSTALL=1)${C.reset}`);
+  } else {
+    const how = cs.reason === "no_installer"
+      ? "needs uv or pipx — see https://github.com/realiti4/claude-swap"
+      : cs.reason === "not_on_path"
+        ? `installed via ${cs.via} but not on PATH — add ~/.local/bin`
+        : `install failed via ${cs.via}`;
+    csp.stop(false, `claude-swap      ${C.dim}${how}${C.reset}`);
+  }
+}
+
 sp = spinner("starting server…");
 const server = await startServer({ port, persist, workspace, codex: wantCodex }).catch(err => {
   sp.stop(false, `server failed: ${err.message}`);

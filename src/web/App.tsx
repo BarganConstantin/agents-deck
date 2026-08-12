@@ -20,6 +20,7 @@ import SessionSummary from "./components/SessionSummary";
 import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
+import AccountsPanel from "./components/AccountsPanel";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -60,6 +61,7 @@ const SUMMARY_DISMISSED_KEY = "agent-dag.summariesDismissed";
 const SESSION_LIST_OPEN_KEY = "agent-dag.sessionListOpen";
 const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 const USAGE_PANEL_OPEN_KEY = "agent-dag.usagePanelOpen";
+const ACCOUNTS_PANEL_OPEN_KEY = "agent-dag.accountsPanelOpen";
 
 function loadSessionListOpen(): boolean {
   if (typeof window === "undefined") return true;
@@ -474,6 +476,14 @@ function Inner() {
   /** Usage panel visibility — persisted across refresh. */
   const [usagePanelOpen, setUsagePanelOpen] = useState<boolean>(loadUsagePanelOpen);
   useEffect(() => { saveUsagePanelOpen(usagePanelOpen); }, [usagePanelOpen]);
+  // Closed by default: most people run one account, and an empty panel that
+  // reopens on every launch is worse than a button.
+  const [accountsPanelOpen, setAccountsPanelOpen] = useState<boolean>(() => {
+    try { return window.localStorage.getItem(ACCOUNTS_PANEL_OPEN_KEY) === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(ACCOUNTS_PANEL_OPEN_KEY, accountsPanelOpen ? "1" : "0"); } catch {}
+  }, [accountsPanelOpen]);
   // ccusage history modal — transient (not persisted), opened from the toolbar.
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** Bumped on each group-drag move so snapshotToFlow recomputes immediately
@@ -983,6 +993,7 @@ function Inner() {
       if (e.key === "l" || e.key === "L") setSessionListOpen(o => !o);
       if (e.key === "h" || e.key === "H") setUsageHistoryOpen(o => !o);
       if (e.key === "u" || e.key === "U") setUsagePanelOpen(o => !o);
+      if (e.key === "a" || e.key === "A") setAccountsPanelOpen(o => !o);
       if (e.key === "j" || e.key === "J") stepAgent(1);
       if (e.key === "k" || e.key === "K") stepAgent(-1);
       if (e.key === "t" || e.key === "T") setTheme(t => (t === "dark" ? "light" : "dark"));
@@ -1126,6 +1137,17 @@ function Inner() {
             aria-label="Toggle usage panel"
           >$</button>
           <button
+            className={`btn icon-btn ${accountsPanelOpen ? "primary" : ""}`}
+            onClick={() => setAccountsPanelOpen(o => !o)}
+            title={`${accountsPanelOpen ? "Hide" : "Show"} accounts (A)`}
+            aria-label="Toggle accounts panel"
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="7" cy="4.6" r="2.4" />
+              <path d="M2.4 12c0-2.3 2.1-3.7 4.6-3.7s4.6 1.4 4.6 3.7" />
+            </svg>
+          </button>
+          <button
             className={`btn icon-btn ${sessionListOpen ? "primary" : ""}`}
             onClick={() => setSessionListOpen(o => !o)}
             title={`${sessionListOpen ? "Hide" : "Show"} session list (L)`}
@@ -1169,6 +1191,10 @@ function Inner() {
           now={now}
           onClose={() => setUsagePanelOpen(false)}
         />
+      )}
+
+      {accountsPanelOpen && (
+        <AccountsPanel onClose={() => setAccountsPanelOpen(false)} />
       )}
 
       {sessionListOpen && (
