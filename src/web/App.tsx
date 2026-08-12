@@ -642,6 +642,14 @@ function Inner() {
    *  (reads the freshly-pinned positions) rather than waiting for the 250ms
    *  tick. A plain counter — value is irrelevant, only the change matters. */
   const [dragTick, setDragTick] = useState(0);
+  /**
+   * Live positions of whatever is being dragged, applied over the rendered
+   * array. Held in a ref and paired with a counter: the values change on every
+   * pointer move, and putting them in state would deep-compare a Map on each
+   * one for no benefit.
+   */
+  const dragPatchRef = useRef<Map<string, { x: number; y: number }> | null>(null);
+  const [dragMoveTick, setDragMoveTick] = useState(0);
   const [live, setLive] = useState(false);
   const [paused, setPaused] = useState(false);
   const queueRef = useRef<HookEnvelope[]>([]);
@@ -1226,35 +1234,36 @@ function Inner() {
   }, [nodes, now]);
 
   /**
-   * Hand React Flow the same array for the length of a single-node drag.
+   * The array React Flow renders, with the in-flight drag applied on top.
    *
-   * React Flow is given `nodes` with no onNodesChange, so it re-applies the
-   * whole prop whenever the array identity changes — overwriting the position
-   * its own drag logic just set. groupNodes is memoised on `now`, which ticks
-   * every 250ms, so a new array was produced four times a second whether or
-   * not anything had changed, and the node under the cursor was pushed back to
-   * whatever the array said four times a second.
+   * React Flow is given `nodes` without `onNodesChange`. That makes it fully
+   * controlled: it does not move nodes itself, it reports the position changes
+   * it would make and expects them to be applied. Nothing applied them, so the
+   * only thing that has ever moved a node here is this array being rebuilt —
+   * and that happens on the clock tick, four times a second.
    *
-   * That is why a slow drag looked fine and a fast one did not: the error is
-   * however far the cursor travelled since the last rebuild, so it scales with
-   * speed. The node was effectively moving at 4Hz.
+   * Hence the shape of the bug: a slow drag looked fine because four updates a
+   * second is enough to look continuous, and a fast one visibly stepped and
+   * trailed, because the gap between updates is however far the cursor got in
+   * 250ms.
    *
-   * Holding the identity still lets React Flow's store own the position for the
-   * gesture, which it updates every frame. Freezing `nodes` alone was tried and
-   * made it worse — groupNodes still changed, so the array still changed, and
-   * the position it reset to was now the one from before the drag started.
-   *
-   * Session drags are excluded: they move their members through this array
-   * rather than through React Flow, so for those it has to keep being rebuilt.
+   * So the drag is applied here instead, on every pointer move: the base array
+   * is left to rebuild at its own pace, and the positions of the nodes being
+   * dragged are patched over it. A patch is one shallow copy per node, which
+   * is nothing next to rebuilding the graph from the event log — and it is the
+   * whole reason the previous two attempts failed. Both tried to make the
+   * rebuild happen less often, when the rebuild was the only thing moving the
+   * node; the node then did not move at all until the mouse came up.
    */
-  const lastAllNodesRef = useRef<Node[] | null>(null);
-  const freezeNodes = dragging && groupDragRef.current == null;
   const allNodes = useMemo(() => {
-    if (freezeNodes && lastAllNodesRef.current) return lastAllNodesRef.current;
-    const out = [...groupNodes, ...nodes];
-    lastAllNodesRef.current = out;
-    return out;
-  }, [groupNodes, nodes, freezeNodes]);
+    const base = [...groupNodes, ...nodes];
+    const patch = dragPatchRef.current;
+    if (!patch || patch.size === 0) return base;
+    return base.map(nd => {
+      const p = patch.get(nd.id);
+      return p ? { ...nd, position: p } : nd;
+    });
+  }, [groupNodes, nodes, dragMoveTick]);
 
 
   // Set of agent ids that match the current /-search query, or null when
@@ -1728,6 +1737,7 @@ function Inner() {
             // than enumerating which nodes a gesture will end up moving.
             endBubble();
             draggingRef.current = true;
+            dragPatchRef.current = new Map();
             setDragging(true);
             markInteract();
             disableAutoFit();
@@ -1762,23 +1772,30 @@ function Inner() {
                 pinnedRef.current.set(id, p);
                 positionsRef.current.set(id, p);
               }
-              // The nonce forces an immediate recompute so the cards follow
-              // this frame. Writing React Flow's store directly instead was
-              // tried and reverted along with the render freeze — same reason:
-              // two owners for one position, and the array wins the next time
-              // it is rebuilt.
-              setDragTick(t => t + 1);
+              // Patch the members and the box itself, rather than rebuilding
+              // the whole graph on every pointer move as this used to.
+              const patch = dragPatchRef.current;
+              if (patch) {
+                for (const [id, p0] of g.members) patch.set(id, { x: p0.x + dx, y: p0.y + dy });
+                patch.set(n.id, { x: n.position.x, y: n.position.y });
+              }
+              setDragMoveTick(t => t + 1);
               return;
             }
             // Live-pin during drag so an incoming event re-render doesn't
             // snap the node back to its dagre slot mid-motion.
             pinnedRef.current.set(n.id, { x: n.position.x, y: n.position.y });
             positionsRef.current.set(n.id, { x: n.position.x, y: n.position.y });
+            // And render it now, rather than whenever the next rebuild happens.
+            dragPatchRef.current?.set(n.id, { x: n.position.x, y: n.position.y });
+            setDragMoveTick(t => t + 1);
           }}
           onNodeDragStop={(_, n) => {
             markInteract();
             draggingRef.current = false;
+            dragPatchRef.current = null;
             setDragging(false);
+            setDragTick(t => t + 1);   // one rebuild, from the refs, at the end
             if (n.type === "sessionGroup") {
               const g = groupDragRef.current;
               if (g) {
