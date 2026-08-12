@@ -185,6 +185,17 @@ export default function AccountsPanel({ onClose }: Props) {
     return () => window.clearInterval(t);
   }, []);
 
+  // How close the active account is to tripping the rule. Both numbers are
+  // already on screen — the binding lane is whichever is highest, same as the
+  // one claude-swap measures against — so this costs nothing to show and
+  // answers the question the threshold setting otherwise leaves hanging.
+  const threshold = auto?.settings["autoswitch.threshold"]?.value ?? "90";
+  const activeAcct = data?.accounts?.find(a => a.active);
+  const activePct = activeAcct?.lanes.length
+    ? Math.max(...activeAcct.lanes.map(l => l.pct))
+    : null;
+  const nearTrigger = activePct != null && activePct >= Number(threshold) - 15;
+
   const doSwitch = async (num: number) => {
     setSwitching(num);
     setFailure(null);
@@ -282,16 +293,21 @@ export default function AccountsPanel({ onClose }: Props) {
               <div className="ap-auto-head">
                 <span className="ap-auto-title">Auto-switch</span>
                 {auto.external ? (
-                  // Two engines would not corrupt anything, but they would
+                  // Two engines would not corrupt anything — claude-swap
+                  // serializes decisions under its state lock — but they would
                   // double the tick rate against the request budget and leave
-                  // no single place explaining why an account moved.
-                  <span className="ap-auto-state external" title="A cswap auto loop is already running in your terminal — the deck stays out of its way">
-                    <i className="ap-dot" aria-hidden /> external
+                  // no single place explaining why an account moved. The deck
+                  // reports the running loop instead of competing with it.
+                  <span
+                    className="ap-auto-state live"
+                    title="A cswap auto loop is running in your terminal. Stop it there to control auto-switching from here."
+                  >
+                    <i className="ap-pulse" aria-hidden /> live
                   </span>
                 ) : (
                   <button
                     type="button"
-                    className={`ap-auto-state toggle${auto.enabled ? " on" : ""}`}
+                    className={`ap-auto-state toggle${auto.enabled ? " live" : ""}`}
                     role="switch"
                     aria-checked={auto.enabled}
                     disabled={busy != null}
@@ -300,27 +316,44 @@ export default function AccountsPanel({ onClose }: Props) {
                       ? "Stop switching accounts automatically"
                       : "Switch accounts automatically when the active one nears its limit"}
                   >
-                    <i className="ap-dot" aria-hidden /> {auto.enabled ? "on" : "off"}
+                    <i className={auto.enabled ? "ap-pulse" : "ap-dot"} aria-hidden />
+                    {auto.enabled ? "live" : "off"}
                   </button>
                 )}
               </div>
 
-              {/* Written as a sentence rather than a settings grid: the rule is
-                  short enough to state, and two labelled dropdowns with no
-                  sentence around them never said what they applied to. */}
-              <p className="ap-auto-rule">
-                Switch at{" "}
+              {/* Said outright, not just in a tooltip: the missing toggle is
+                  otherwise unexplained, and the reason is actionable. */}
+              {auto.external && (
+                <p className="ap-auto-note">Started from your terminal — stop it there to control it here.</p>
+              )}
+
+              {/* Same label-left / value-right rhythm as the usage lanes above,
+                  so the settings read as part of the panel rather than a form
+                  bolted to the bottom of it. An earlier pass wrote this as a
+                  prose sentence; at this width it wrapped and left the full
+                  stop stranded on its own line. */}
+              <div className="ap-auto-row">
+                <span className="ap-auto-key">switch when</span>
+                {/* The live number belongs next to the threshold it is racing:
+                    the setting means nothing without knowing where you are. */}
+                {activePct != null && (
+                  <span className={`ap-auto-now${nearTrigger ? " near" : ""}`}>now {Math.round(activePct)}%</span>
+                )}
                 <span className="ap-field">
                   <select
                     aria-label="Switch threshold"
-                    value={auto.settings["autoswitch.threshold"]?.value ?? "90"}
+                    value={threshold}
                     disabled={busy != null}
                     onChange={e => post({ action: "setting", key: "autoswitch.threshold", value: e.target.value }, "threshold").then(() => load(true))}
                   >
                     {THRESHOLDS.map(t => <option key={t} value={t}>{t}%</option>)}
                   </select>
-                </span>{" "}
-                to the account with{" "}
+                </span>
+              </div>
+
+              <div className="ap-auto-row">
+                <span className="ap-auto-key">switch to</span>
                 <span className="ap-field">
                   <select
                     aria-label="Target account strategy"
@@ -328,13 +361,13 @@ export default function AccountsPanel({ onClose }: Props) {
                     disabled={busy != null}
                     onChange={e => post({ action: "setting", key: "autoswitch.strategy", value: e.target.value }, "strategy").then(() => load(true))}
                   >
-                    {/* claude-swap's own names for these are "best" and
-                        "consume-first", which say nothing on their own. */}
-                    <option value="best">the most quota left</option>
-                    <option value="consume-first">the soonest reset</option>
+                    {/* claude-swap calls these "best" and "consume-first",
+                        which say nothing outside its own source. */}
+                    <option value="best">most quota left</option>
+                    <option value="consume-first">soonest reset</option>
                   </select>
-                </span>.
-              </p>
+                </span>
+              </div>
 
               <div className="ap-auto-foot">
                 <button

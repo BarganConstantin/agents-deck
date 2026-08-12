@@ -2910,29 +2910,77 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 button.ap-auto-state { cursor: pointer; transition: border-color 120ms, color 120ms; }
 button.ap-auto-state:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+button.ap-auto-state:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
-.ap-auto-state.on {
+.ap-auto-state.live {
   border-color: var(--accent-dim);
   color: var(--accent);
 }
-.ap-auto-state.on .ap-dot {
-  opacity: 1;
-  /* Slow: this marks a background process that acts on its own, and a brisk
-     pulse would read as something needing attention. */
-  animation: ap-breathe 2.4s ease-in-out infinite;
+
+/* A ring leaving the dot on a slow interval. Emission reads as a process
+   still running, where a fading dot only reads as a styled dot — and unlike a
+   spinner it says "acting periodically", which is what a poll loop does. The
+   long pause between pings is the point: this runs about once a minute, and
+   continuous motion would claim more urgency than the thing deserves. */
+.ap-pulse {
+  position: relative;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
 }
-@keyframes ap-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.ap-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  /* Ease-out cubic, not expo. An exponential curve puts the whole expansion
+     in the first fifth of the cycle, so the ring hits full scale at zero
+     opacity almost immediately and the ping reads as a flicker. This keeps
+     the travel legible for about a second, then rests. */
+  animation: ap-ping 2.6s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+@keyframes ap-ping {
+  0%        { transform: scale(1);   opacity: 0.7; }
+  50%       { transform: scale(3.2); opacity: 0; }
+  100%      { transform: scale(3.2); opacity: 0; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .ap-auto-state.on .ap-dot { animation: none; }
+  .ap-pulse::after { animation: none; opacity: 0.35; transform: scale(2.2); }
 }
 
-/* The rule is a sentence with two editable words in it. */
-.ap-auto-rule {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.9;
+/* Why the toggle is missing, in the panel rather than only in a tooltip. */
+.ap-auto-note {
+  margin: 0 0 9px;
+  font-size: 9px;
+  line-height: 1.5;
   color: var(--muted);
 }
+
+/* Settings share the lanes' label-left / value-right rhythm above them, and
+   the same 30px label column, so the two blocks scan as one list. */
+.ap-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+.ap-auto-key {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ap-auto-row .ap-field { margin-left: auto; }
+/* Reads as ambient until it is close to tripping, at which point it is the
+   most useful number in the panel. */
+.ap-auto-now {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ap-auto-now.near { color: var(--warn); }
 /* Native select, restyled rather than replaced — it keeps keyboard, mobile and
    screen-reader behaviour that a div-based menu would have to rebuild badly.
    The wrapper draws the chevron so the control can size to its own text. */
@@ -2961,10 +3009,11 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 5px;
-  padding: 1px 18px 1px 6px;
+  padding: 2px 19px 2px 7px;
   font: inherit;
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.5;
+  text-align: right;
   cursor: pointer;
   transition: border-color 120ms, color 120ms;
 }
@@ -2977,7 +3026,9 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-top: 9px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
 }
 /* Text-weight: running a dry run is safe and repeatable, so it should not
    carry more visual weight than the switch buttons above it, which are not. */
@@ -2997,9 +3048,11 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-auto-dry:hover:not(:disabled) { text-decoration-color: var(--accent); }
 .ap-auto-dry:disabled { cursor: default; color: var(--muted); text-decoration: none; }
 .ap-auto-result {
+  margin-left: auto;
   font-size: 10px;
   line-height: 1.5;
   color: var(--muted);
+  text-align: right;
   min-width: 0;
 }
 /* The one outcome worth interrupting for. */

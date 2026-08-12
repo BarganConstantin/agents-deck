@@ -1115,6 +1115,24 @@ async function handleCswapAutoAction(req, res) {
   send(res, result.ok ? 200 : 400, result);
 }
 
+async function handleSoundHook(req, res) {
+  const { soundHookStatus } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/sound-hook.mjs")).href
+  );
+  send(res, 200, await soundHookStatus());
+}
+
+async function handleSoundHookSet(req, res) {
+  const { setSoundHook } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/sound-hook.mjs")).href
+  );
+  const body = await readBody(req).catch(() => null);
+  let parsed = null;
+  try { parsed = JSON.parse(body ?? ""); } catch { /* handled below */ }
+  if (!parsed || typeof parsed !== "object") return send(res, 400, { ok: false, reason: "bad_request" });
+  send(res, 200, await setSoundHook(parsed.enabled === true));
+}
+
 function handleHealth(_req, res) {
   send(res, 200, {
     ok: true,
@@ -1197,6 +1215,8 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/ccusage")     return guard(handleCcusage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/claude-accounts") return guard(handleClaudeAccounts(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/claude-accounts/switch") return guard(handleClaudeAccountSwitch(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/sound-hook") return guard(handleSoundHook(req, res), res);
+    if (req.method === "POST" && url.pathname === "/api/sound-hook") return guard(handleSoundHookSet(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/cswap-auto")  return guard(handleCswapAuto(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/cswap-auto")  return guard(handleCswapAutoAction(req, res), res);
 

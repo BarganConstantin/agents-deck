@@ -19,10 +19,29 @@ export interface ModelRates {
   cacheWrite: number;  // $/Mtok — 5-minute writes
 }
 
+// Sonnet 5 launched with introductory pricing that ends 2026-08-31. Computed
+// rather than hardcoded so the number is right on both sides of that date —
+// a pinned intro rate silently under-reports every session from September on.
+const SONNET_5_INTRO_ENDS = Date.UTC(2026, 8, 1);  // 2026-09-01
+function sonnet5Rates(): ModelRates {
+  return Date.now() < SONNET_5_INTRO_ENDS
+    ? { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
+    : { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+}
+
 const RATES: Array<{ match: RegExp; rates: ModelRates }> = [
   // Fable 5 / Mythos 5 — $10 / $50
   { match: /^claude[-_](fable|mythos)[-_]5\b/i,
     rates: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
+
+  // Opus 5 — $5 / $25. Must precede the Opus 4.x rows: "opus-5" shares no
+  // prefix with them, but keeping the generations in order stops the next
+  // person from inserting a looser pattern above it.
+  { match: /^claude[-_]opus[-_]5\b/i,
+    rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+
+  // Sonnet 5 — $3 / $15, or $2 / $10 until 2026-08-31 (see above)
+  { match: /^claude[-_]sonnet[-_]5\b/i, rates: sonnet5Rates() },
 
   // Opus 4.5 - 4.8 — $5 / $25 (the "new" Opus tier introduced with 4.5)
   { match: /^claude[-_]opus[-_]4[-_.](?:5|6|7|8)\b/i,
@@ -49,36 +68,87 @@ const RATES: Array<{ match: RegExp; rates: ModelRates }> = [
     rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
 
   // ── OpenAI / Codex family ────────────────────────────────────────────────
-  // Rates sourced 2026-06-17 from platform.openai.com/docs/pricing.
-  // OpenAI billing is READ-DISCOUNT-ONLY: cached input tokens are billed at
-  // a reduced cached-input rate; there is NO cache-write charge (unlike
-  // Anthropic). cacheWrite is therefore 0 for every row below.
-  // See costForUsage() for the Codex-specific cost formula — input_tokens
-  // from OpenAI INCLUDES cached tokens, so we must not double-bill them.
+  // Rates verified 2026-08-12 against developers.openai.com/api/docs/pricing,
+  // models.dev, and the LiteLLM catalog.
+  //
+  // Cached input is a DISCOUNT, not an addition: OpenAI's input_tokens already
+  // includes the cached portion, so costForUsage subtracts it before applying
+  // the full input rate. cacheWrite is 0 for every family except gpt-5.6,
+  // which is the first to publish a separate cache-write price.
+  //
+  // Order matters — the first match wins, so each family's variants precede
+  // its bare alias.
 
-  // gpt-5.3-codex — $1.75 / $14  (cached $0.175)
-  { match: /^gpt[-_]5[-_.]3[-_.]codex/i,
-    rates: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
+  // gpt-5.6-cyber — $12.50 / $75  (cached $1.25).   400K context.
+  { match: /^gpt[-_]5[-_.]6[-_]cyber/i,
+    rates: { input: 12.50, output: 75, cacheRead: 1.25, cacheWrite: 0 } },
 
-  // codex-mini-latest — $1.50 / $6  (cached $0.375)
-  { match: /^codex[-_]mini/i,
-    rates: { input: 1.50, output: 6, cacheRead: 0.375, cacheWrite: 0 } },
+  // gpt-5.6-luna — $0.20 / $1.20  (cached $0.02, cache write $0.25)
+  { match: /^gpt[-_]5[-_.]6[-_]luna/i,
+    rates: { input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25 } },
+
+  // gpt-5.6-terra — $2 / $12  (cached $0.20, cache write $2.50)
+  { match: /^gpt[-_]5[-_.]6[-_]terra/i,
+    rates: { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50 } },
+
+  // gpt-5.6 / gpt-5.6-sol — $5 / $30  (cached $0.50, cache write $6.25).
+  // Bare `gpt-5.6` is an alias for sol, so one row covers both.
+  { match: /^gpt[-_]5[-_.]6(?:[-_]sol)?\b/i,
+    rates: { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 6.25 } },
+
+  // gpt-5.5-pro — $30 / $180  (no cached rate published)
+  { match: /^gpt[-_]5[-_.]5[-_]pro/i,
+    rates: { input: 30, output: 180, cacheRead: 30, cacheWrite: 0 } },
 
   // gpt-5.5 — $5 / $30  (cached $0.50)
   { match: /^gpt[-_]5[-_.]5\b/i,
     rates: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } },
 
-  // gpt-5.4-mini — $0.75 / $4.50  (cached $0.075)  ← must come before plain 5.4
-  { match: /^gpt[-_]5[-_.]4[-_.]mini/i,
+  // gpt-5.4-pro — $30 / $180  (cached $3)
+  { match: /^gpt[-_]5[-_.]4[-_]pro/i,
+    rates: { input: 30, output: 180, cacheRead: 3, cacheWrite: 0 } },
+
+  // gpt-5.4-mini — $0.75 / $4.50  (cached $0.075)  ← before plain 5.4
+  { match: /^gpt[-_]5[-_.]4[-_]mini/i,
     rates: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 } },
 
-  // gpt-5.4-nano — $0.20 / $1.25  (cached $0.02)  ← must come before plain 5.4
-  { match: /^gpt[-_]5[-_.]4[-_.]nano/i,
+  // gpt-5.4-nano — $0.20 / $1.25  (cached $0.02)  ← before plain 5.4
+  { match: /^gpt[-_]5[-_.]4[-_]nano/i,
     rates: { input: 0.20, output: 1.25, cacheRead: 0.02, cacheWrite: 0 } },
 
   // gpt-5.4 — $2.50 / $15  (cached $0.25)
   { match: /^gpt[-_]5[-_.]4\b/i,
     rates: { input: 2.50, output: 15, cacheRead: 0.25, cacheWrite: 0 } },
+
+  // gpt-5.3-codex (and -spark) — $1.75 / $14  (cached $0.175).
+  // The last codex-tuned model: there is no gpt-5.4/5.5/5.6-codex.
+  { match: /^gpt[-_]5[-_.]3[-_]codex/i,
+    rates: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
+
+  // gpt-5.2-pro — $21 / $168  (no cached rate published)
+  { match: /^gpt[-_]5[-_.]2[-_]pro/i,
+    rates: { input: 21, output: 168, cacheRead: 21, cacheWrite: 0 } },
+
+  // gpt-5.2 — $1.75 / $14  (cached $0.175)
+  { match: /^gpt[-_]5[-_.]2\b/i,
+    rates: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
+
+  // codex-mini-latest — retired 2026-02-12. Kept so historical sessions still
+  // cost out; new sessions can no longer produce it.
+  { match: /^codex[-_]mini/i,
+    rates: { input: 1.50, output: 6, cacheRead: 0.375, cacheWrite: 0 } },
+
+  // o1-pro / o1 — $150 / $600 and $15 / $60  (o1 cached $7.50)
+  { match: /^o1[-_]pro/i, rates: { input: 150, output: 600, cacheRead: 150, cacheWrite: 0 } },
+  { match: /^o1\b/i,      rates: { input: 15, output: 60, cacheRead: 7.50, cacheWrite: 0 } },
+
+  // o3-mini — $1.10 / $4.40  (cached $0.55)  ← before plain o3
+  { match: /^o3[-_]mini/i,
+    rates: { input: 1.10, output: 4.40, cacheRead: 0.55, cacheWrite: 0 } },
+
+  // o3-pro — $20 / $80  (no cached rate published)
+  { match: /^o3[-_]pro/i,
+    rates: { input: 20, output: 80, cacheRead: 20, cacheWrite: 0 } },
 
   // o4-mini — $1.10 / $4.40  (cached $0.275)
   { match: /^o4[-_]mini/i,
@@ -112,6 +182,19 @@ export interface CostBreakdown {
   total: number;
 }
 
+// OpenAI's long-context tier: once a request's INPUT passes this many tokens,
+// the whole request re-prices at 2x input and 1.5x output — not just the
+// tokens past the line. Only the 1M-class models can reach it; every 400K
+// model caps its input at exactly the threshold, so the tier is unreachable
+// there and applying it would silently double their cost.
+const LONG_CONTEXT_THRESHOLD = 272_000;
+const LONG_CONTEXT_MODELS = /^gpt[-_]5[-_.](?:6(?![-_]cyber)|5|4)/i;
+
+function longContextMultipliers(modelId: string | undefined, inputTokens: number) {
+  if (!modelId || inputTokens <= LONG_CONTEXT_THRESHOLD) return { input: 1, output: 1 };
+  return LONG_CONTEXT_MODELS.test(modelId) ? { input: 2, output: 1.5 } : { input: 1, output: 1 };
+}
+
 export function costForUsage(usage: TokenUsage, modelId: string | undefined): CostBreakdown {
   const rates = ratesForModel(modelId);
   if (!rates) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
@@ -122,37 +205,54 @@ export function costForUsage(usage: TokenUsage, modelId: string | undefined): Co
   const fullInputTokens = isCodex
     ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
     : usage.inputTokens;
-  const input      = fullInputTokens              * rates.input      / 1_000_000;
-  const output     = usage.outputTokens           * rates.output     / 1_000_000;
-  const cacheRead  = usage.cacheReadTokens        * rates.cacheRead  / 1_000_000;
-  const cacheWrite = usage.cacheCreateTokens      * rates.cacheWrite / 1_000_000;  // 0 for Codex
+  // Measured against total input, cached portion included — the threshold is
+  // about how much the model had to read, not how much was billed fresh.
+  const mult = isCodex ? longContextMultipliers(modelId, usage.inputTokens) : { input: 1, output: 1 };
+
+  const input      = fullInputTokens         * rates.input      * mult.input  / 1_000_000;
+  const output     = usage.outputTokens      * rates.output     * mult.output / 1_000_000;
+  const cacheRead  = usage.cacheReadTokens   * rates.cacheRead  * mult.input  / 1_000_000;
+  const cacheWrite = usage.cacheCreateTokens * rates.cacheWrite * mult.input  / 1_000_000;
   return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
 // ─── Context window ──────────────────────────────────────────────────────
-// Source: LiteLLM model_prices_and_context_window.json. Opus 4.7 and
-// Sonnet 4.6 ship with 1M-token windows; older tiers and Haiku stay at
-// 200K. The model id sometimes has a `[1m]` suffix (CC's UI banner uses
-// it) — treat that as an explicit override regardless of family.
+// Every current Claude model above Haiku ships a 1M-token window; Haiku and
+// the older tiers stay at 200K. The model id sometimes carries a `[1m]`
+// suffix (CC's UI banner uses it) — treat that as an explicit override
+// regardless of family.
 const CONTEXT_WINDOW_DEFAULT = 200_000;
 const CONTEXT_WINDOW_BIG = 1_000_000;
 
 const BIG_CONTEXT_PATTERNS: RegExp[] = [
   /\[1m\]/i,                                  // explicit suffix
+  /^claude[-_]opus[-_]5\b/i,                  // Opus 5
+  /^claude[-_]sonnet[-_]5\b/i,                // Sonnet 5
   /^claude[-_]opus[-_]4[-_.](?:5|6|7|8)\b/i,  // Opus 4.5+
   /^claude[-_]sonnet[-_]4[-_.]6\b/i,          // Sonnet 4.6
   /^claude[-_](fable|mythos)[-_]5\b/i,        // Fable/Mythos 5
 ];
 
-// Codex context-window defaults when the live `model_context_window` value
-// from session_meta isn't on the agent node yet. The CLI emits the real
-// number on task_started — these are only a first-paint guess.
+// Codex context-window defaults, used only until the live
+// `model_context_window` from the CLI's session_meta reaches the agent node.
+//
+// These are the API's real windows. Note the Codex CLI reports something
+// smaller — 258,400 for the gpt-5.6 family, being 272,000 x 95% — because it
+// deliberately clamps a session below OpenAI's >272K-input pricing boundary
+// rather than letting one silently cross it. The live value wins wherever it
+// is available; these only cover first paint.
 const CODEX_CONTEXT_DEFAULTS: Array<{ match: RegExp; window: number }> = [
-  { match: /^gpt[-_]5[-_.]3[-_.]codex/i, window: 256_000 },
-  { match: /^gpt[-_]5[-_.]2[-_.]codex/i, window: 256_000 },
-  { match: /^gpt[-_]5[-_.]\d+[-_.]codex/i, window: 256_000 },
-  { match: /^gpt[-_]5/i,                  window: 200_000 },
-  { match: /^o\d/i,                       window: 200_000 },
+  { match: /^gpt[-_]5[-_.]6[-_]cyber/i,           window:   400_000 },
+  { match: /^gpt[-_]5[-_.]6/i,                    window: 1_050_000 },
+  { match: /^gpt[-_]5[-_.]5/i,                    window: 1_050_000 },
+  { match: /^gpt[-_]5[-_.]4[-_](?:mini|nano)/i,   window:   400_000 },
+  { match: /^gpt[-_]5[-_.]4/i,                    window: 1_050_000 },
+  { match: /^gpt[-_]5[-_.]3[-_]codex[-_]spark/i,  window:   128_000 },
+  { match: /^gpt[-_]5[-_.]3[-_]codex/i,           window:   400_000 },
+  { match: /^gpt[-_]5[-_.]2/i,                    window:   400_000 },
+  { match: /^gpt[-_]5/i,                          window:   400_000 },
+  { match: /^codex[-_]mini/i,                     window:   200_000 },
+  { match: /^o\d/i,                               window:   200_000 },
 ];
 
 export function contextWindowForModel(modelId: string | undefined): number {
