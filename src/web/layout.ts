@@ -304,3 +304,103 @@ export function separateOverlaps(
   }
   return moved;
 }
+
+
+/**
+ * Drop newly-arrived sessions into the gaps left by ones that finished.
+ *
+ * Sessions are pruned as they complete, which punches holes in a column while
+ * new work keeps being appended below the last thing placed. Left alone the
+ * canvas grows downward forever with empty bands through the middle, and the
+ * fit zoom shrinks to cover space that holds nothing.
+ *
+ * A session is moved as a whole — its cards keep their arrangement relative to
+ * each other, only the block moves — and it is only ever moved into a gap that
+ * fits it outright. Anything that does not fit stays where the layout put it,
+ * below everything else.
+ *
+ * Mutates `positions`; returns the session ids it relocated.
+ */
+export function fillGapsWithNewSessions(
+  nodes: Node[],
+  positions: Map<string, { x: number; y: number }>,
+  pinned: Map<string, { x: number; y: number }>,
+  measured: Map<string, { width: number; height: number }>,
+  newIds: Set<string>,
+): string[] {
+  const sizeOf = (id: string) => {
+    const m = measured.get(id);
+    return { w: m?.width ?? NODE_W, h: m?.height ?? NODE_H };
+  };
+  const posOf = (id: string) => pinned.get(id) ?? positions.get(id);
+
+  // Group the arrivals, and keep anything already placed as an obstacle.
+  const arriving = new Map<string, Node[]>();
+  const settled: Array<{ x: number; y: number; w: number; h: number }> = [];
+  for (const n of nodes) {
+    const p = posOf(n.id);
+    if (!p) continue;
+    const { w, h } = sizeOf(n.id);
+    if (newIds.has(n.id) && !pinned.has(n.id)) {
+      const sid = sessionOfNode(n);
+      (arriving.get(sid) ?? arriving.set(sid, []).get(sid)!).push(n);
+    } else {
+      settled.push({ x: p.x, y: p.y, w, h });
+    }
+  }
+  if (arriving.size === 0) return [];
+
+  // Session boxes are what must not touch, so obstacles are inflated by the
+  // chrome and the gap the layout would have left between two sessions.
+  const PADDING = SESSION_CHROME + SESSION_VISIBLE_GAP;
+  const clashes = (x: number, y: number, w: number, h: number) =>
+    settled.some(r =>
+      x < r.x + r.w + SESSION_CHROME && r.x < x + w + SESSION_CHROME &&
+      y < r.y + r.h + PADDING        && r.y < y + h + PADDING);
+
+  const moved: string[] = [];
+  // Oldest session first, so arrival order still reads top-to-bottom among
+  // the ones that land in gaps.
+  for (const sid of [...arriving.keys()].sort()) {
+    const members = arriving.get(sid)!;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of members) {
+      const p = posOf(n.id)!;
+      const { w, h } = sizeOf(n.id);
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + w); maxY = Math.max(maxY, p.y + h);
+    }
+    const w = maxX - minX, h = maxY - minY;
+
+    // Candidate tops: the very top of a column, and just under everything
+    // already there. Any gap big enough starts at one of those edges, so
+    // there is nothing to gain from stepping pixel by pixel.
+    const columns = [...new Set(settled.map(r => Math.round(r.x)))].sort((a, b) => a - b);
+    const xs = columns.length ? columns : [minX];
+    const ys = [0, ...settled.map(r => r.y + r.h + PADDING)].sort((a, b) => a - b);
+
+    let target: { x: number; y: number } | null = null;
+    outer: for (const x of xs) {
+      for (const y of ys) {
+        if (y >= minY) break;               // not a gap — that is where it already is
+        if (!clashes(x, y, w, h)) { target = { x, y }; break outer; }
+      }
+    }
+
+    if (target) {
+      const dx = target.x - minX, dy = target.y - minY;
+      for (const n of members) {
+        const p = posOf(n.id)!;
+        positions.set(n.id, { x: p.x + dx, y: p.y + dy });
+      }
+      moved.push(sid);
+    }
+    // Placed or not, it is an obstacle for the next arrival.
+    for (const n of members) {
+      const p = posOf(n.id)!;
+      const { w: nw, h: nh } = sizeOf(n.id);
+      settled.push({ x: p.x, y: p.y, w: nw, h: nh });
+    }
+  }
+  return moved;
+}

@@ -3,7 +3,7 @@
 // of asserting that dagre was called with the right arguments.
 import { describe, it, expect } from "vitest";
 import type { Node, Edge } from "reactflow";
-import { autoLayout, separateOverlaps } from "../layout";
+import { autoLayout, separateOverlaps, fillGapsWithNewSessions } from "../layout";
 
 const W = 260, H = 120;
 
@@ -318,5 +318,87 @@ describe("breathing room between sessions", () => {
     const aBoxBottom = pos.get("a")!.y + H + PAD;
     const bLabelTop = pos.get("b")!.y - PAD - HEADER_H - LABEL_LIFT;
     expect(bLabelTop - aBoxBottom).toBeGreaterThanOrEqual(30);
+  });
+});
+
+describe("fillGapsWithNewSessions — reuse the space finished sessions left", () => {
+  const CHROME = 18 * 2 + 26 + 12;
+  const GAP = 72;
+  const PITCH = H + CHROME + GAP;   // where the layout puts consecutive sessions
+
+  it("puts a new session in the hole left by a finished one", () => {
+    // Three sessions were stacked; the middle one finished and was pruned.
+    const nodes = [agent("a", "sa"), agent("c", "sc"), agent("new", "snew")];
+    const measured = sizes(["a", "c", "new"]);
+    const positions = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["c", { x: 0, y: PITCH * 2 }],
+      ["new", { x: 0, y: PITCH * 3 }],   // appended at the bottom
+    ]);
+
+    const moved = fillGapsWithNewSessions(nodes, positions, new Map(), measured, new Set(["new"]));
+    expect(moved).toEqual(["snew"]);
+    // It should now sit in the vacated middle band, not below `c`.
+    expect(positions.get("new")!.y).toBeLessThan(positions.get("c")!.y);
+    expect(positions.get("new")!.y).toBeGreaterThan(positions.get("a")!.y);
+    expect(overlaps(
+      nodes.map(n => ({ ...n, position: positions.get(n.id)! })), measured,
+    )).toEqual([]);
+  });
+
+  it("leaves it at the bottom when nothing has been vacated", () => {
+    const nodes = [agent("a", "sa"), agent("b", "sb"), agent("new", "snew")];
+    const measured = sizes(["a", "b", "new"]);
+    const positions = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["b", { x: 0, y: PITCH }],
+      ["new", { x: 0, y: PITCH * 2 }],
+    ]);
+    expect(fillGapsWithNewSessions(nodes, positions, new Map(), measured, new Set(["new"]))).toEqual([]);
+    expect(positions.get("new")!.y).toBe(PITCH * 2);
+  });
+
+  it("does not squeeze into a hole too small for it", () => {
+    // The band between a and b is half a session tall. The arrival must end up
+    // after b, not wedged between them — though it may still be pulled up from
+    // an artificially distant y, which is compaction rather than gap-filling.
+    const nodes = [agent("a", "sa"), agent("b", "sb"), agent("new", "snew")];
+    const measured = sizes(["a", "b", "new"]);
+    const bY = H + CHROME + GAP / 2;
+    const positions = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["b", { x: 0, y: bY }],
+      ["new", { x: 0, y: 2000 }],
+    ]);
+    fillGapsWithNewSessions(nodes, positions, new Map(), measured, new Set(["new"]));
+
+    expect(positions.get("new")!.y).toBeGreaterThanOrEqual(bY + H);   // after b
+    expect(overlaps(
+      nodes.map(n => ({ ...n, position: positions.get(n.id)! })), measured,
+    )).toEqual([]);
+  });
+
+  it("moves a multi-card session as one block", () => {
+    const nodes = [agent("a", "sa"), agent("n1", "snew"), agent("n2", "snew"), agent("c", "sc")];
+    const measured = sizes(["a", "n1", "n2", "c"]);
+    const positions = new Map([
+      ["a",  { x: 0, y: 0 }],
+      ["c",  { x: 0, y: PITCH * 4 }],
+      ["n1", { x: 0,   y: 5000 }],
+      ["n2", { x: 320, y: 5040 }],    // offset from n1 within its own session
+    ]);
+    fillGapsWithNewSessions(nodes, positions, new Map(), measured, new Set(["n1", "n2"]));
+    // The pair keeps its internal offset exactly.
+    expect(positions.get("n2")!.x - positions.get("n1")!.x).toBe(320);
+    expect(positions.get("n2")!.y - positions.get("n1")!.y).toBe(40);
+    expect(positions.get("n1")!.y).toBeLessThan(5000);
+  });
+
+  it("never relocates a dragged node", () => {
+    const nodes = [agent("a", "sa"), agent("p", "snew")];
+    const measured = sizes(["a", "p"]);
+    const positions = new Map([["a", { x: 0, y: 0 }], ["p", { x: 0, y: 4000 }]]);
+    const pinned = new Map([["p", { x: 0, y: 4000 }]]);
+    expect(fillGapsWithNewSessions(nodes, positions, pinned, measured, new Set(["p"]))).toEqual([]);
   });
 });

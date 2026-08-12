@@ -22,7 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import UsageHistoryModal from "./components/UsageHistoryModal";
-import { autoLayout, separateOverlaps } from "./layout";
+import { autoLayout, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -419,6 +419,14 @@ function snapshotToFlow(
     if (missing.length > 0) {
       const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
+      // Finished sessions are pruned as they complete, so the column they were
+      // in has holes while new work keeps being appended underneath. Offer the
+      // arrivals those holes before letting the canvas grow downward past
+      // bands that hold nothing.
+      fillGapsWithNewSessions(
+        nodes, positions, pinned, measured,
+        new Set(missing.map(n => n.id)),
+      );
     }
     separateOverlaps(nodes, positions, pinned, measured);
     lastLayoutSigRef.current = layoutSig;
