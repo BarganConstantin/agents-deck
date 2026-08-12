@@ -63,17 +63,22 @@ const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 const USAGE_PANEL_OPEN_KEY = "agent-dag.usagePanelOpen";
 const ACCOUNTS_PANEL_OPEN_KEY = "agent-dag.accountsPanelOpen";
 
+// First-run layout: Usage and Accounts open, everything else closed. Those two
+// answer "how much have I got left, and on which account" — the questions you
+// have before you have a graph worth looking at. The session list and detail
+// panel are for navigating work that already exists, so they stay shut until
+// asked for, and the canvas gets the width.
 function loadSessionListOpen(): boolean {
-  if (typeof window === "undefined") return true;
-  try { return window.localStorage.getItem(SESSION_LIST_OPEN_KEY) !== "0"; } catch { return true; }
+  if (typeof window === "undefined") return false;
+  try { return window.localStorage.getItem(SESSION_LIST_OPEN_KEY) === "1"; } catch { return false; }
 }
 function saveSessionListOpen(open: boolean): void {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(SESSION_LIST_OPEN_KEY, open ? "1" : "0"); } catch {}
 }
 function loadDetailOpen(): boolean {
-  if (typeof window === "undefined") return true;
-  try { return window.localStorage.getItem(DETAIL_OPEN_KEY) !== "0"; } catch { return true; }
+  if (typeof window === "undefined") return false;
+  try { return window.localStorage.getItem(DETAIL_OPEN_KEY) === "1"; } catch { return false; }
 }
 function saveDetailOpen(open: boolean): void {
   if (typeof window === "undefined") return;
@@ -476,14 +481,30 @@ function Inner() {
   /** Usage panel visibility — persisted across refresh. */
   const [usagePanelOpen, setUsagePanelOpen] = useState<boolean>(loadUsagePanelOpen);
   useEffect(() => { saveUsagePanelOpen(usagePanelOpen); }, [usagePanelOpen]);
-  // Closed by default: most people run one account, and an empty panel that
-  // reopens on every launch is worse than a button.
   const [accountsPanelOpen, setAccountsPanelOpen] = useState<boolean>(() => {
-    try { return window.localStorage.getItem(ACCOUNTS_PANEL_OPEN_KEY) === "1"; } catch { return false; }
+    try {
+      const stored = window.localStorage.getItem(ACCOUNTS_PANEL_OPEN_KEY);
+      return stored === null ? true : stored === "1";
+    } catch { return true; }
   });
   useEffect(() => {
     try { window.localStorage.setItem(ACCOUNTS_PANEL_OPEN_KEY, accountsPanelOpen ? "1" : "0"); } catch {}
   }, [accountsPanelOpen]);
+
+  // One left column, two things that want it. Opening either evicts the other
+  // rather than fighting over the same grid slot.
+  const toggleSessionList = useCallback(() => {
+    setSessionListOpen(open => {
+      if (!open) setAccountsPanelOpen(false);
+      return !open;
+    });
+  }, []);
+  const toggleAccountsPanel = useCallback(() => {
+    setAccountsPanelOpen(open => {
+      if (!open) setSessionListOpen(false);
+      return !open;
+    });
+  }, []);
   // ccusage history modal — transient (not persisted), opened from the toolbar.
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** Bumped on each group-drag move so snapshotToFlow recomputes immediately
@@ -990,10 +1011,10 @@ function Inner() {
       if (e.key === "c" || e.key === "C") handleClear();
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
-      if (e.key === "l" || e.key === "L") setSessionListOpen(o => !o);
+      if (e.key === "l" || e.key === "L") toggleSessionList();
       if (e.key === "h" || e.key === "H") setUsageHistoryOpen(o => !o);
       if (e.key === "u" || e.key === "U") setUsagePanelOpen(o => !o);
-      if (e.key === "a" || e.key === "A") setAccountsPanelOpen(o => !o);
+      if (e.key === "a" || e.key === "A") toggleAccountsPanel();
       if (e.key === "j" || e.key === "J") stepAgent(1);
       if (e.key === "k" || e.key === "K") stepAgent(-1);
       if (e.key === "t" || e.key === "T") setTheme(t => (t === "dark" ? "light" : "dark"));
@@ -1138,7 +1159,7 @@ function Inner() {
           >$</button>
           <button
             className={`btn icon-btn ${accountsPanelOpen ? "primary" : ""}`}
-            onClick={() => setAccountsPanelOpen(o => !o)}
+            onClick={toggleAccountsPanel}
             title={`${accountsPanelOpen ? "Hide" : "Show"} accounts (A)`}
             aria-label="Toggle accounts panel"
           >
@@ -1149,7 +1170,7 @@ function Inner() {
           </button>
           <button
             className={`btn icon-btn ${sessionListOpen ? "primary" : ""}`}
-            onClick={() => setSessionListOpen(o => !o)}
+            onClick={toggleSessionList}
             title={`${sessionListOpen ? "Hide" : "Show"} session list (L)`}
             aria-label="Toggle session list"
           >☰</button>
