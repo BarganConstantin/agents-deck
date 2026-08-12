@@ -412,6 +412,12 @@ async function _doFetch(now, force = false) {
     store = await nudgeAndReread(store);
   }
   if (store && now - store.fetchedAt <= STORE_TRUSTED_MS) {
+    // Keep the store moving even when the accounts panel is closed. Without
+    // this the numbers only advance while something else asks — claude-swap's
+    // own schedule still decides whether this touches the network, and the
+    // throttle inside is shared with the accounts panel, so two open panels
+    // ask no more often than one.
+    if (!force) requestCollection().catch(() => {});
     _cache = store; _cacheAt = now;
     _lastGood = store;
     return store;
