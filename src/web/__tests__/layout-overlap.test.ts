@@ -266,3 +266,26 @@ describe("column spacing", () => {
     expect(clear).toBeGreaterThanOrEqual(W);
   });
 });
+
+describe("separateOverlaps — cluster boxes, not just cards", () => {
+  const CHROME = 18 * 2 + 26 + 12;   // padding both sides + header + label tab
+
+  it("keeps different sessions clear of each other's cluster box", () => {
+    // Cards 30px apart never touch, but the boxes drawn around them do — the
+    // box reaches ~56px above its card for the header and label tab.
+    const nodes = [agent("a", "sa"), agent("b", "sb")];
+    const pos = new Map([["a", { x: 0, y: 0 }], ["b", { x: 0, y: H + 30 }]]);
+    const moved = separateOverlaps(nodes, pos, new Map(), sizes(["a", "b"]));
+
+    expect(moved).toEqual(["b"]);
+    expect(pos.get("b")!.y - (pos.get("a")!.y + H)).toBeGreaterThanOrEqual(CHROME);
+  });
+
+  it("still packs nodes of the same session tightly", () => {
+    // Within one session there is no second box to clear, so the generous
+    // cross-session spacing must not apply.
+    const nodes = [agent("a", "sa"), agent("b", "sa")];
+    const pos = new Map([["a", { x: 0, y: 0 }], ["b", { x: 0, y: H + 30 }]]);
+    expect(separateOverlaps(nodes, pos, new Map(), sizes(["a", "b"]))).toEqual([]);
+  });
+});

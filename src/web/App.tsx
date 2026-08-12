@@ -549,6 +549,9 @@ function Inner() {
   // turning ours on alongside one that works here means two sounds per turn,
   // and the cause is in a settings file the user is not looking at.
   const [soundClash, setSoundClash] = useState(0);
+  // The user's own sound hooks that the toggle has set aside. Surfaced so
+  // "moved, not deleted" is something they can see and act on.
+  const [soundParked, setSoundParked] = useState(0);
   useEffect(() => {
     fetch("/api/sound-hook")
       .then(r => r.ok ? r.json() : null)
@@ -556,6 +559,7 @@ function Inner() {
         if (!d?.ok) return;
         setSoundOn(d.enabled === true);
         setSoundClash((d.foreign ?? []).filter((f: { worksHere?: boolean }) => f.worksHere).length);
+        setSoundParked(typeof d.parked === "number" ? d.parked : 0);
       })
       .catch(() => {});
   }, []);
@@ -569,6 +573,12 @@ function Inner() {
       });
       const out = await res.json().catch(() => null);
       if (out?.ok) setSoundOn(out.enabled === true);
+      // Re-read: toggling parks or unparks the user's own hooks.
+      fetch("/api/sound-hook").then(r => r.ok ? r.json() : null).then(d => {
+        if (!d?.ok) return;
+        setSoundClash((d.foreign ?? []).filter((f: { worksHere?: boolean }) => f.worksHere).length);
+        setSoundParked(typeof d.parked === "number" ? d.parked : 0);
+      }).catch(() => {});
     } catch { /* server unreachable */ }
     finally { setSoundBusy(false); }
   }, [soundOn]);
@@ -1352,14 +1362,35 @@ function Inner() {
           {soundOn !== null && (
             <button
               className={`btn icon-btn ${soundOn ? "primary" : ""}`}
-              onClick={toggleSound}
+              onClick={(e) => {
+                // Shift-click restores the user's own hooks. A modifier rather
+                // than another button: it is a one-off recovery, not a control
+                // that earns permanent space in the toolbar.
+                if (e.shiftKey && soundParked > 0) {
+                  setSoundBusy(true);
+                  fetch("/api/sound-hook", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "restore" }),
+                  }).then(() => fetch("/api/sound-hook"))
+                    .then(r => r.ok ? r.json() : null)
+                    .then(d => { if (d?.ok) { setSoundOn(d.enabled === true); setSoundParked(d.parked ?? 0); } })
+                    .catch(() => {})
+                    .finally(() => setSoundBusy(false));
+                  return;
+                }
+                toggleSound();
+              }}
               disabled={soundBusy}
               title={
                 (soundOn
                   ? "Sound on turn finish: on — click to remove the hook"
                   : "Sound on turn finish: off — click to add a Stop hook") +
                 (soundClash > 0
-                  ? `\n\nYou already have ${soundClash} sound hook${soundClash > 1 ? "s" : ""} in settings.json that run${soundClash > 1 ? "" : "s"} on this machine — turning this on will play two sounds per turn.`
+                  ? `\n\n${soundClash} sound hook${soundClash > 1 ? "s" : ""} of your own in settings.json also run${soundClash > 1 ? "" : "s"} here.`
+                  : "") +
+                (soundParked > 0
+                  ? `\n\n${soundParked} of your own sound hook${soundParked > 1 ? "s were" : " was"} set aside so this switch actually controls the sound. Nothing was deleted — shift-click to put ${soundParked > 1 ? "them" : "it"} back.`
                   : "")
               }
               aria-label="Toggle finish sound"

@@ -169,35 +169,53 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   // the widest session so a session is never split across the boundary, which
   // wastes some room when widths vary but keeps every session readable as one
   // block — the thing the canvas exists to show.
-  const widest = laid.reduce((w, s) => Math.max(w, s.width), 0);
-  const columnWidth = widest + TOOL_LANE_W + columnGap(measured);
-  const columnCount = (opts.availableWidth && columnWidth > 0)
-    ? Math.min(MAX_COLUMNS, Math.max(1, Math.floor(opts.availableWidth / columnWidth)))
-    : 1;
-
-  // Fill a column before starting the next one, rather than balancing the two.
-  // Balancing keeps the columns level but scatters consecutive sessions across
-  // them; filling top-to-bottom means the canvas reads in the order sessions
-  // started, and a second column only appears once the first has run past the
-  // bottom of the screen.
+  // Assign sessions to columns first, then size each column to what actually
+  // landed in it. Sizing every column to the widest session in the graph made
+  // one wide session set the pitch for all of them, so two columns never fit
+  // and everything stacked into one very tall strip that fit-to-view then
+  // shrank to nothing.
+  const gap = columnGap(measured);
   const overflowAt = opts.availableHeight && opts.availableHeight > 0
     ? opts.availableHeight
     : Number.POSITIVE_INFINITY;
 
-  const finalPositions = new Map<string, { x: number; y: number }>();
-  let col = 0;
-  let cursorY = 0;
-  for (const { positions, height } of laid) {
-    // Wrap only when something is already in this column — a session taller
-    // than the screen has to start somewhere, and pushing it to a fresh column
-    // would just leave the previous one short and the next one still over.
-    if (col < columnCount - 1 && cursorY > 0 && cursorY + height > overflowAt) {
-      col++;
-      cursorY = 0;
+  const assign = (maxColumns: number) => {
+    const cols: Array<Array<typeof laid[number]>> = [[]];
+    let cursorY = 0;
+    for (const item of laid) {
+      // Wrap only when something is already in this column — a session taller
+      // than the screen has to start somewhere, and moving it to a fresh
+      // column would leave the previous one short and the next still over.
+      if (cols.length < maxColumns && cursorY > 0 && cursorY + item.height > overflowAt) {
+        cols.push([]);
+        cursorY = 0;
+      }
+      cols[cols.length - 1].push(item);
+      cursorY += item.height + SESSION_GAP;
     }
-    const offsetX = col * columnWidth;
-    for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + cursorY });
-    cursorY += height + SESSION_GAP;
+    return cols;
+  };
+
+  const widthOf = (col: Array<typeof laid[number]>) =>
+    col.reduce((w, s) => Math.max(w, s.width), 0) + TOOL_LANE_W;
+
+  // Try the wider arrangement; fall back to one column when the real widths
+  // don't fit rather than letting columns run off the canvas.
+  let columns = assign(opts.availableWidth ? MAX_COLUMNS : 1);
+  if (columns.length > 1) {
+    const total = columns.reduce((w, c) => w + widthOf(c), 0) + gap * (columns.length - 1);
+    if (total > (opts.availableWidth ?? 0)) columns = assign(1);
+  }
+
+  const finalPositions = new Map<string, { x: number; y: number }>();
+  let offsetX = 0;
+  for (const col of columns) {
+    let cursorY = 0;
+    for (const { positions, height } of col) {
+      for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + cursorY });
+      cursorY += height + SESSION_GAP;
+    }
+    offsetX += widthOf(col) + gap;
   }
 
   return nodes.map(n => {
@@ -233,6 +251,12 @@ export function separateOverlaps(
   measured: Map<string, { width: number; height: number }>,
 ): string[] {
   const MARGIN = 24;
+  // Two cards in DIFFERENT sessions need more than card clearance: each is
+  // drawn inside a cluster box that extends past it — padding on every side,
+  // a header strip, and a label tab above that. Cards 30px apart look fine and
+  // their boxes still cross, which is what "one on another" actually was.
+  const CROSS_SESSION_Y = SESSION_CHROME + MARGIN;
+  const CROSS_SESSION_X = 18 * 2 + MARGIN;
 
   const sizeOf = (id: string) => {
     const m = measured.get(id);
@@ -241,7 +265,9 @@ export function separateOverlaps(
 
   // Stable order: by y, then x, then id. Same input always yields the same
   // result, so a re-render cannot make nodes drift.
-  const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const sessionOf = new Map(nodes.map(n => [n.id, sessionOfNode(n)]));
+
+  const placed: Array<{ x: number; y: number; w: number; h: number; sid: string }> = [];
   const ordered = nodes
     .map(n => ({ id: n.id, pos: pinned.get(n.id) ?? positions.get(n.id) }))
     .filter((n): n is { id: string; pos: { x: number; y: number } } => n.pos != null)
@@ -250,22 +276,26 @@ export function separateOverlaps(
   const moved: string[] = [];
   for (const { id, pos } of ordered) {
     const { w, h } = sizeOf(id);
+    const sid = sessionOf.get(id) ?? "_default";
     // A dragged node is an obstacle for everything else but is never itself
     // relocated.
-    if (pinned.has(id)) { placed.push({ x: pos.x, y: pos.y, w, h }); continue; }
+    if (pinned.has(id)) { placed.push({ x: pos.x, y: pos.y, w, h, sid }); continue; }
 
     let y = pos.y;
     // Re-check from the start after each shift: sliding clear of one node can
     // push into another that was already checked.
     for (let guard = 0; guard < placed.length + 1; guard++) {
-      const clash = placed.find(r =>
-        pos.x < r.x + r.w + MARGIN && r.x < pos.x + w + MARGIN &&
-        y     < r.y + r.h + MARGIN && r.y < y     + h + MARGIN);
+      const clash = placed.find(r => {
+        const mx = r.sid === sid ? MARGIN : CROSS_SESSION_X;
+        const my = r.sid === sid ? MARGIN : CROSS_SESSION_Y;
+        return pos.x < r.x + r.w + mx && r.x < pos.x + w + mx &&
+               y     < r.y + r.h + my && r.y < y     + h + my;
+      });
       if (!clash) break;
-      y = clash.y + clash.h + MARGIN;
+      y = clash.y + clash.h + (clash.sid === sid ? MARGIN : CROSS_SESSION_Y);
     }
     if (y !== pos.y) { positions.set(id, { x: pos.x, y }); moved.push(id); }
-    placed.push({ x: pos.x, y, w, h });
+    placed.push({ x: pos.x, y, w, h, sid });
   }
   return moved;
 }

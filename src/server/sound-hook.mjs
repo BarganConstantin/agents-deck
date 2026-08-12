@@ -24,6 +24,9 @@ const NOTIFY_PATH   = join(INSTALL_DIR, "notify.js");
 
 const MARK = "__agent-dag-sound";
 const EVENT = "Stop";
+// Where a user's own sound hooks are kept while the toggle is off, so turning
+// the feature off actually produces silence and nothing is destroyed.
+const PARKED_PATH = join(homedir(), ".agents-deck", "parked-sound-hooks.json");
 
 // Commands that look like a hand-rolled sound hook. Used only to tell the user
 // what is already there — never to modify or remove it.
@@ -73,22 +76,79 @@ function foreignSoundHooks(settings) {
   return found;
 }
 
+async function readParked() {
+  try {
+    const parsed = JSON.parse(await readFile(PARKED_PATH, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+async function writeParked(entries) {
+  try {
+    if (!existsSync(dirname(PARKED_PATH))) await mkdir(dirname(PARKED_PATH), { recursive: true });
+    await writeFile(PARKED_PATH, JSON.stringify(entries, null, 2) + "\n", "utf8");
+  } catch { /* best-effort */ }
+}
+
+/**
+ * True when this Stop entry plays a sound, on any platform.
+ *
+ * Deliberately not limited to the current one. settings.json is commonly
+ * synced between machines — this user's own file carries Windows paths
+ * alongside macOS ones — so parking only the hook that fires here leaves the
+ * other in place, and the switch looks broken again on the other machine.
+ */
+function isSoundHook(entry) {
+  if (isOurs(entry)) return false;
+  return (entry.hooks ?? []).some(h =>
+    SOUND_HINTS.some(re => re.test(typeof h?.command === "string" ? h.command : "")));
+}
+
 export async function soundHookStatus() {
   const settings = await readSettings();
   const group = settings?.hooks?.[EVENT];
+  const parked = await readParked();
   return {
     ok: true,
     enabled: Array.isArray(group) && group.some(isOurs),
     platform: process.platform,
     foreign: foreignSoundHooks(settings),
+    parked: parked.length,
   };
+}
+
+/**
+ * Put back the hooks the toggle set aside.
+ *
+ * Nothing is deleted, only moved, so a user who preferred their own command
+ * can have it back exactly as it was.
+ */
+export async function restoreParkedSoundHooks() {
+  const parked = await readParked();
+  if (parked.length === 0) return { ok: true, restored: 0 };
+  const settings = await readSettings();
+  settings.hooks ??= {};
+  const group = Array.isArray(settings.hooks[EVENT]) ? settings.hooks[EVENT] : [];
+  settings.hooks[EVENT] = [...parked, ...group];
+  await writeSettings(settings);
+  await writeParked([]);
+  return { ok: true, restored: parked.length };
 }
 
 export async function setSoundHook(enabled) {
   const settings = await readSettings();
   settings.hooks ??= {};
   const group = Array.isArray(settings.hooks[EVENT]) ? settings.hooks[EVENT] : [];
-  const others = group.filter(g => !isOurs(g));
+
+  // Set aside any of the user's own hooks that play a sound on this machine.
+  // Without this the toggle is a lie in both directions: off still plays their
+  // afplay/PowerShell hook, and on plays twice. They are moved, not deleted —
+  // restoreParkedSoundHooks puts them back untouched.
+  const parking = group.filter(isSoundHook);
+  if (parking.length > 0) {
+    await writeParked([...(await readParked()), ...parking]);
+  }
+  const others = group.filter(g => !isOurs(g) && !isSoundHook(g));
 
   if (enabled) {
     if (!existsSync(INSTALL_DIR)) await mkdir(INSTALL_DIR, { recursive: true });
