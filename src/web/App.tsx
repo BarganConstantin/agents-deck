@@ -328,6 +328,7 @@ function snapshotToFlow(
   state: GraphState,
   now: number,
   availableWidth: number,
+  availableHeight: number,
   pinned: Map<string, { x: number; y: number }>,
   query: string,
   measured: Map<string, { width: number; height: number }>,
@@ -416,7 +417,7 @@ function snapshotToFlow(
   const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
   if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
-      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth });
+      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
     }
     separateOverlaps(nodes, positions, pinned, measured);
@@ -982,28 +983,38 @@ function Inner() {
   // rather than derived from the panel flags so it stays right however the
   // grid is configured.
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const [canvasWidth, setCanvasWidth] = useState(0);
+  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const el = canvasRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(entries => {
-      const w = entries[0]?.contentRect.width ?? 0;
+      const r = entries[0]?.contentRect;
+      if (!r) return;
       // Quantised so a one-pixel resize doesn't reflow the canvas.
-      setCanvasWidth(prev => (Math.abs(prev - w) > 40 ? w : prev));
+      setCanvasSize(prev =>
+        (Math.abs(prev.w - r.width) > 40 || Math.abs(prev.h - r.height) > 40)
+          ? { w: r.width, h: r.height } : prev);
     });
     ro.observe(el);
-    setCanvasWidth(el.clientWidth);
+    setCanvasSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
   }, []);
-  const availableWidth = canvasWidth > 0 ? canvasWidth * 0.92 : 0;
+  const availableWidth = canvasSize.w > 0 ? canvasSize.w * 0.92 : 0;
+  // A column is filled to one screen before the next one starts. An earlier
+  // version allowed 1.6 screens on the theory that a fitted graph zooms out
+  // and shows more — true, but it meant a column had to run well past the
+  // viewport before wrapping, so the second column almost never appeared and
+  // the width stayed empty. One screen is the threshold that actually fills
+  // the canvas.
+  const availableHeight = canvasSize.h > 0 ? canvasSize.h : 0;
 
   const { nodes, edges } = useMemo(
     () => snapshotToFlow(
-      stateRef.current, now, availableWidth, pinnedRef.current, query,
+      stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
       measuredRef.current, positionsRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
     ),
-    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
+    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
 
   // Invisible per-session drag-handle nodes. One per session, sized to the

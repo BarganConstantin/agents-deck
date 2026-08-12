@@ -170,11 +170,12 @@ describe("autoLayout — packs sessions into columns", () => {
   it("adds a second column on a wide canvas and stops there", () => {
     const nodes = sessions(6);
     const measured = sizes(nodes.map(n => n.id));
-    expect(colsUsed(autoLayout(nodes, [], { measured, availableWidth: 400 }))).toBe(1);
-    expect(colsUsed(autoLayout(nodes, [], { measured, availableWidth: 1600 }))).toBe(2);
+    const opts = { measured, availableHeight: 400 };   // force a wrap
+    expect(colsUsed(autoLayout(nodes, [], { ...opts, availableWidth: 400 }))).toBe(1);
+    expect(colsUsed(autoLayout(nodes, [], { ...opts, availableWidth: 2400 }))).toBe(2);
     // Capped: a very wide canvas must not keep splitting into thin columns,
     // which shrinks the fit zoom until the cards are unreadable.
-    expect(colsUsed(autoLayout(nodes, [], { measured, availableWidth: 6000 }))).toBe(2);
+    expect(colsUsed(autoLayout(nodes, [], { ...opts, availableWidth: 9000 }))).toBe(2);
   });
 
   it("leaves room for the tool-burst lane beside each card", () => {
@@ -182,7 +183,7 @@ describe("autoLayout — packs sessions into columns", () => {
     // to allow for them or the next column lands on this session's chips.
     const nodes = sessions(4);
     const measured = sizes(nodes.map(n => n.id));
-    const out = autoLayout(nodes, [], { measured, availableWidth: 4000 });
+    const out = autoLayout(nodes, [], { measured, availableWidth: 4000, availableHeight: 400 });
     const xs = [...new Set(out.map(n => Math.round(n.position.x)))].sort((a, b) => a - b);
     expect(xs.length).toBe(2);
     expect(xs[1] - xs[0]).toBeGreaterThan(W + 400);
@@ -192,25 +193,29 @@ describe("autoLayout — packs sessions into columns", () => {
     const nodes = sessions(9);
     const measured = sizes(nodes.map(n => n.id));
     for (const availableWidth of [0, 300, 700, 1100, 1900, 3000, 5000]) {
-      const out = autoLayout(nodes, [], { measured, availableWidth });
+      const out = autoLayout(nodes, [], { measured, availableWidth, availableHeight: 500 });
       expect(overlaps(out, measured), `width ${availableWidth}`).toEqual([]);
     }
   });
 
-  it("balances columns instead of filling one", () => {
-    // Round-robin would leave the last column far short; masonry should keep
-    // the columns within one session of each other.
-    const nodes = sessions(8);
+  it("fills the first column before starting the second", () => {
+    // Sessions should read top-to-bottom in start order, not alternate across
+    // columns. With room for 3 per column, the first 3 share a column.
+    const nodes = sessions(6);
     const measured = sizes(nodes.map(n => n.id));
-    const out = autoLayout(nodes, [], { measured, availableWidth: 1200 });
+    const perColumn = 3;
+    const sessionPitch = H + 18 * 2 + 26 + 12 + 36;   // content + cluster chrome + gap
+    const out = autoLayout(nodes, [], {
+      measured,
+      availableWidth: 4000,
+      availableHeight: sessionPitch * perColumn - 10,
+    });
 
-    const byColumn = new Map<number, number>();
-    for (const n of out) {
-      const x = Math.round(n.position.x);
-      byColumn.set(x, (byColumn.get(x) ?? 0) + 1);
-    }
-    const counts = [...byColumn.values()];
-    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+    const colOf = (id: string) => Math.round(out.find(n => n.id === id)!.position.x);
+    const first = colOf("s0n0");
+    expect(colOf("s1n0")).toBe(first);
+    expect(colOf("s2n0")).toBe(first);
+    expect(colOf("s3n0")).not.toBe(first);   // wrapped only once full
   });
 
   it("keeps a session's own nodes in one column", () => {
@@ -225,7 +230,7 @@ describe("autoLayout — packs sessions into columns", () => {
       { id: "e2", source: "b1", target: "b2" },
     ];
     const measured = sizes(nodes.map(n => n.id));
-    const out = autoLayout(nodes, edges, { measured, availableWidth: 2000 });
+    const out = autoLayout(nodes, edges, { measured, availableWidth: 4000, availableHeight: 400 });
 
     const spanOf = (ids: string[]) => {
       const xs = out.filter(n => ids.includes(n.id)).map(n => n.position.x);
@@ -240,8 +245,24 @@ describe("autoLayout — packs sessions into columns", () => {
   it("is stable for the same inputs", () => {
     const nodes = sessions(7);
     const measured = sizes(nodes.map(n => n.id));
-    const a = autoLayout(nodes, [], { measured, availableWidth: 1600 }).map(n => n.position);
-    const b = autoLayout(nodes, [], { measured, availableWidth: 1600 }).map(n => n.position);
+    const a = autoLayout(nodes, [], { measured, availableWidth: 2400, availableHeight: 500 }).map(n => n.position);
+    const b = autoLayout(nodes, [], { measured, availableWidth: 2400, availableHeight: 500 }).map(n => n.position);
     expect(b).toEqual(a);
+  });
+});
+
+describe("column spacing", () => {
+  it("leaves at least a node's width of clear space between columns", () => {
+    const nodes = Array.from({ length: 4 }, (_, i) => agent(`s${i}n0`, `s${i}`));
+    const measured = sizes(nodes.map(n => n.id));
+    const out = autoLayout(nodes, [], { measured, availableWidth: 4000, availableHeight: 300 });
+
+    const xs = [...new Set(out.map(n => Math.round(n.position.x)))].sort((a, b) => a - b);
+    expect(xs.length).toBe(2);
+
+    // Clear space = pitch, minus the card, minus the burst lane beside it.
+    const TOOL_LANE = 420;
+    const clear = (xs[1] - xs[0]) - W - TOOL_LANE;
+    expect(clear).toBeGreaterThanOrEqual(W);
   });
 });

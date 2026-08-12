@@ -17,8 +17,16 @@ const NODE_H = 130;
 const SESSION_CHROME = 18 * 2 + 26 + 12;
 const SESSION_GAP = SESSION_CHROME + 36;
 
-// Horizontal room between two session columns.
-const COLUMN_GAP = 80;
+// Horizontal room between two session columns: a full card width. At 80px the
+// columns read as one crowded field, with cluster boxes and their label tabs
+// close enough to look joined. A whole node of clear space is where the eye
+// stops trying to relate them. Measured from the widest card actually on
+// screen rather than the default, so the gap holds when cards are wider.
+function columnGap(measured: Map<string, { width: number; height: number }>): number {
+  let widest = NODE_W;
+  for (const m of measured.values()) widest = Math.max(widest, m.width);
+  return widest;
+}
 
 /**
  * Width the tool-burst lane needs to the right of every agent card.
@@ -43,6 +51,11 @@ const TOOL_LANE_W = 420;
 const MAX_COLUMNS = 2;
 
 export interface LayoutOptions {
+  /**
+   * Canvas height available, in flow units. A column is filled to this before
+   * the next one is started; omitted or 0 keeps everything in one column.
+   */
+  availableHeight?: number;
   direction?: "LR" | "TB";
   /** Nodes the user has dragged — keep their position; don't re-layout. */
   pinned?: Map<string, { x: number; y: number }>;
@@ -157,26 +170,34 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   // wastes some room when widths vary but keeps every session readable as one
   // block — the thing the canvas exists to show.
   const widest = laid.reduce((w, s) => Math.max(w, s.width), 0);
-  const columnWidth = widest + TOOL_LANE_W + COLUMN_GAP;
+  const columnWidth = widest + TOOL_LANE_W + columnGap(measured);
   const columnCount = (opts.availableWidth && columnWidth > 0)
     ? Math.min(MAX_COLUMNS, Math.max(1, Math.floor(opts.availableWidth / columnWidth)))
     : 1;
 
-  // Masonry rather than round-robin: each session goes to whichever column is
-  // currently shortest. Round-robin leaves one column running far past the
-  // others whenever session heights differ, which they always do.
-  const columnBottoms = new Array(columnCount).fill(0);
+  // Fill a column before starting the next one, rather than balancing the two.
+  // Balancing keeps the columns level but scatters consecutive sessions across
+  // them; filling top-to-bottom means the canvas reads in the order sessions
+  // started, and a second column only appears once the first has run past the
+  // bottom of the screen.
+  const overflowAt = opts.availableHeight && opts.availableHeight > 0
+    ? opts.availableHeight
+    : Number.POSITIVE_INFINITY;
+
   const finalPositions = new Map<string, { x: number; y: number }>();
-  for (const { positions, width, height } of laid) {
-    let col = 0;
-    for (let i = 1; i < columnCount; i++) {
-      if (columnBottoms[i] < columnBottoms[col]) col = i;
+  let col = 0;
+  let cursorY = 0;
+  for (const { positions, height } of laid) {
+    // Wrap only when something is already in this column — a session taller
+    // than the screen has to start somewhere, and pushing it to a fresh column
+    // would just leave the previous one short and the next one still over.
+    if (col < columnCount - 1 && cursorY > 0 && cursorY + height > overflowAt) {
+      col++;
+      cursorY = 0;
     }
     const offsetX = col * columnWidth;
-    const offsetY = columnBottoms[col];
-    for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + offsetY });
-    columnBottoms[col] = offsetY + height + SESSION_GAP;
-    void width;
+    for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + cursorY });
+    cursorY += height + SESSION_GAP;
   }
 
   return nodes.map(n => {
