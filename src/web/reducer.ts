@@ -286,6 +286,48 @@ export function pruneOldAgents(state: GraphState, now: number, cap: number, grac
   return removed > 0;
 }
 
+/** Keep at most `cap` finished sessions on the board, dropping the ones that
+ *  finished longest ago. A day of heavy use leaves hundreds of completed
+ *  sessions parked on the canvas, which buries the handful that are actually
+ *  current; the total-agent cap above doesn't help because it only fires at
+ *  200 nodes and counts running work too.
+ *
+ *  Sessions are evicted whole — a session counts as finished only when every
+ *  agent in it is done, so a subagent still running keeps its whole tree, and
+ *  removing a root never orphans a child. `graceMs` after the last agent
+ *  finishes, the session is still exempt so nothing vanishes mid-fade-out.
+ *  Mutates state in place; returns true when anything was removed. */
+export function pruneDoneSessions(state: GraphState, now: number, cap: number, graceMs: number): boolean {
+  // sessionId -> { agent ids, latest endedAt, whether anything is still live }
+  const sessions = new Map<string, { ids: string[]; endedAt: number; live: boolean }>();
+  for (const [id, a] of state.agents) {
+    let s = sessions.get(a.sessionId);
+    if (!s) { s = { ids: [], endedAt: 0, live: false }; sessions.set(a.sessionId, s); }
+    s.ids.push(id);
+    if (a.state === "done" && a.endedAt != null) s.endedAt = Math.max(s.endedAt, a.endedAt);
+    else s.live = true;
+  }
+
+  const finished = [...sessions.values()]
+    .filter(s => !s.live && s.endedAt > 0 && now - s.endedAt > graceMs)
+    .sort((x, y) => x.endedAt - y.endedAt); // oldest-finished first
+
+  // Sessions still inside the grace period already count against the cap, so
+  // the board settles at `cap` rather than briefly overshooting it.
+  const finishedTotal = [...sessions.values()].filter(s => !s.live).length;
+  let over = finishedTotal - cap;
+  if (over <= 0) return false;
+
+  let removed = false;
+  for (const s of finished) {
+    if (over <= 0) break;
+    for (const id of s.ids) state.agents.delete(id);
+    over--;
+    removed = true;
+  }
+  return removed;
+}
+
 /** Sweep over every agent's tool list and finalise any tool that has been
  *  "in-flight" longer than `maxMs` — usually because a hook event was lost
  *  (session killed mid-call, PostToolUse never delivered). Without this they
