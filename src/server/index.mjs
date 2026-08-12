@@ -1100,9 +1100,6 @@ async function handleCswapAutoAction(req, res) {
     case "enable":
       result = await mod.setAutoEnabled(parsed.enabled === true);
       break;
-    case "preview":
-      result = await mod.previewAutoSwitch();
-      break;
     case "setting":
       result = await mod.setCswapConfig(String(parsed.key ?? ""), parsed.value);
       break;

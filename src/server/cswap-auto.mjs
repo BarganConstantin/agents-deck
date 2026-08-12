@@ -1,5 +1,5 @@
-// Auto-switch controls: read and write claude-swap's autoswitch settings, run
-// a tick on a schedule, and preview what a tick would do without doing it.
+// Auto-switch controls: read and write claude-swap's autoswitch settings and
+// run a tick on a schedule.
 //
 // The engine is claude-swap's own — `cswap auto --once` evaluates one tick and
 // exits, honouring the cooldown, quarantine and poll-budget state it keeps in
@@ -8,8 +8,7 @@
 // that owns them: nothing here decides when to switch, only when to ask.
 //
 // A tick can move the user's live Claude account, so it is off unless turned
-// on, the setting survives restarts, and the UI can always ask what a tick
-// WOULD do (--dry-run) before committing to letting it happen.
+// on and the setting survives restarts.
 import { run } from "./exec.mjs";
 import { cswapBin } from "./cswap-install.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -30,7 +29,6 @@ const SETTINGS = {
   "autoswitch.intervalSeconds": { type: "number", min: 15, max: 3600 },
   "autoswitch.cooldownSeconds": { type: "number", min: 0,  max: 86400 },
   "autoswitch.hysteresisPct":   { type: "number", min: 0,  max: 50 },
-  "autoswitch.strategy":        { type: "enum",   values: ["best", "consume-first"] },
   "autoswitch.model":           { type: "model" },
 };
 
@@ -98,19 +96,6 @@ function summarise(stdout) {
     headroom:  poll?.headroomPct ?? null,
     windows:   poll?.windowsPct ?? null,
   };
-}
-
-/**
- * Evaluate a tick without acting. Safe to call from a UI button: --dry-run
- * never switches and never writes claude-swap's state.
- */
-export async function previewAutoSwitch() {
-  const r = await run(await cswapBin(), ["auto", "--once", "--dry-run", "--json"], { timeout: TICK_TIMEOUT_MS });
-  if (!r.ok && !r.stdout) {
-    return { ok: false, reason: r.code === "ENOENT" ? "no_cswap" : "tick_failed",
-             detail: (r.stderr || "").trim().slice(0, 300) };
-  }
-  return { ok: true, dryRun: true, ...summarise(r.stdout) };
 }
 
 /** Evaluate a tick for real. May switch the active account. */
