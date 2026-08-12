@@ -264,7 +264,12 @@ async function _execOnce(shellCmd) {
   try {
     const { stdout, stderr } = await execAsync(shellCmd, {
       timeout: 15_000,
-      env: { ...process.env, NO_COLOR: "1", TERM: "dumb" },
+      // Marks this Claude Code run as the deck's own. `claude --print /usage`
+      // is a full invocation, so it fires the hooks we installed, and every
+      // quota poll was drawing itself onto the canvas as a fresh session with
+      // no prompt and no tools. Hooks inherit the environment, so hook.js
+      // sees this and stays quiet.
+      env: { ...process.env, NO_COLOR: "1", TERM: "dumb", AGENTS_DECK_INTERNAL: "1" },
       maxBuffer: 1024 * 1024,
     });
     const combined = stdout + "\n" + stderr;
