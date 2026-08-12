@@ -26,6 +26,7 @@ interface Account {
   lanes: Lane[];
   headroom: number | null;
   fetchedAt: number | null;  // unix ms
+  nextAt: number | null;     // unix ms — claude-swap's next planned read
   stale: boolean;
   error: string | null;
 }
@@ -75,6 +76,24 @@ function ago(ms: number, nowSec: number): string {
   if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+}
+
+/**
+ * " · next in 4m" — when claude-swap plans to read this account again.
+ *
+ * The age alone reads as neglect. The two together read as a cadence, which is
+ * what it is: claude-swap sets the interval per account and every surface
+ * inherits it, so a number that has not moved in ten minutes is on schedule
+ * rather than stuck. Nothing is shown once the read is due, because at that
+ * point the answer is "any moment now" and a countdown to zero that lingers is
+ * worse than no countdown.
+ */
+function due(nextAt: number | null, nowSec: number): string {
+  if (!nextAt) return "";
+  const s = Math.floor(nextAt / 1000) - nowSec;
+  if (s <= 0) return "";
+  if (s < 60) return ` · next in ${s}s`;
+  return ` · next in ${Math.round(s / 60)}m`;
 }
 
 /** Plain-language version of claude-swap's error codes. */
@@ -281,8 +300,11 @@ export default function AccountsPanel({ onClose }: Props) {
                 {a.fetchedAt
                   ? <span
                       className={`ap-age${a.stale ? " ap-stale" : ""}`}
-                      title="When claude-swap last read this account's usage"
-                    >collected {ago(a.fetchedAt, nowSec)}</span>
+                      title={"When claude-swap last read this account's usage, and when it plans to read it again. "
+                           + "It sets that interval itself — 3 minutes at the fastest, wider while an account is "
+                           + "recovering from a rate limit — and every surface, including `cswap watch`, follows "
+                           + "the same plan."}
+                    >collected {ago(a.fetchedAt, nowSec)}{due(a.nextAt, nowSec)}</span>
                   : <span className="ap-age ap-stale" title="claude-swap has not read this account yet">never collected</span>}
               </div>
             </div>

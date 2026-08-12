@@ -203,6 +203,12 @@ export async function fetchClaudeAccounts({ force = false } = {}) {
       // this account is worth switching to.
       headroom: lanes.length ? Math.max(0, 100 - Math.max(...lanes.map(l => l.pct))) : null,
       fetchedAt: fetchedAtMs,
+      // When claude-swap plans to read this account again. It sets the
+      // interval per account (180s floor, out to 1800s while a token is
+      // recovering from a 429), and every surface — this panel, the TUI,
+      // `cswap watch` — inherits the same plan. Showing it turns "collected
+      // 13m ago" from a complaint into a schedule.
+      nextAt: matches && typeof row.nextPollAt === "number" ? Math.round(row.nextPollAt * 1000) : null,
       stale:     fetchedAtMs == null || now - fetchedAtMs > STALE_AFTER_MS,
       // Surfaced rather than hidden: a rate-limited or re-login-needed account
       // is exactly the one the user is about to try switching to.
