@@ -65,20 +65,30 @@ let _lastNudge = 0;
 /**
  * Whether anything is waiting to be collected.
  *
- * An account with a row is due when its own schedule says so. An account with
- * NO row has never been fetched at all, which is due by definition — and that
- * was the gap: a freshly added account has no usage.json entry, so nothing was
- * ever "due", so the collector was never asked, so the row never appeared. The
- * panel sat on "never fetched" indefinitely unless the user happened to run
- * cswap themselves.
+ * Judged per account that actually exists, and an account counts as waiting in
+ * three cases:
+ *
+ *   - it has no usage row at all;
+ *   - it has a row whose fetchedAt is not a number. claude-swap writes a row
+ *     when an account is added and fills in the numbers when it first polls,
+ *     so "row exists" is not the same as "has been fetched" — and that is the
+ *     state a freshly added account sits in. Treating the row's existence as
+ *     proof of a fetch left a new account reading "never fetched" forever;
+ *   - its own schedule says the next poll is due.
+ *
+ * Rows are consulted only for accounts in the store. A removed account leaves
+ * its row behind, permanently overdue and impossible to collect because the
+ * account is gone — counting those meant something was always due and the
+ * collector was asked every minute for the rest of the session.
  */
 export function collectionDue(rows, slots, now) {
   for (const slot of slots) {
-    if (!rows[slot]) return true;                    // never fetched
+    const r = rows[slot];
+    if (!r) return true;                                                  // never seen
+    if (typeof r.fetchedAt !== "number") return true;                     // seen, never fetched
+    if (typeof r.nextPollAt === "number" && r.nextPollAt * 1000 <= now) return true;
   }
-  return Object.values(rows).some(r =>
-    typeof r?.nextPollAt === "number" && r.nextPollAt * 1000 <= now
-  );
+  return false;
 }
 
 function nudgeCollector(rows, slots, now) {
