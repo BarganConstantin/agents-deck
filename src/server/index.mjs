@@ -1015,11 +1015,32 @@ function handleSse(req, res) {
   });
 }
 
+// True only when a supervisor is listening AND the event log is being written.
+// Without persistence a restart wipes the canvas irrecoverably — replayLog has
+// no file to read — so the deck must not offer to do it.
+let _canRestart = false;
+
 async function handleVersion(_req, res) {
   const { versionReport } = await import(
     pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href
   );
-  send(res, 200, await versionReport({ running: RUNNING_VERSION, pkgRoot: PKG_ROOT }));
+  const report = await versionReport({ running: RUNNING_VERSION, pkgRoot: PKG_ROOT });
+  send(res, 200, { ...report, canRestart: _canRestart });
+}
+
+// Restart is a two-party act: this half answers before it stops listening, so
+// the caller learns it was accepted rather than losing the socket mid-reply.
+function handleRestart(_req, res) {
+  if (!_onRestart) return send(res, 501, { ok: false, reason: "unsupervised" });
+  // Enforced here and not only in the UI. Under --no-persist a restart destroys
+  // the whole canvas — replayLog has no file to read — and a destructive act
+  // must not be prevented by a hidden button alone.
+  if (!_canRestart) return send(res, 409, { ok: false, reason: "no_persist" });
+  if (_restarting) return send(res, 202, { ok: true, already: true });
+  _restarting = true;
+  send(res, 200, { ok: true });
+  // Let the response flush before the listener goes away.
+  setTimeout(() => { try { _onRestart(); } catch { _restarting = false; } }, 120).unref();
 }
 
 async function handleQuota(req, res) {
@@ -1194,7 +1215,20 @@ async function tryListen(server, port, host) {
   });
 }
 
-export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true } = {}) {
+// Set from startServer's options. The server cannot restart itself — the
+// process lifecycle belongs to the supervisor in bin/agent-dag.js, which is the
+// only thing that can bring a replacement up on the same port without racing
+// the dying listener. Absent (running the module directly, or under an older
+// launcher), /api/restart answers 501 and the UI hides the control rather than
+// offering a button that does nothing.
+let _onRestart = null;
+// A restart is in flight. Several browser tabs watching the same deck will each
+// ask; the second ask must not re-enter the shutdown.
+let _restarting = false;
+
+export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true, onRestart = null } = {}) {
+  _onRestart = typeof onRestart === "function" ? onRestart : null;
+  _canRestart = _onRestart != null && persist != null;
   const removed = await sweepStaleDiscovery();
   if (removed > 0) console.log(`  swept ${removed} stale discovery file(s)`);
   if (persist) {
@@ -1223,6 +1257,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
     if (req.method === "GET"  && url.pathname === "/api/version")     return guard(handleVersion(req, res), res);
+    if (req.method === "POST" && url.pathname === "/api/restart")     return handleRestart(req, res);
     if (req.method === "GET"  && url.pathname === "/api/quota")       return guard(handleQuota(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return guard(handleCodexUsage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-quota") return guard(handleCodexQuota(req, res), res);

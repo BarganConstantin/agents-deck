@@ -28,6 +28,7 @@ No config. No install step. Ctrl+C to stop.
 - **Workspace filter** — `--scope` limits capture to the current directory; `--workspace <path>` for any subtree
 - **Zero trust step for Codex** — no hook install, no `/hooks` trust prompt; the server tails `~/.codex/sessions/` directly
 - **Version drift warning** — Node caches modules at startup, so a deck upgraded while running keeps executing the old code. The topbar says so, and points at the restart or the upgrade command
+- **Restarts itself when idle** — once the newer code is on disk, the deck comes back on the same port as soon as nothing has been running for 30 seconds. The canvas replays; it never installs anything on your behalf
 
 ## How it works
 
@@ -78,6 +79,21 @@ The update check is one ~20-byte GET to `registry.npmjs.org`, at most once a day
 and it never installs anything. Being told to restart after an upgrade is local
 only — no network involved — and cannot be turned off, because a deck running
 superseded code is a bug you cannot see any other way.
+
+### Restarting
+
+`agents-deck` runs as a two-process pair: a supervisor that owns nothing but the
+lifecycle, and the deck itself. When newer code is found on disk, the deck exits
+with code 75 and the supervisor brings it back **on the port it actually bound**,
+which is not always the one it asked for. Ctrl+C, stdout and exit codes behave
+exactly as before — same terminal, same process group.
+
+It restarts on its own only once nothing has been running for 30 seconds: hook
+events are fire-and-forget, so anything fired during the gap is lost. Turn that
+off with the toggle in the banner and use the button instead; the preference is
+per-browser. Under `--no-persist` restarting is refused outright, by the server
+and not just by the UI — with no event log there is nothing to replay, and the
+canvas would be gone.
 
 ## Uninstall
 

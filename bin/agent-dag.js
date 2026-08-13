@@ -1,304 +1,100 @@
 #!/usr/bin/env node
-// agent-dag CLI entrypoint. Registers hooks, starts server, opens browser.
-import { resolve, dirname, join } from "node:path";
-import { homedir } from "node:os";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync, readFileSync } from "node:fs";
+// Supervisor. Owns one thing: the worker's lifecycle.
+//
+// Why this exists at all: Node caches every module at import, so a deck that is
+// running when an upgrade lands keeps executing the old code until the process
+// is replaced. The deck can now see that (GET /api/version) — this is the half
+// that can act on it.
+//
+// The tempting shortcut is to have the server respawn itself and exit. Every
+// version of that is worse than it looks:
+//   • the replacement races the dying listener, and startServer answers
+//     EADDRINUSE by binding one of ten RANDOM ports in 4318–4400 — so the tab
+//     you are looking at reconnects forever next to a healthy invisible server;
+//   • an orphan spawned from a dying parent leaves the shell's foreground
+//     process group, so Ctrl+C stops reaching it;
+//   • with stdio ignored it also loses the banner, the URL line and every
+//     console.error the server writes.
+// A parent that stays alive avoids all three: the child is dead — and its
+// listening socket released — before the next one is spawned, stdio is
+// inherited so the terminal is unchanged, and Ctrl+C keeps working because the
+// process group never changes.
+//
+// Everything else the deck does still lives in bin/deck.js. This file must stay
+// boring: it is the one process that is never replaced.
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PKG_ROOT = resolve(__dirname, "..");
-const PKG_VERSION = (() => {
-  try { return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ?? "0.0.0"; }
-  catch { return "0.0.0"; }
-})();
+// Chosen because it means nothing else here: the worker exits 0 normally and
+// non-zero on failure, both of which must pass straight through.
+const RESTART_CODE = 75;
+const WORKER = join(dirname(fileURLToPath(import.meta.url)), "deck.js");
 
-const argv = process.argv.slice(2);
-const flags = parseArgs(argv);
+// The port the worker actually bound, which is not necessarily the one it was
+// asked for — the first launch falls back to a random port when 4317 is taken.
+// Re-launching without this is how a restart silently moves the deck out from
+// under an open tab.
+let boundPort = null;
+let restarts = 0;
+let child = null;
 
-if (flags.help) {
-  printHelp();
-  process.exit(0);
-}
+function launch(respawn) {
+  const args = [WORKER, ...process.argv.slice(2)];
+  // Appended last so it wins: the worker's parser keeps the final --port.
+  if (respawn && boundPort != null) args.push("--port", String(boundPort));
 
-if (flags.uninstall) {
-  const { uninstallHooks, hasCodexInstalled } = await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-  const claude = await uninstallHooks({ provider: "claude" });
-  console.log(claude.changed
-    ? `agents-deck: hooks removed from ${claude.settingsPath}`
-    : "agents-deck: no Claude hooks to remove");
-  if (hasCodexInstalled()) {
-    const codex = await uninstallHooks({ provider: "codex" });
-    console.log(codex.changed
-      ? `agents-deck: hooks removed from ${codex.settingsPath}`
-      : "agents-deck: no Codex hooks to remove");
-  }
-  process.exit(0);
-}
+  child = spawn(process.execPath, args, {
+    // stdio inherited so the child owns the same terminal the user started:
+    // same banner, same colours, same Ctrl+C. The fourth slot adds an IPC
+    // channel — the only way the worker can tell us which port it got, since
+    // parsing its stdout would be guesswork.
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+    env: {
+      ...process.env,
+      // Boot did the slow, once-per-session work already (hook install, the
+      // claude-swap probe with its 8s timeout, the ccusage prime). Repeating it
+      // is what would make a restart feel like a restart.
+      AGENTS_DECK_RESPAWN: respawn ? "1" : "",
+      AGENTS_DECK_RESTARTS: String(restarts),
+    },
+  });
 
-const port = Number(flags.port ?? process.env.AGENT_DAG_PORT ?? 4317);
-// Default = machine-wide (capture every CC session on this box). Pass
-// `--workspace <path>` (or `--scope`) to restrict to a single tree.
-const workspace = flags.workspace != null
-  ? flags.workspace
-  : (flags.scope ? process.cwd() : "");
-const openBrowser = flags.noOpen !== true;
-const persist = flags.noPersist
-  ? null
-  : (flags.history ?? join(homedir(), ".claude", "agent-dag", "events.jsonl"));
+  child.on("message", (m) => {
+    if (m && m.type === "listening" && typeof m.port === "number") boundPort = m.port;
+  });
 
-const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
-  await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-const { startServer } =
-  await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
-
-// Codex hooks install when ~/.codex/ exists, unless --no-codex was passed.
-// --codex forces install even if the dir is missing (creates it).
-const wantCodex = flags.noCodex
-  ? false
-  : (flags.codex === true || hasCodexInstalled());
-
-const WEB_DIST = join(PKG_ROOT, "dist", "web", "index.html");
-if (!existsSync(WEB_DIST)) {
-  console.error("agents-deck: ui not built. run `npm run build` (or `pnpm build`) first.");
-  process.exit(1);
-}
-
-// ── ANSI helpers ──────────────────────────────────────────────────────────────
-const tty = process.stdout.isTTY;
-const C = {
-  reset:   tty ? "\x1b[0m"  : "",
-  bold:    tty ? "\x1b[1m"  : "",
-  dim:     tty ? "\x1b[2m"  : "",
-  cyan:    tty ? "\x1b[36m" : "",
-  blue:    tty ? "\x1b[34m" : "",
-  magenta: tty ? "\x1b[35m" : "",
-  yellow:  tty ? "\x1b[33m" : "",
-  green:   tty ? "\x1b[32m" : "",
-  white:   tty ? "\x1b[97m" : "",
-  bCyan:   tty ? "\x1b[96m" : "",
-  bMag:    tty ? "\x1b[95m" : "",
-};
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-// ── Animated banner ───────────────────────────────────────────────────────────
-async function printBanner() {
-  // figlet slant font — hardcoded, no runtime dep
-  const ART = [
-    '                          __                 __          __  ',
-    '  ____ _____ ____  ____  / /______      ____/ /__  _____/ /__',
-    ' / __ `/ __ `/ _ \\/ __ \\/ __/ ___/_____/ __  / _ \\/ ___/ //_/',
-    '/ /_/ / /_/ /  __/ / / / /_(__  )_____/ /_/ /  __/ /__/ ,<   ',
-    '\\__,_/\\__, /\\___/_/ /_/\\__/____/      \\__,_/\\___/\\___/_/|_|  ',
-    '     /____/                                                    ',
-  ];
-  const COLORS = [C.dim, C.blue, C.cyan, C.bCyan, C.magenta, C.dim];
-
-  process.stdout.write('\n');
-
-  if (tty) {
-    const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-    for (let i = 0; i < 8; i++) {
-      process.stdout.write(`\r  ${C.bCyan}${frames[i % frames.length]}${C.reset}  ${C.dim}loading…${C.reset}`);
-      await sleep(70);
+  child.on("exit", (code, signal) => {
+    child = null;
+    if (code === RESTART_CODE) {
+      restarts++;
+      launch(true);
+      return;
     }
-    process.stdout.write('\r' + ' '.repeat(28) + '\n');
-    await sleep(40);
-  }
+    // Anything else is the worker's own verdict and belongs to whoever started
+    // us — including the ccdeck wrapper, which exits with our code in turn.
+    if (signal) process.kill(process.pid, signal);
+    else process.exit(code ?? 0);
+  });
 
-  for (let i = 0; i < ART.length; i++) {
-    process.stdout.write(` ${COLORS[i]}${ART[i]}${C.reset}\n`);
-    if (tty) await sleep(38);
-  }
-
-  process.stdout.write(`\n  ${C.dim}v${PKG_VERSION}  ·  live agent DAG · Claude Code + Codex${C.reset}\n\n`);
+  child.on("error", (err) => {
+    console.error(`agents-deck: could not start ${WORKER}: ${err.message}`);
+    process.exit(1);
+  });
 }
 
-// ── Spinner ───────────────────────────────────────────────────────────────────
-function spinner(label) {
-  if (!tty) { process.stdout.write(`  … ${label}\n`); return { stop: (ok, msg) => process.stdout.write(`  ${ok ? "✓" : "✗"} ${msg}\n`) }; }
-  const frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-  let i = 0;
-  const iv = setInterval(() => {
-    process.stdout.write(`\r  ${C.cyan}${frames[i++ % frames.length]}${C.reset}  ${label}`);
-  }, 80);
-  return {
-    stop(ok, msg) {
-      clearInterval(iv);
-      const icon = ok ? `${C.green}✓${C.reset}` : `${C.yellow}✗${C.reset}`;
-      process.stdout.write(`\r  ${icon}  ${msg}\n`);
-    }
-  };
+// Ctrl+C already reaches the child directly — it shares this process group — so
+// forwarding would deliver it twice. These handlers exist only to keep the
+// supervisor alive long enough for the child's own graceful shutdown to run and
+// for its exit code to arrive.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    // On Windows none of these are delivered to a Node process, which is fine:
+    // there the console kills the whole tree and sweepStaleDiscovery cleans up
+    // on the next boot.
+    if (child) { try { child.kill(sig); } catch { /* already gone */ } }
+    else process.exit(0);
+  });
 }
 
-await printBanner();
-
-// ── Startup steps ─────────────────────────────────────────────────────────────
-process.stdout.write(`  ${C.dim}workspace :${C.reset} ${workspace === "" ? C.yellow + "(all)" + C.reset : workspace}\n`);
-
-let sp = spinner("installing Claude hooks…");
-const claudeInstall = await installHooks({ provider: "claude" });
-sp.stop(true, `Claude hooks     ${C.dim}→ ${claudeInstall.hookPath}${C.reset}`);
-
-// Codex CLI hooks never fire on Windows (sandbox refuses to spawn the hook
-// command). Instead the server tails Codex's rollout JSONL files directly, so
-// there's nothing to install and no /hooks trust step. We just confirm Codex
-// is present and let the watcher pick up sessions.
-if (wantCodex) {
-  process.stdout.write(`  ${C.green}✓${C.reset} Codex sessions    ${C.dim}→ watching ${join(homedir(), ".codex", "sessions")}${C.reset}\n`);
-} else {
-  process.stdout.write(`  ${C.dim}Codex watch skipped (no ~/.codex/, or --no-codex)${C.reset}\n`);
-}
-
-// claude-swap backs the multi-account panel. Installing it touches the user's
-// global tool path, so unlike the ccusage install this one announces itself.
-{
-  const { ensureCswap } = await import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-install.mjs")).href);
-  const csp = spinner("checking claude-swap…");
-  const cs = await ensureCswap();
-  if (cs.state === "present") {
-    csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version} (accounts panel enabled)${C.reset}`);
-  } else if (cs.state === "installed") {
-    csp.stop(true, `claude-swap      ${C.dim}→ installed v${cs.version} via ${cs.via}${C.reset}`);
-  } else if (cs.state === "upgrading") {
-    csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version}, upgrading to v${cs.latest} in background${C.reset}`);
-  } else if (cs.state === "skipped") {
-    csp.stop(true, `claude-swap      ${C.dim}not installed (AGENTS_DECK_NO_INSTALL=1)${C.reset}`);
-  } else {
-    const how = cs.reason === "no_installer"
-      ? "not installed — the accounts panel needs it"
-      : cs.reason === "not_on_path"
-        ? `installed via ${cs.via} but not on PATH — add ${
-            process.platform === "win32" ? "%USERPROFILE%\\.local\\bin" : "~/.local/bin"
-          }`
-        : `install failed via ${cs.via}`;
-    csp.stop(false, `claude-swap      ${C.dim}${how}${C.reset}`);
-    // A URL is not an answer when someone just wants the panel to work. Print
-    // the command for THIS machine, picked from what is already on it.
-    if (cs.hint) process.stdout.write(`    ${C.dim}${cs.hint}${C.reset}\n`);
-  }
-
-  // A working claude-swap with an empty store still leaves the panel useless,
-  // so the account already signed in is registered once. Bounded inside
-  // seedFirstAccount: empty store only, once ever, never with NO_INSTALL set.
-  if (cs.state === "present" || cs.state === "installed" || cs.state === "upgrading") {
-    const { seedFirstAccount } = await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-accounts.mjs")).href);
-    const seed = await seedFirstAccount().catch(() => ({ state: "failed" }));
-    if (seed.state === "added") {
-      process.stdout.write(`  ${C.green}✓${C.reset} accounts         ${C.dim}registered the signed-in account (cswap add)${C.reset}\n`);
-    } else if (seed.state === "failed" || seed.state === "nothing-to-add") {
-      process.stdout.write(`  ${C.dim}  accounts panel empty — sign in to Claude Code, then run cswap add${C.reset}\n`);
-    }
-  }
-}
-
-// ccusage backs the usage-history modal. Primed here rather than on first
-// open so a cold machine pays the install while the deck is still booting.
-if (process.env.AGENTS_DECK_NO_INSTALL !== "1") {
-  const { primeCcusage } = await import(pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href);
-  const cu = primeCcusage();
-  if (cu.state === "present")         process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}→ v${cu.version}${C.reset}\n`);
-  else if (cu.state === "updating")   process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}→ v${cu.version}, checking for update${C.reset}\n`);
-  else if (cu.state === "installing") process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}installing in background${C.reset}\n`);
-}
-
-// A newer release on npm, said once, in the place the upgrade gets typed.
-// Started here and collected below so the lookup overlaps the rest of boot, and
-// hard-capped so a slow registry cannot delay the server — the answer is
-// usually already cached in ~/.agents-deck/.self-update-check anyway. It has to
-// resolve BEFORE the pulse indicator starts writing over the last line.
-const selfCheck = import(pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href)
-  .then(m => m.versionReport({ running: PKG_VERSION, pkgRoot: PKG_ROOT }))
-  .catch(() => null);
-const upgrade = await Promise.race([
-  selfCheck.then(r => r?.notice?.kind === "upgrade" ? r : null),
-  new Promise(r => setTimeout(() => r(null), 1200)),
-]);
-if (upgrade) {
-  process.stdout.write(
-    `  ${C.yellow}↑${C.reset} update           ${C.dim}v${upgrade.notice.to} available — ${C.reset}${C.yellow}${upgrade.command}${C.reset}\n`,
-  );
-}
-
-sp = spinner("starting server…");
-const server = await startServer({ port, persist, workspace, codex: wantCodex }).catch(err => {
-  sp.stop(false, `server failed: ${err.message}`);
-  process.exit(1);
-});
-const addr = server.address();
-const realPort = typeof addr === "object" && addr ? addr.port : port;
-const url = `http://127.0.0.1:${realPort}`;
-sp.stop(true, `server ready     ${C.dim}→ ${C.reset}${C.bCyan}${C.bold}${url}${C.reset}`);
-
-if (persist) process.stdout.write(`  ${C.dim}log       : ${persist}${C.reset}\n`);
-
-process.stdout.write(`\n  ${C.green}${C.bold}▶  opening browser…${C.reset}\n\n`);
-
-const discoveryFile = await writeDiscovery({ port: realPort, workspace });
-
-if (openBrowser) {
-  try {
-    const { default: open } = await import("open");
-    await open(url);
-  } catch {}
-}
-
-// ── Pulse indicator ───────────────────────────────────────────────────────────
-if (tty) {
-  const pulseFrames = [`${C.green}●${C.reset}`, `${C.dim}●${C.reset}`];
-  let pi = 0;
-  setInterval(() => {
-    process.stdout.write(`\r  ${pulseFrames[pi++ % 2]}  ${C.dim}listening — Ctrl+C to stop${C.reset}   `);
-  }, 800).unref();
-}
-
-const shutdown = async () => {
-  if (tty) process.stdout.write(`\n\n  ${C.yellow}◉  shutting down…${C.reset}\n`);
-  await removeDiscovery(discoveryFile);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 1500).unref();
-};
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-process.on("beforeExit", () => removeDiscovery(discoveryFile));
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-function parseArgs(args) {
-  const out = {};
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "-h" || a === "--help") out.help = true;
-    else if (a === "-p" || a === "--port") out.port = args[++i];
-    else if (a === "--no-open") out.noOpen = true;
-    else if (a === "--uninstall") out.uninstall = true;
-    else if (a === "--workspace") out.workspace = args[++i];
-    else if (a === "--scope") out.scope = true;
-    else if (a === "--all") out.all = true; // legacy no-op (now default)
-    else if (a === "--no-persist") out.noPersist = true;
-    else if (a === "--history") out.history = args[++i];
-    else if (a === "--codex") out.codex = true;
-    else if (a === "--no-codex") out.noCodex = true;
-  }
-  return out;
-}
-
-function printHelp() {
-  process.stdout.write(`agents-deck — live deck of Claude Code + Codex agents
-
-Usage:
-  agents-deck [options]
-
-Options:
-  -p, --port <number>      Preferred port (default: 4317; falls back to random 4318–4400)
-      --no-open            Don't open the browser automatically
-      --workspace <path>   Only capture sessions whose cwd is inside <path>
-      --scope              Restrict to current working directory
-      --all                Capture every session (default)
-      --history <path>     Override events log file (default: ~/.claude/agent-dag/events.jsonl)
-      --no-persist         Don't write or replay events log (RAM-only)
-      --codex              Force-enable Codex capture even if ~/.codex/ missing
-      --no-codex           Skip Codex capture (Claude only)
-      --uninstall          Remove agents-deck Claude hook entries
-  -h, --help               Show this help
-`);
-}
+launch(false);
