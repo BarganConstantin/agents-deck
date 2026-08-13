@@ -21,6 +21,7 @@ import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
+import { autoRestartStep } from "./restart";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -85,7 +86,12 @@ type VersionInfo = {
   latest: string | null;
   notice: VersionNotice | null;
   command: string;
+  // False when nothing is supervising the process, or when --no-persist means a
+  // restart would take the canvas with it.
+  canRestart?: boolean;
 };
+
+const AUTO_RESTART_KEY = "agent-dag.autoRestart";
 
 // First-run layout: Usage and Accounts open, everything else closed. Those two
 // answer "how much have I got left, and on which account" — the questions you
@@ -641,32 +647,38 @@ function Inner() {
   // A deck upgraded while it was running keeps executing the old code, silently
   // and indefinitely. Nothing else in the product can tell you that, so this
   // asks the server which version it actually booted with.
+  // Declared here because the version check keys off it: a restart ends with
+  // the SSE stream reconnecting.
+  const [live, setLive] = useState(false);
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [versionDismissed, setVersionDismissed] = useState<string>(() => {
     if (typeof window === "undefined") return "";
     try { return window.localStorage.getItem(VERSION_DISMISSED_KEY) ?? ""; } catch { return ""; }
   });
   const [cmdCopied, setCmdCopied] = useState(false);
+  const loadVersion = useCallback(() => {
+    fetch("/api/version")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setVersion(d as VersionInfo); })
+      .catch(() => {});
+  }, []);
   useEffect(() => {
-    let alive = true;
-    const load = () => {
-      fetch("/api/version")
-        .then(r => r.ok ? r.json() : null)
-        .then(d => { if (alive && d) setVersion(d as VersionInfo); })
-        .catch(() => {});
-    };
-    load();
-    const iv = window.setInterval(load, 5 * 60_000);
+    loadVersion();
+    const iv = window.setInterval(loadVersion, 5 * 60_000);
     // Coming back to this tab is exactly the moment after someone ran the
     // upgrade in another window — cheaper and far more timely than the interval.
-    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    const onVis = () => { if (document.visibilityState === "visible") loadVersion(); };
     document.addEventListener("visibilitychange", onVis);
     return () => {
-      alive = false;
       window.clearInterval(iv);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, []);
+  }, [loadVersion]);
+  // The stream coming back is the end of a restart, and the only moment the
+  // answer is known to have changed. Without this the banner sat on
+  // "restarting…" until the five-minute poll came round — and in a background
+  // tab, where visibilitychange never fires, that was the only thing left.
+  useEffect(() => { if (live) loadVersion(); }, [live, loadVersion]);
   const notice = version?.notice ?? null;
   // Keyed to the version it is about, so dismissing today's notice does not
   // silence next month's release.
@@ -736,10 +748,86 @@ function Inner() {
    */
   const dragPatchRef = useRef<Map<string, { x: number; y: number }> | null>(null);
   const [dragMoveTick, setDragMoveTick] = useState(0);
-  const [live, setLive] = useState(false);
   const [paused, setPaused] = useState(false);
   const queueRef = useRef<HookEnvelope[]>([]);
   const [now, setNow] = useState(Date.now());
+
+  // ── restart ───────────────────────────────────────────────────────────────
+  // The server cannot restart itself without racing its own listener onto a
+  // random fallback port, so the supervisor owns it and this only asks.
+  const [autoRestart, setAutoRestart] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try { return window.localStorage.getItem(AUTO_RESTART_KEY) !== "0"; } catch { return true; }
+  });
+  const toggleAutoRestart = useCallback(() => {
+    setAutoRestart(v => {
+      const next = !v;
+      try { window.localStorage.setItem(AUTO_RESTART_KEY, next ? "1" : "0"); } catch { /* private mode */ }
+      return next;
+    });
+  }, []);
+  const [restarting, setRestarting] = useState(false);
+  const [restartedTo, setRestartedTo] = useState<string | null>(null);
+  const restartAskedRef = useRef(false);
+  const askRestart = useCallback(async () => {
+    if (restartAskedRef.current) return;
+    restartAskedRef.current = true;
+    setRestarting(true);
+    // Remembered across the reconnect so the deck can confirm what it landed
+    // on rather than claiming success the moment the request was accepted.
+    try { window.sessionStorage.setItem("agent-dag.restartPending", notice?.to ?? ""); } catch {}
+    // The socket dying IS the restart, so a rejection here is a success signal
+    // as often as a failure one — neither is worth acting on.
+    try { await fetch("/api/restart", { method: "POST" }); } catch { /* expected */ }
+    // Nothing came back. Rather than leave a disabled button and a banner
+    // frozen on "restarting…", hand the control back so it can be tried again.
+    window.setTimeout(() => {
+      if (!restartAskedRef.current) return;
+      restartAskedRef.current = false;
+      setRestarting(false);
+      try { window.sessionStorage.removeItem("agent-dag.restartPending"); } catch {}
+    }, 30_000);
+  }, [notice?.to]);
+
+  // Nothing running for a sustained stretch is the only safe moment: a restart
+  // mid-turn silently drops the hook events fired during the gap, leaving tools
+  // stuck in flight on the canvas until the stale sweeper reaps them. The rule
+  // itself lives in restart.ts, where it can be tested.
+  const idleSinceRef = useRef<number | null>(null);
+  useEffect(() => {
+    let busy = false;
+    for (const a of stateRef.current.agents.values()) {
+      if (a.state === "active") { busy = true; break; }
+    }
+    const step = autoRestartStep({
+      enabled: autoRestart,
+      kind: notice?.kind,
+      canRestart: version?.canRestart === true,
+      busy,
+      idleSince: idleSinceRef.current,
+      now,
+    });
+    idleSinceRef.current = step.idleSince;
+    if (step.restart) askRestart();
+  }, [autoRestart, notice?.kind, version?.canRestart, now, askRestart]);
+
+  // Landed. `running` moving to the version we were promised is the only proof
+  // that the new code is actually the code answering.
+  useEffect(() => {
+    const running = version?.running;
+    if (!running) return;
+    let pending: string | null = null;
+    try { pending = window.sessionStorage.getItem("agent-dag.restartPending"); } catch { return; }
+    if (pending == null) return;
+    if (pending && pending !== running) return; // still the old process
+    try { window.sessionStorage.removeItem("agent-dag.restartPending"); } catch {}
+    restartAskedRef.current = false;
+    setRestarting(false);
+    setRestartedTo(running);
+    const t = window.setTimeout(() => setRestartedTo(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [version?.running]);
+
   // Restore pinned positions synchronously on first render so they're
   // applied before snapshotToFlow runs autoLayout. Sessions outlast a
   // browser refresh (their session_id is stable), so dragged positions
@@ -1740,10 +1828,18 @@ function Inner() {
         </div>
       </header>
 
-      {everConnected && !live ? (
+      {restartedTo ? (
+        // Outranks both: it is the shortest-lived of the three and it answers
+        // the question the other two just raised.
+        <div className="ver-banner done" role="status">
+          <span className="ver-dot" />
+          <strong>Restarted — now running v{restartedTo}.</strong>
+          <span className="ver-sub">The canvas replayed from the event log.</span>
+        </div>
+      ) : everConnected && !live ? (
         <div className="conn-banner" role="alert">
           <span className="conn-dot" />
-          Lost connection to agents-deck server. Reconnecting…
+          {restarting ? "Restarting agents-deck…" : "Lost connection to agents-deck server. Reconnecting…"}
         </div>
       ) : noticeOpen && notice && (
         // Both banners want grid row 2, and a dead connection is the more
@@ -1753,10 +1849,26 @@ function Inner() {
           {notice.kind === "restart" ? (
             <>
               <strong>v{notice.to} is installed — this deck still runs v{notice.from}.</strong>
-              <span
-                className="ver-sub"
-                title="Node loads every module once, at startup. An upgrade replaces the files on disk but not the code already in memory, so this process keeps running the old version until it is restarted."
-              >Restart it to pick up the new code.</span>
+              {version?.canRestart ? (
+                <>
+                  <button type="button" className="ver-act" onClick={askRestart} disabled={restarting}
+                    title="Stop this process and bring it back on the same port. The canvas replays from the event log.">
+                    {restarting ? "restarting…" : "Restart now"}
+                  </button>
+                  <button type="button" className={`ver-auto${autoRestart ? " on" : ""}`}
+                    role="switch" aria-checked={autoRestart} onClick={toggleAutoRestart}
+                    title={autoRestart
+                      ? "Restarts on its own once nothing has been running for 30 seconds. Click to require a click instead."
+                      : "Only restarts when you click. Click to let it restart itself while idle."}>
+                    <i aria-hidden />auto when idle
+                  </button>
+                </>
+              ) : (
+                <span
+                  className="ver-sub"
+                  title="Node loads every module once, at startup. An upgrade replaces the files on disk but not the code already in memory, so this process keeps running the old version until it is restarted."
+                >Restart it to pick up the new code.</span>
+              )}
             </>
           ) : (
             <>
