@@ -507,6 +507,10 @@ export function bubblePush(
   const boxes: Box[] = [];
   const grew = new Set<string>();
   const seen = new Set<string>();
+  // Read before the loop below fills it in. Cards are measured as they mount,
+  // so on the very first call the boxes are whatever has rendered so far —
+  // usually crossing, and always about to change. Nothing is worth moving yet.
+  const firstCall = prevSessionSize.size === 0;
 
   // Sorted so the relaxation is deterministic: same input, same output.
   for (const sid of [...bySession.keys()].sort()) {
@@ -533,10 +537,45 @@ export function bubblePush(
   }
   for (const sid of [...prevSessionSize.keys()]) if (!seen.has(sid)) prevSessionSize.delete(sid);
 
-  if (recordOnly || grew.size === 0) return [];
+  if (recordOnly || firstCall) return [];
 
-  // The session that grew holds its ground; everything else yields to it.
-  for (const b of boxes) if (grew.has(b.sid)) b.mass = 8;
+  // Growth is the usual cause of a collision, and for a long time it was the
+  // only one this bothered to look for. It is not the only one.
+  //
+  // separateOverlaps keeps CARDS apart, but what the user sees crossing is the
+  // BOX drawn around each session — the union of its cards, plus padding, a
+  // header and a label tab. A three-card session can sit in the vertical gap
+  // between two cards of a twenty-card one, clash with neither, and still be
+  // drawn straight through the middle of its box. Nothing grew, so nothing
+  // looked; the boxes stayed crossed until something else happened to move.
+  //
+  // A session dropped into a gap by fillGapsWithNewSessions, a card slid clear
+  // of one neighbour into another's span, and a board restored from storage all
+  // land in the same place. So: run whenever boxes are actually crossing, and
+  // let growth decide only who holds their ground.
+  let crossing = false;
+  for (let i = 0; i < boxes.length && !crossing; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (a.anchored && b.anchored) continue;
+      if (Math.abs((a.x + a.w / 2) - (b.x + b.w / 2)) < (a.w + b.w) / 2 + GAP_X &&
+          Math.abs((a.y + a.h / 2) - (b.y + b.h / 2)) < (a.h + b.h) / 2 + GAP_Y) {
+        crossing = true;
+        break;
+      }
+    }
+  }
+  if (grew.size === 0 && !crossing) return [];
+
+  if (grew.size > 0) {
+    // The session that grew holds its ground; everything else yields to it.
+    for (const b of boxes) if (grew.has(b.sid)) b.mass = 8;
+  } else {
+    // Nothing changed size, so there is no culprit to hold still. Area decides
+    // instead: shoving a twenty-card session aside to clear a three-card one
+    // rearranges far more of the canvas than the reverse does.
+    for (const b of boxes) b.mass = Math.max(1, (b.w * b.h) / (NODE_W * NODE_H));
+  }
 
   // ── relax ────────────────────────────────────────────────────────────────
   const startX = new Map(boxes.map(b => [b.sid, b.x]));

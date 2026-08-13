@@ -201,3 +201,86 @@ describe("bubblePush", () => {
     expect([...prev.keys()]).toEqual(["sa"]);
   });
 });
+
+describe("bubblePush — boxes that cross without anything growing", () => {
+  // Reported with a screenshot: three small session boxes drawn straight
+  // through a twenty-card one. separateOverlaps had kept every CARD apart, and
+  // it had — the small sessions were sitting in the vertical gaps between the
+  // big session's cards. What crossed was the BOX drawn around each session,
+  // which separateOverlaps never looks at, and bubblePush skipped because
+  // nothing had grown that frame.
+  const settle = (
+    nodes: Node[],
+    pos: Map<string, { x: number; y: number }>,
+    m: Map<string, { width: number; height: number }>,
+    prev: Map<string, { w: number; h: number }>,
+  ) => {
+    // First call only records — the production gate for "measurement is still
+    // arriving" — so the assertions are about the second.
+    bubblePush(nodes, pos, new Map(), m, prev);
+    return bubblePush(nodes, pos, new Map(), m, prev);
+  };
+
+  it("separates a small session sitting inside a tall one's box", () => {
+    // "tall" spans y 0..1000 in one column; "small" sits beside it in the gap
+    // between two of its cards, touching neither.
+    const nodes = [
+      agent("t1", "tall"), agent("t2", "tall"), agent("t3", "tall"),
+      agent("s1", "small"),
+    ];
+    const pos = at([
+      ["t1", 600, 0], ["t2", 600, 400], ["t3", 600, 880],
+      ["s1", 300, 250],   // no card overlap: t1 ends at 120, t2 starts at 400
+    ]);
+    const m = sizes(["t1", "t2", "t3", "s1"]);
+    const prev = new Map<string, { w: number; h: number }>();
+
+    expect(collidingSessions(nodes, pos, m)).not.toEqual([]);
+    const moved = settle(nodes, pos, m, prev);
+    expect(moved).not.toEqual([]);
+    expect(collidingSessions(nodes, pos, m)).toEqual([]);
+  });
+
+  it("moves the small session rather than the big one", () => {
+    // Nothing grew, so there is no culprit; area decides who yields. Shoving
+    // the twenty-card session aside would rearrange far more of the canvas.
+    const nodes = [
+      agent("t1", "tall"), agent("t2", "tall"), agent("t3", "tall"),
+      agent("s1", "small"),
+    ];
+    const pos = at([
+      ["t1", 600, 0], ["t2", 600, 400], ["t3", 600, 880],
+      ["s1", 300, 250],
+    ]);
+    const m = sizes(["t1", "t2", "t3", "s1"]);
+    const prev = new Map<string, { w: number; h: number }>();
+    settle(nodes, pos, m, prev);
+
+    const tallShift = Math.abs(pos.get("t1")!.x - 600) + Math.abs(pos.get("t1")!.y - 0);
+    const smallShift = Math.abs(pos.get("s1")!.x - 300) + Math.abs(pos.get("s1")!.y - 250);
+    expect(smallShift).toBeGreaterThan(tallShift);
+  });
+
+  it("still stays put when the boxes are already clear", () => {
+    // The gate that keeps this from running on every frame of a healthy board.
+    const nodes = [agent("a", "sa"), agent("b", "sb")];
+    const pos = at([["a", 0, 0], ["b", 0, 800]]);
+    const m = sizes(["a", "b"]);
+    const prev = new Map<string, { w: number; h: number }>();
+    bubblePush(nodes, pos, new Map(), m, prev);
+    const before = JSON.stringify([...pos]);
+    expect(bubblePush(nodes, pos, new Map(), m, prev)).toEqual([]);
+    expect(JSON.stringify([...pos])).toBe(before);
+  });
+
+  it("leaves a session the user dragged where they put it", () => {
+    const nodes = [agent("t1", "tall"), agent("t2", "tall"), agent("s1", "small")];
+    const pos = at([["t1", 600, 0], ["t2", 600, 400], ["s1", 300, 250]]);
+    const m = sizes(["t1", "t2", "s1"]);
+    const pinned = new Map([["s1", { x: 300, y: 250 }]]);
+    const prev = new Map<string, { w: number; h: number }>();
+    bubblePush(nodes, pos, pinned, m, prev);
+    bubblePush(nodes, pos, pinned, m, prev);
+    expect(pos.get("s1")).toEqual({ x: 300, y: 250 });
+  });
+});
