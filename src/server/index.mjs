@@ -1121,6 +1121,48 @@ async function handleClaudeAccountSwitch(req, res) {
   send(res, result.ok ? 200 : 400, result);
 }
 
+function cswapAdminModule() {
+  return import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-admin.mjs")).href);
+}
+
+// Reading the login's progress. The browser polls this while its dialog is
+// open, the same way the upgrade notice polls /api/version.
+async function handleAccountLoginState(_req, res) {
+  const { loginState } = await cswapAdminModule();
+  send(res, 200, { ok: true, ...loginState() });
+}
+
+/**
+ * Everything that changes the account store, behind one verb switch — the shape
+ * handleCswapAutoAction already uses.
+ *
+ * The sign-in code is the one field here that is a credential. It is read out
+ * of the body, handed straight to the child's stdin, and never logged, echoed
+ * back, or written anywhere — which is also why this is a POST body and not a
+ * query parameter.
+ */
+async function handleClaudeAccountAdmin(req, res) {
+  const admin = await cswapAdminModule();
+  const body = await readBody(req).catch(() => null);
+  let parsed = null;
+  try { parsed = JSON.parse(body ?? ""); } catch { /* handled below */ }
+  if (!parsed || typeof parsed !== "object") return send(res, 400, { ok: false, reason: "bad_request" });
+
+  let result;
+  switch (parsed.action) {
+    case "login":        result = await admin.startLogin({ email: parsed.email }); break;
+    case "login-code":   result = await admin.submitLoginCode(parsed.code); break;
+    case "login-cancel": result = await admin.cancelLogin(); break;
+    case "share":        result = await admin.shareAccount(parsed.account); break;
+    case "import":       result = await admin.importAccount(parsed.blob); break;
+    case "remove":       result = await admin.removeAccount(parsed.account); break;
+    case "alias":        result = await admin.setAlias(parsed.account, parsed.alias); break;
+    case "move":         result = await admin.moveAccount(parsed.account, parsed.slot); break;
+    default: return send(res, 400, { ok: false, reason: "unknown_action" });
+  }
+  send(res, result.ok ? 200 : 400, result);
+}
+
 function cswapAutoModule() {
   return import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-auto.mjs")).href);
 }
@@ -1276,6 +1318,8 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/ccusage")     return guard(handleCcusage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/claude-accounts") return guard(handleClaudeAccounts(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/claude-accounts/switch") return guard(handleClaudeAccountSwitch(req, res), res);
+    if (req.method === "GET"  && url.pathname === "/api/claude-accounts/login")  return guard(handleAccountLoginState(req, res), res);
+    if (req.method === "POST" && url.pathname === "/api/claude-accounts/admin")  return guard(handleClaudeAccountAdmin(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/sound-hook") return guard(handleSoundHook(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/sound-hook") return guard(handleSoundHookSet(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/cswap-auto")  return guard(handleCswapAuto(req, res), res);

@@ -3350,3 +3350,175 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .canvas-wrap.dragging-any .react-flow__node.react-flow__node-sessionGroup {
   transition: none;
 }
+
+/* ---------------- accounts: add, manage, share ---------------- */
+/* The panel gained the ability to change the store, not just read it. These
+   controls stay inside the existing `ap-` vocabulary rather than starting a
+   new one: same 9–11.5px sizes, same tokens, same 120ms transitions. */
+
+.ap-add {
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 8px 4px;
+  color: var(--accent);
+}
+.ap-add:hover { border-color: var(--accent-dim); }
+
+/* The row's own disclosure. Nearly invisible until the row is hovered, because
+   nine of ten visits to this panel are to read a number. */
+.ap-more {
+  margin-left: 4px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted-dim);
+  font-size: 13px;
+  line-height: 1.1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms, border-color 120ms;
+}
+.ap-account:hover .ap-more, .ap-more:focus-visible, .ap-more.on { opacity: 1; }
+.ap-more:hover, .ap-more.on { color: var(--text); border-color: var(--line); }
+
+.ap-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-soft);
+}
+.ap-manage-row { display: flex; align-items: center; gap: 6px; }
+.ap-manage-label {
+  width: 34px;
+  flex: none;
+  color: var(--muted-dim);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ap-manage-hint { color: var(--muted-dim); font-size: 10px; }
+.ap-manage-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+.ap-manage-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ap-manage-btn {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.ap-manage-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.ap-manage-btn:disabled { opacity: 0.45; cursor: default; }
+.ap-manage-btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
+/* Armed is a different button, not a hover state: it is one click from
+   deleting stored credentials, and it disarms itself after four seconds. */
+.ap-manage-btn.danger.armed {
+  color: var(--bg);
+  background: var(--err);
+  border-color: var(--err);
+  font-weight: 600;
+}
+
+.ap-share { display: flex; flex-direction: column; gap: 5px; }
+.ap-share-blob {
+  display: block;
+  max-height: 66px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  line-height: 1.4;
+  user-select: all;
+}
+.ap-share-foot { display: flex; align-items: center; gap: 8px; }
+
+/* ---------------- add-account dialog ---------------- */
+/* On the shared .modal shell. Narrower than a tool inspector — this is a form,
+   and a form the width of a log dump reads as a mistake. */
+.aa-modal { width: min(560px, 92vw); }
+.aa-body { gap: 18px; display: flex; flex-direction: column; }
+
+.aa-tabs { display: inline-flex; gap: 4px; }
+.aa-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.aa-tab:hover { color: var(--text); }
+.aa-tab.on {
+  color: var(--text);
+  border-color: var(--accent-dim);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.aa-step { display: flex; flex-direction: column; gap: 8px; }
+.aa-step h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.aa-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.aa-err { margin: 0; color: var(--err); font-size: 12px; line-height: 1.5; }
+/* The link is long and unbreakable; letting it decide the dialog's width would
+   push everything else off screen. */
+.aa-link {
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  text-decoration: none;
+  user-select: all;
+}
+.aa-link:hover { border-color: var(--accent-dim); text-decoration: underline; }
+
+.aa-field { display: flex; align-items: center; gap: 8px; }
+.aa-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.aa-field input::placeholder { color: var(--muted-dim); }
+.aa-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.aa-field input:disabled { opacity: 0.55; }
