@@ -5,7 +5,7 @@
 // in flight on the canvas. So the gate that decides "now is a safe moment" is
 // the part worth pinning down.
 import { describe, it, expect } from "vitest";
-import { autoRestartStep, IDLE_BEFORE_RESTART_MS } from "../restart";
+import { autoRestartStep, shouldReloadBundle, IDLE_BEFORE_RESTART_MS } from "../restart";
 
 const NOW = 1_800_000_000_000;
 const ok = {
@@ -67,5 +67,34 @@ describe("autoRestartStep", () => {
     // for however long the jump was.
     const step = autoRestartStep({ ...ok, idleSince: NOW + 60_000 });
     expect(step).toEqual({ idleSince: NOW, restart: false });
+  });
+});
+
+describe("shouldReloadBundle", () => {
+  // Reported from a real deck: after it restarted itself onto v1.32.0 the tab
+  // still showed v1.31.0's banner, without the Restart button that version
+  // added — because the page kept executing the bundle it had downloaded. The
+  // button "only appeared after a refresh". Nothing else reloads the page, so
+  // this does.
+  it("reloads when the page's own code is older than the server's", () => {
+    expect(shouldReloadBundle({ bundle: "1.31.0", running: "1.32.0", lastTried: null })).toBe(true);
+  });
+
+  it("stays put when they match", () => {
+    expect(shouldReloadBundle({ bundle: "1.32.0", running: "1.32.0", lastTried: null })).toBe(false);
+  });
+
+  it("reloads at most once per server version", () => {
+    // `npm version` without a rebuild leaves the bundle permanently behind the
+    // package version — every checkout mid-release. Without this guard that is
+    // an endless reload loop.
+    expect(shouldReloadBundle({ bundle: "1.31.0", running: "1.32.0", lastTried: "1.32.0" })).toBe(false);
+    // A later version is a new reason, and gets its own single attempt.
+    expect(shouldReloadBundle({ bundle: "1.31.0", running: "1.33.0", lastTried: "1.32.0" })).toBe(true);
+  });
+
+  it("does nothing before the server has answered", () => {
+    expect(shouldReloadBundle({ bundle: "1.31.0", running: null, lastTried: null })).toBe(false);
+    expect(shouldReloadBundle({ bundle: null, running: "1.32.0", lastTried: null })).toBe(false);
   });
 });

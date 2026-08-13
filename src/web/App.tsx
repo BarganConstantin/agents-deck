@@ -21,7 +21,7 @@ import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
-import { autoRestartStep } from "./restart";
+import { autoRestartStep, shouldReloadBundle } from "./restart";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -104,6 +104,8 @@ const UPGRADE_BLOCK_TEXT: Record<string, string> = {
 };
 
 const AUTO_RESTART_KEY = "agent-dag.autoRestart";
+// Per-tab, not per-browser: it guards one reload, not a preference.
+const BUNDLE_RELOAD_KEY = "agent-dag.bundleReloadedFor";
 
 // First-run layout: Usage and Accounts open, everything else closed. Those two
 // answer "how much have I got left, and on which account" — the questions you
@@ -836,6 +838,17 @@ function Inner() {
     idleSinceRef.current = step.idleSince;
     if (step.restart) askRestart();
   }, [autoRestart, notice?.kind, version?.canRestart, now, askRestart]);
+
+  // The page is code too, and nothing else reloads it. Placed before the toast
+  // effect on purpose: the pending marker survives the reload in sessionStorage,
+  // so the confirmation shows once the new bundle is the one rendering it.
+  useEffect(() => {
+    let lastTried: string | null = null;
+    try { lastTried = window.sessionStorage.getItem(BUNDLE_RELOAD_KEY); } catch { return; }
+    if (!shouldReloadBundle({ bundle: __APP_VERSION__, running: version?.running, lastTried })) return;
+    try { window.sessionStorage.setItem(BUNDLE_RELOAD_KEY, version?.running ?? ""); } catch { return; }
+    window.location.reload();
+  }, [version?.running]);
 
   // Landed. `running` moving to the version we were promised is the only proof
   // that the new code is actually the code answering.

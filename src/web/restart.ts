@@ -13,6 +13,28 @@
 /** How long everything must stay quiet before a restart is allowed. */
 export const IDLE_BEFORE_RESTART_MS = 30_000;
 
+/**
+ * Whether the page is running older code than the server it is talking to.
+ *
+ * The same drift, one layer up. A restart replaces the server's modules, but an
+ * open tab keeps executing whatever bundle it downloaded — so the deck can be
+ * answering from v1.32.0 while the UI in front of you is v1.31.0 and missing
+ * the controls that version added. It looks like a bug in the feature; it is
+ * the feature's own problem, unsolved for the browser.
+ *
+ * `lastTried` makes this fire at most once per server version. Without it, a
+ * build whose bundle genuinely does not match the package version — `npm
+ * version` without a rebuild, which is every checkout mid-release — would
+ * reload forever.
+ */
+export function shouldReloadBundle(
+  { bundle, running, lastTried }: { bundle: string | null | undefined; running: string | null | undefined; lastTried: string | null },
+): boolean {
+  if (!bundle || !running) return false;
+  if (bundle === running) return false;
+  return lastTried !== running;
+}
+
 export type RestartGate = {
   /** The user's preference. Off means the button is the only path. */
   enabled: boolean;
