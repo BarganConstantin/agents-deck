@@ -111,6 +111,109 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
 }
 
 /**
+ * Run a command whose stdin stays open, so the caller can answer it.
+ *
+ * `run` above closes stdin and waits for the end; that is right for everything
+ * that only reports. It is useless for the two commands the accounts panel has
+ * to drive: `claude auth login` prints a URL and then blocks reading the code
+ * the user pastes back, and `cswap remove` blocks on its own `[y/N]` — there is
+ * no `--yes` flag to avoid it. Both need a child that outlives one request and
+ * can be written to.
+ *
+ * Returns immediately with a handle:
+ *   write(text)  — into the child's stdin
+ *   kill()       — give up; `done` still settles
+ *   onLine(cb)   — every complete stdout/stderr line as it arrives
+ *   done         — Promise<{ok, code, killed, timedOut, stdout, stderr}>
+ *
+ * Never rejects, for the same reason `run` never does. Same Windows candidate
+ * resolution, since `claude` and `cswap` are `.cmd` shims there.
+ */
+export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 << 10 } = {}) {
+  const tries = candidates(cmd);
+  const lineSubs = [];
+  let child = null;
+  let pending = "";           // partial line carried between chunks
+  let stdout = "", stderr = "";
+  let timedOut = false, killed = false;
+  let settle;
+  const done = new Promise((resolve) => { settle = resolve; });
+
+  // Subscribers get `(text, partial)`. A subscriber must not throw and must
+  // tolerate repeats: `partial` is the still-unterminated tail, re-offered as
+  // it grows, because a prompt is written WITHOUT a newline —
+  // "Paste code here if prompted > " never terminates a line, so a
+  // newline-only reader would wait for it forever.
+  const emitLines = (text) => {
+    pending += text;
+    let nl;
+    while ((nl = pending.indexOf("\n")) !== -1) {
+      const line = pending.slice(0, nl).replace(/\r$/, "");
+      pending = pending.slice(nl + 1);
+      for (const cb of lineSubs) { try { cb(line, false); } catch { /* a subscriber must not kill the child */ } }
+    }
+    if (pending) {
+      for (const cb of lineSubs) { try { cb(pending, true); } catch { /* ignore */ } }
+    }
+  };
+
+  const finish = (code, err) => {
+    if (!settle) return;
+    const s = settle; settle = null;
+    clearTimeout(timer);
+    s({ ok: code === 0 && !err && !timedOut, code: err?.code ?? code ?? -1, killed, timedOut, stdout, stderr });
+  };
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { child?.kill(); } catch { /* already gone */ }
+  }, timeout);
+  timer.unref?.();
+
+  const attempt = (i) => {
+    if (i >= tries.length) return finish(-1, { code: "ENOENT" });
+    const raw = tries[i];
+    const { file, args: argv, opts } = isBatch(raw) ? viaCmd(raw, args) : { file: raw, args, opts: {} };
+    try {
+      child = spawn(file, argv, { stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true, ...opts });
+    } catch (err) {
+      return tryNext(err) ? attempt(i + 1) : finish(-1, err);
+    }
+    child.on("error", (err) => {
+      // Only retry another spelling while nothing has run yet; a mid-run error
+      // is this child's failure, not evidence the name was wrong.
+      if (tryNext(err) && !stdout && !stderr) { child = null; return attempt(i + 1); }
+      finish(-1, err);
+    });
+    child.on("spawn", () => resolved.set(cmd, raw));
+    // Capped so a runaway child cannot grow the heap without bound; the tail is
+    // what carries the error, so the head is what gets dropped.
+    const keep = (buf, text) => (buf + text).slice(-maxOutput);
+    child.stdout?.on("data", (d) => { const t = String(d); stdout = keep(stdout, t); emitLines(t); });
+    child.stderr?.on("data", (d) => { const t = String(d); stderr = keep(stderr, t); emitLines(t); });
+    child.on("close", (code) => finish(code ?? -1, null));
+  };
+  attempt(0);
+
+  return {
+    write(text) {
+      try { child?.stdin?.write(text); } catch { /* the child is gone; `done` says so */ }
+    },
+    /** Close stdin. A command that reads to EOF (`cswap import -`) needs this
+     *  to start work at all; a prompting one must never see it. */
+    end() {
+      try { child?.stdin?.end(); } catch { /* already closed */ }
+    },
+    kill() {
+      killed = true;
+      try { child?.kill(); } catch { /* already gone */ }
+    },
+    onLine(cb) { lineSubs.push(cb); },
+    done,
+  };
+}
+
+/**
  * Start a command and don't wait for it. Same resolution, no output captured.
  * Used where the result lands somewhere else — a file the next poll reads, or
  * a sound the user hears.

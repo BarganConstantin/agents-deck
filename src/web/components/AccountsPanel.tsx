@@ -8,6 +8,7 @@
 // consequence here — numbers can be minutes old, and saying so is part of the
 // display rather than a caveat to hide.
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import AddAccountDialog from "./AddAccountDialog";
 
 interface Lane {
   id: string;
@@ -121,6 +122,21 @@ function LaneBar({ lane, nowSec }: { lane: Lane; nowSec: number }) {
   );
 }
 
+/** Every slot an account could move to: the ones in use, plus the next free. */
+function slotOptions(accounts: Account[]): number[] {
+  const used = accounts.map(a => a.num);
+  const max = used.length ? Math.max(...used) : 0;
+  return [...new Set([...used, max + 1])].sort((a, b) => a - b);
+}
+
+/** How long a share stays importable, said as a countdown. */
+function shareExpiry(expiresAt: number, nowSec: number): string {
+  const left = Math.round(expiresAt / 1000) - nowSec;
+  if (left <= 0) return "expired";
+  if (left < 60) return `expires in ${left}s`;
+  return `expires in ${Math.round(left / 60)}m`;
+}
+
 interface Props { onClose: () => void }
 
 export default function AccountsPanel({ onClose }: Props) {
@@ -131,6 +147,17 @@ export default function AccountsPanel({ onClose }: Props) {
   const [failure, setFailure] = useState<string | null>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const timerRef = useRef<number | null>(null);
+  // Which account's row is expanded into its edit controls. One at a time —
+  // the panel is 288px wide and two open rows leave nothing to look at.
+  const [menuFor, setMenuFor] = useState<number | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [aliasDraft, setAliasDraft] = useState("");
+  // Removal is irreversible, and there is no confirmation dialog anywhere in
+  // this deck. The button becomes its own confirmation and gives up after a
+  // few seconds, so a stray click can never be the second one.
+  const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
+  const [share, setShare] = useState<{ num: number; blob: string; expiresAt: number } | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const load = useCallback(async (force = false) => {
     try {
@@ -149,6 +176,27 @@ export default function AccountsPanel({ onClose }: Props) {
     setFailure(null);
     try {
       const res = await fetch("/api/cswap-auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => null);
+      if (!out?.ok) setFailure(out?.detail || out?.reason || "command failed");
+      return out;
+    } catch {
+      setFailure("server unreachable");
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  /** Every store-changing action is one POST to the same route. */
+  const admin = useCallback(async (body: Record<string, unknown>, tag: string) => {
+    setBusy(tag);
+    setFailure(null);
+    try {
+      const res = await fetch("/api/claude-accounts/admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -211,6 +259,8 @@ export default function AccountsPanel({ onClose }: Props) {
       <div className="ap-header">
         <h3>Accounts</h3>
         <div className="ap-header-right">
+          <button type="button" className="btn ap-add" onClick={() => setAddOpen(true)}
+            title="Sign in to another Claude account, or paste one shared from another deck">+</button>
           <button type="button" className="btn ap-refresh" onClick={() => load(true)} title="Reload from claude-swap">↻</button>
           <button type="button" className="btn icon-btn" onClick={onClose} aria-label="Close accounts panel" title="Close (A)">×</button>
         </div>
@@ -229,15 +279,15 @@ export default function AccountsPanel({ onClose }: Props) {
                 come with this package.
               </span>
               {data.hint && <code className="ap-cmd">{data.hint}</code>}
-              <span className="ap-hint">Then add your accounts with <code>cswap add</code> and reload.</span>
+              <span className="ap-hint">Then add an account with the <strong>+</strong> button above.</span>
             </>
           ) : data.reason === "no_accounts" ? (
             <>
               <span>No accounts added yet.</span>
               <span className="ap-hint">
-                claude-swap is installed but has nothing in its store.
+                claude-swap is installed but has nothing in its store. Use the <strong>+</strong> above
+                to sign one in, or to paste one shared from another deck.
               </span>
-              <code className="ap-cmd">cswap add</code>
             </>
           ) : (
             <>
@@ -257,6 +307,16 @@ export default function AccountsPanel({ onClose }: Props) {
                 <span className="ap-num">{a.num}</span>
                 {a.alias && <span className="ap-alias">{a.alias}</span>}
                 <span className="ap-email" title={a.org ?? undefined}>{a.email}</span>
+                <button type="button" className={`ap-more${menuFor === a.num ? " on" : ""}`}
+                  aria-label={`Manage account ${a.num}`} aria-expanded={menuFor === a.num}
+                  title="Share, rename, move, remove"
+                  onClick={() => {
+                    setMenuFor(menuFor === a.num ? null : a.num);
+                    setAliasDraft(a.alias ?? "");
+                    setConfirmRemove(null);
+                    setShare(null);
+                    setShareCopied(false);
+                  }}>⋯</button>
                 {a.active
                   ? <span className="ap-badge-active">● active</span>
                   : (
@@ -307,6 +367,86 @@ export default function AccountsPanel({ onClose }: Props) {
                     >collected {ago(a.fetchedAt, nowSec)}{due(a.nextAt, nowSec)}</span>
                   : <span className="ap-age ap-stale" title="claude-swap has not read this account yet">never collected</span>}
               </div>
+
+              {menuFor === a.num && (
+                <div className="ap-manage">
+                  <div className="ap-manage-row">
+                    <span className="ap-manage-label">name</span>
+                    <input
+                      className="ap-manage-input"
+                      type="text"
+                      value={aliasDraft}
+                      onChange={e => setAliasDraft(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") admin({ action: "alias", account: a.num, alias: aliasDraft }, `alias-${a.num}`).then(() => load(true)); }}
+                      placeholder="no alias"
+                      spellCheck={false}
+                      aria-label={`Alias for account ${a.num}`}
+                    />
+                    <button type="button" className="ap-manage-btn" disabled={busy != null || (aliasDraft.trim() === (a.alias ?? ""))}
+                      onClick={() => admin({ action: "alias", account: a.num, alias: aliasDraft }, `alias-${a.num}`).then(() => load(true))}
+                      title="A short name to show instead of the email">save</button>
+                  </div>
+
+                  <div className="ap-manage-row">
+                    <span className="ap-manage-label">slot</span>
+                    <span className="ap-field">
+                      <select
+                        aria-label={`Slot for account ${a.num}`}
+                        value={String(a.num)}
+                        disabled={busy != null}
+                        onChange={e => admin({ action: "move", account: a.num, slot: Number(e.target.value) }, `move-${a.num}`).then(() => load(true))}
+                      >
+                        {slotOptions(data.accounts ?? []).map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </span>
+                    <span className="ap-manage-hint">rotation order</span>
+                  </div>
+
+                  <div className="ap-manage-row">
+                    <button type="button" className="ap-manage-btn" disabled={busy != null}
+                      title="Copy this account to another agents-deck. The share carries a live login and expires in 10 minutes."
+                      onClick={async () => {
+                        setShareCopied(false);
+                        const out = await admin({ action: "share", account: a.num }, `share-${a.num}`);
+                        if (out?.ok) setShare({ num: a.num, blob: out.blob, expiresAt: out.expiresAt });
+                      }}>share…</button>
+                    {/* Two clicks, and the second one expires. There is no
+                        confirmation dialog anywhere in this deck, and removing
+                        an account cannot be undone. */}
+                    <button
+                      type="button"
+                      className={`ap-manage-btn danger${confirmRemove === a.num ? " armed" : ""}`}
+                      disabled={busy != null}
+                      title={confirmRemove === a.num
+                        ? "This deletes the stored credentials for this account"
+                        : "Remove this account from claude-swap"}
+                      onClick={() => {
+                        if (confirmRemove !== a.num) {
+                          setConfirmRemove(a.num);
+                          window.setTimeout(() => setConfirmRemove(c => (c === a.num ? null : c)), 4000);
+                          return;
+                        }
+                        setConfirmRemove(null);
+                        admin({ action: "remove", account: a.num }, `rm-${a.num}`).then(() => { setMenuFor(null); load(true); });
+                      }}
+                    >{confirmRemove === a.num ? "confirm remove" : "remove"}</button>
+                  </div>
+
+                  {share?.num === a.num && (
+                    <div className="ap-share">
+                      <code className="ap-share-blob">{share.blob}</code>
+                      <div className="ap-share-foot">
+                        <button type="button" className="ap-manage-btn" onClick={async () => {
+                          try { await navigator.clipboard.writeText(share.blob); setShareCopied(true); } catch { /* select it by hand */ }
+                        }}>{shareCopied ? "copied" : "copy"}</button>
+                        <span className="ap-manage-hint">
+                          carries a live login · {shareExpiry(share.expiresAt, nowSec)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
 
@@ -394,6 +534,13 @@ export default function AccountsPanel({ onClose }: Props) {
             Collected by claude-swap while this panel is open.
           </p>
         </>
+      )}
+
+      {addOpen && (
+        <AddAccountDialog
+          onClose={() => setAddOpen(false)}
+          onChanged={() => load(true)}
+        />
       )}
     </div>
   );

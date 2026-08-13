@@ -29,6 +29,7 @@ No config. No install step. Ctrl+C to stop.
 - **Zero trust step for Codex** — no hook install, no `/hooks` trust prompt; the server tails `~/.codex/sessions/` directly
 - **Version drift warning** — Node caches modules at startup, so a deck upgraded while running keeps executing the old code. The topbar says so, and points at the restart or the upgrade command
 - **One-click update** — when a newer release is on npm, `Update now` installs it in the background and the deck restarts itself as soon as nothing is running. Never runs behind your back, and declines outright where it could do harm
+- **Accounts without a terminal** — sign a new Claude account in from the panel, share one to another machine, rename, reorder or remove. No `claude auth login`, no `cswap add`
 
 ## How it works
 
@@ -98,6 +99,26 @@ when installing would be wrong:
 
 If npm fails anyway, the banner shows npm's own last line and the command to run
 by hand. The command is always on screen, button or no button.
+
+### Accounts
+
+`+` in the Accounts panel signs a new account in: the deck runs `claude auth login`,
+shows you the link, takes the code the browser gives you, and hands the result to
+`cswap add`. **The account you were using stays active** — signing in replaces the
+live credentials, so the previous one is switched back the moment the new one is
+recorded.
+
+The code goes straight into the CLI's stdin on this machine. It is never stored,
+logged, or sent anywhere else.
+
+`share` on an account produces a `ccdeck1:…` blob to paste into another deck's
+`+ → Paste a share`. **It carries that account's live login in the clear** —
+claude-swap's export format has no encryption — so it expires ten minutes after it
+is made and imports refuse it after that. Treat it like a password while it lives:
+anything that reads your clipboard reads the account.
+
+Renaming, reordering and removing are on the same row menu. Removal takes two
+clicks and cannot be undone.
 
 ### Restarting
 
