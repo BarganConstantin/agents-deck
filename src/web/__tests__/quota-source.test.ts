@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { quotaFromStore, maySelfPoll } from "../../server/quota.mjs";
+import { quotaFromStore, maySelfPoll, freshest } from "../../server/quota.mjs";
 
 const MIN = 60_000;
 
@@ -77,5 +77,34 @@ describe("maySelfPoll", () => {
 
   it("polls on the first ask of a fresh process", () => {
     expect(maySelfPoll({ now, force: false, lastSelfPollAt: 0, rateLimitedUntil: 0 })).toBe(true);
+  });
+});
+
+describe("freshest", () => {
+  // Observed on 2026-08-13: a deck booted with a 48-minute-old claude-swap row
+  // fell through to the CLI and served a correct 3%, then reverted to the
+  // store's 23% one poll later. The store had not moved; the CLI reading was
+  // simply discarded. Worse than stale — the five-hour window had reset in
+  // between, so the older number was wrong, not merely old.
+  const store = { source: "claude-swap", session5hPct: 23, fetchedAt: 1_000_000 };
+  const cli = { source: "cli", session5hPct: 3, fetchedAt: 1_048_000 };
+
+  it("keeps the reading we already paid for when the store is behind", () => {
+    expect(freshest(store, cli)).toBe(cli);
+  });
+
+  it("prefers the store once it catches up", () => {
+    const moved = { ...store, session5hPct: 4, fetchedAt: 1_090_000 };
+    expect(freshest(moved, cli)).toBe(moved);
+  });
+
+  it("holds whichever side exists when the other does not", () => {
+    expect(freshest(null, cli)).toBe(cli);
+    expect(freshest(store, null)).toBe(store);
+    expect(freshest(null, null)).toBeNull();
+  });
+
+  it("treats a missing timestamp as the oldest possible reading", () => {
+    expect(freshest({ session5hPct: 99 }, cli)).toBe(cli);
   });
 });

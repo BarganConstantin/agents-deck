@@ -357,6 +357,20 @@ async function storeQuota() {
 const REREAD_TRIES = 3;
 const REREAD_GAP_MS = 800;
 
+/**
+ * Whichever of two readings was collected later, regardless of source.
+ *
+ * Quota numbers only ever move forward in time, so "newer" is the only ranking
+ * that makes sense between a store row and something we fetched ourselves. A
+ * five-hour window can also reset between the two, which makes an older reading
+ * not merely stale but wrong — 23% from before the reset, 3% after it.
+ */
+export function freshest(a, b) {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return (b.fetchedAt ?? 0) > (a.fetchedAt ?? 0) ? b : a;
+}
+
 /** Ask for a collection, then watch the store for the result. */
 async function nudgeAndReread(previous) {
   let asked = false;
@@ -426,8 +440,13 @@ async function _doFetch(now, force = false) {
   // Nothing usable in the store. Everything below spends the user's budget, so
   // it happens on a floor, and not at all while a 429 cooldown is running.
   if (!maySelfPoll({ now, force, lastSelfPollAt: _lastSelfPollAt, rateLimitedUntil: _rateLimitedUntil })) {
-    // A stale row still beats an empty panel, and says how stale it is.
-    const held = store ?? _lastGood;
+    // A stale row still beats an empty panel, and says how stale it is — but
+    // it must be the freshest thing we hold, not just the store. Preferring
+    // the store here threw away readings we had already paid for: after a boot
+    // that fell through to the CLI, the panel showed 3% (fetched seconds ago)
+    // and then reverted to 23% (from a 48-minute-old store row) on the very
+    // next poll, because the store had not moved.
+    const held = freshest(store, _lastGood);
     if (held) {
       const result = { ...held, stale: true };
       _cache = result; _cacheAt = now;
