@@ -83,9 +83,13 @@ export function isGitCheckout(pkgRoot) {
   try { return existsSync(join(pkgRoot, ".git")); } catch { return false; }
 }
 
-/** The exact line the user can paste. */
+/** The exact line the user can paste, for the way THIS copy was installed. */
 export function upgradeCommand(pkgRoot, name = "agents-deck") {
-  return isNpxInstall(pkgRoot) ? `npx -y ${name}@latest` : `npm i -g ${name}@latest`;
+  // A checkout is updated by pulling, and the bundle is built, not shipped —
+  // so `npm run build` is part of the answer rather than an afterthought.
+  if (isGitCheckout(pkgRoot)) return "git pull && npm run build";
+  if (isNpxInstall(pkgRoot)) return `npx -y ${name}@latest`;
+  return `npm i -g ${name}@latest`;
 }
 
 // ── what npm has ─────────────────────────────────────────────────────────────
@@ -278,12 +282,19 @@ export function lastMeaningfulLine(text) {
  *  registry is unreachable. */
 export async function versionReport({ running, pkgRoot, name = "agents-deck", now = Date.now() }) {
   const installed = installedVersion(pkgRoot);
-  // A checkout has no meaningful "latest", and an opt-out means no egress at
-  // all. Both keep the running-vs-installed half, which is purely local.
+  // Only an explicit opt-out silences the registry.
+  //
+  // A checkout used to be excluded here too, on the reasoning that its version
+  // leads npm's. That reasoning holds for the COMMAND — telling someone to
+  // `npm i -g` over their working copy is wrong — but not for the question.
+  // Knowing a release shipped is useful however you would install it, and
+  // suppressing the lookup meant `latest` was always null, so the upgrade
+  // notice could never appear and the "this is a checkout" explanation had
+  // nowhere to render. A checkout that is ahead of npm still says nothing:
+  // isOlder decides that, not this.
   const skipRegistry =
     process.env.AGENTS_DECK_NO_UPDATE_CHECK === "1" ||
-    process.env.AGENTS_DECK_NO_INSTALL === "1" ||
-    isGitCheckout(pkgRoot);
+    process.env.AGENTS_DECK_NO_INSTALL === "1";
   const latest = skipRegistry ? null : await latestOnNpm(name, now);
   return {
     name,

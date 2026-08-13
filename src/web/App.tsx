@@ -97,10 +97,10 @@ type VersionInfo = {
 // Said in the UI's voice, not npm's. Each of these is a decision we made on
 // purpose, so each gets a reason rather than a disabled button.
 const UPGRADE_BLOCK_TEXT: Record<string, string> = {
-  git_checkout: "this deck runs from a git checkout — pull instead",
-  npx: "npx runs from a cache that cannot be upgraded in place",
-  not_writable: "the install directory is not writable by this user",
-  opted_out: "installs are off (AGENTS_DECK_NO_INSTALL=1)",
+  git_checkout: "this deck runs from a git checkout — pull instead:",
+  npx: "npx runs from a cache that cannot be upgraded in place — run:",
+  not_writable: "the install directory is not writable by this user — run:",
+  opted_out: "installs are off (AGENTS_DECK_NO_INSTALL=1) — run:",
 };
 
 const AUTO_RESTART_KEY = "agent-dag.autoRestart";
