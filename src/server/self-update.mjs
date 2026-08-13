@@ -17,12 +17,14 @@
 //   installed — re-read from disk per call; what a restart would run
 //   latest    — npm's dist-tag, fetched at most once a day
 //
-// Notify only. We never run `npm i` on the user's behalf: agents-deck may be
-// running globally, from an npx cache, or from a git checkout, and each wants a
-// different command (or none at all).
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// Installing is opt-in and narrow. `npm i -g` runs only when the user asks for
+// it by name and only where it can actually work: a global install, on a
+// directory we can write, outside a git checkout and outside an npx cache.
+// Everywhere else this stays what it has always been — a printed command.
+import { accessSync, constants as FS, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const CHECK_MS = 24 * 3600_000; // same daily cadence as the ccusage/cswap checks
 const FETCH_TIMEOUT_MS = 6_000;
@@ -156,6 +158,121 @@ export function pickNotice({ running, installed, latest }) {
   return null;
 }
 
+// ── installing ───────────────────────────────────────────────────────────────
+
+// npm is a .cmd shim on Windows, which spawn can only launch through a shell.
+// Everywhere else shell:false — with a shell, Node warns that arguments are
+// concatenated rather than escaped. Same pair the ccusage installer uses.
+const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+const NPM_SHELL = process.platform === "win32";
+const INSTALL_TIMEOUT_MS = 300_000; // a cold global install on a slow line
+
+/**
+ * Why an in-app upgrade would be wrong here, or null when it is fine.
+ *
+ * Pure so the policy can be read and tested on its own — it is the part that
+ * decides whether we are allowed to write to the user's machine.
+ */
+export function upgradeBlockedReason({ git, npx, writable, optedOut }) {
+  if (optedOut) return "opted_out";
+  // The maintainer's own tree. Its version leads npm's, and installing over it
+  // would replace a working copy with a published tarball.
+  if (git) return "git_checkout";
+  // npx runs from a content-addressed cache directory that is never upgraded in
+  // place — `npx agents-deck@latest` fetches a DIFFERENT directory, which this
+  // process could not switch to even after restarting.
+  if (npx) return "npx";
+  // Almost always a root-owned global prefix. Failing inside npm with EACCES
+  // tells the user less than declining up front does.
+  if (!writable) return "not_writable";
+  return null;
+}
+
+function dirWritable(p) {
+  try { accessSync(p, FS.W_OK); return true; } catch { return false; }
+}
+
+/** The same question, answered against the real filesystem and environment. */
+export function upgradeBlock(pkgRoot) {
+  return upgradeBlockedReason({
+    git: isGitCheckout(pkgRoot),
+    npx: isNpxInstall(pkgRoot),
+    // npm -g rewrites the package directory and its parent (the global
+    // node_modules), so both have to be ours to write.
+    writable: dirWritable(pkgRoot) && dirWritable(resolve(pkgRoot, "..")),
+    optedOut: process.env.AGENTS_DECK_NO_INSTALL === "1",
+  });
+}
+
+// One install at a time, per process. State is deliberately coarse: the UI only
+// needs to know whether to show a spinner, a version, or an error.
+let _upgrade = { state: "idle", command: null, error: null, at: 0 };
+
+export function upgradeStatus() {
+  return { ..._upgrade };
+}
+
+/**
+ * Start `npm i -g <name>@latest` in the background.
+ *
+ * Returns immediately with the accepted command, or a refusal. Never installs
+ * anything except this package, and never at a version the caller chose — the
+ * argument vector is fixed here, not assembled from request input.
+ */
+export function startUpgrade({ pkgRoot, name = "agents-deck" }) {
+  if (_upgrade.state === "running") return { ok: true, already: true, command: _upgrade.command };
+  const blocked = upgradeBlock(pkgRoot);
+  if (blocked) return { ok: false, reason: blocked, command: upgradeCommand(pkgRoot, name) };
+
+  const args = ["install", "-g", `${name}@latest`, "--no-audit", "--no-fund", "--loglevel", "error"];
+  const command = `npm ${args.join(" ")}`;
+  _upgrade = { state: "running", command, error: null, at: Date.now() };
+
+  let child;
+  try {
+    child = spawn(NPM, args, { shell: NPM_SHELL, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    _upgrade = { state: "failed", command, error: err?.message ?? String(err), at: Date.now() };
+    return { ok: false, reason: "spawn_failed", command };
+  }
+
+  // Only the tail is kept: npm's failures put the useful line near the end, and
+  // a full buffer of an install log is not something the browser should hold.
+  let err = "";
+  const keepTail = (s) => { err = (err + s).slice(-4000); };
+  child.stdout.on("data", d => keepTail(String(d)));
+  child.stderr.on("data", d => keepTail(String(d)));
+
+  const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, INSTALL_TIMEOUT_MS);
+  timer.unref?.();
+
+  child.on("error", (e) => {
+    clearTimeout(timer);
+    _upgrade = { state: "failed", command, error: e?.message ?? String(e), at: Date.now() };
+  });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    if (code === 0) {
+      // Deliberately does not restart anything. The new files on disk make
+      // installedVersion() disagree with the running one, and the ordinary
+      // drift path takes it from there — including its wait for an idle moment.
+      _upgrade = { state: "done", command, error: null, at: Date.now() };
+    } else {
+      _upgrade = { state: "failed", command, error: lastMeaningfulLine(err) || `npm exited ${code}`, at: Date.now() };
+    }
+  });
+
+  return { ok: true, command };
+}
+
+/** npm's real complaint is usually the last non-empty, non-decorative line. */
+export function lastMeaningfulLine(text) {
+  const lines = String(text ?? "").split(/\r?\n/)
+    .map(l => l.replace(/^npm (ERR!|WARN)\s*/, "").trim())
+    .filter(l => l && !/^-+$/.test(l) && !/^A complete log/.test(l));
+  return lines.length ? lines[lines.length - 1].slice(0, 300) : "";
+}
+
 /** Full answer for GET /api/version. Never throws, never blocks on the network
  *  for longer than FETCH_TIMEOUT_MS, and answers the local half even when the
  *  registry is unreachable. */
@@ -175,5 +292,9 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     latest,
     notice: pickNotice({ running, installed, latest }),
     command: upgradeCommand(pkgRoot, name),
+    // Why the Update button is absent, when it is — so the UI can say so
+    // instead of leaving a gap the user has to guess about.
+    upgradeBlocked: upgradeBlock(pkgRoot),
+    upgrade: upgradeStatus(),
   };
 }

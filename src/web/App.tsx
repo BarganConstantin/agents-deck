@@ -89,6 +89,18 @@ type VersionInfo = {
   // False when nothing is supervising the process, or when --no-persist means a
   // restart would take the canvas with it.
   canRestart?: boolean;
+  /** Why an in-app install is refused here, or null when it is allowed. */
+  upgradeBlocked?: string | null;
+  upgrade?: { state: "idle" | "running" | "done" | "failed"; command: string | null; error: string | null };
+};
+
+// Said in the UI's voice, not npm's. Each of these is a decision we made on
+// purpose, so each gets a reason rather than a disabled button.
+const UPGRADE_BLOCK_TEXT: Record<string, string> = {
+  git_checkout: "this deck runs from a git checkout — pull instead",
+  npx: "npx runs from a cache that cannot be upgraded in place",
+  not_writable: "the install directory is not writable by this user",
+  opted_out: "installs are off (AGENTS_DECK_NO_INSTALL=1)",
 };
 
 const AUTO_RESTART_KEY = "agent-dag.autoRestart";
@@ -690,6 +702,20 @@ function Inner() {
     setVersionDismissed(next);
     try { window.localStorage.setItem(VERSION_DISMISSED_KEY, next); } catch { /* private mode */ }
   }, [notice, noticeKey, versionDismissed]);
+  // Installing runs on the server and reports back through /api/version, so the
+  // only thing the click owns is starting it and polling a little faster while
+  // it runs — an npm install is a minute, not five.
+  const upgradeState = version?.upgrade?.state ?? "idle";
+  const startUpgrade = useCallback(async () => {
+    try { await fetch("/api/upgrade", { method: "POST" }); } catch { /* reported via /api/version */ }
+    loadVersion();
+  }, [loadVersion]);
+  useEffect(() => {
+    if (upgradeState !== "running") return;
+    const iv = window.setInterval(loadVersion, 3000);
+    return () => window.clearInterval(iv);
+  }, [upgradeState, loadVersion]);
+
   const copyCommand = useCallback(async () => {
     const cmd = version?.command;
     if (!cmd) return;
@@ -1873,6 +1899,26 @@ function Inner() {
           ) : (
             <>
               <strong>agents-deck v{notice.to} is out — you are on v{notice.from}.</strong>
+              {/* One button when we can actually install; the command, always,
+                  because the button can fail and the command never does. */}
+              {!version?.upgradeBlocked && upgradeState !== "failed" && (
+                <button type="button" className="ver-act" onClick={startUpgrade}
+                  disabled={upgradeState === "running" || upgradeState === "done"}
+                  title={`Runs ${version?.upgrade?.command ?? "npm install -g agents-deck@latest"} here, then restarts once nothing is running.`}>
+                  {upgradeState === "running" ? "installing…"
+                    : upgradeState === "done" ? "installed"
+                    : "Update now"}
+                </button>
+              )}
+              {upgradeState === "failed" ? (
+                <span className="ver-sub fail" title={version?.upgrade?.error ?? ""}>
+                  install failed: {version?.upgrade?.error ?? "unknown error"} — run it yourself:
+                </span>
+              ) : version?.upgradeBlocked ? (
+                <span className="ver-sub">
+                  {UPGRADE_BLOCK_TEXT[version.upgradeBlocked] ?? "cannot install from here"}
+                </span>
+              ) : null}
               <button type="button" className="ver-cmd" onClick={copyCommand} title="Copy to clipboard">
                 <code>{version?.command}</code>
                 <span className="ver-cmd-hint">{cmdCopied ? "copied" : "copy"}</span>
