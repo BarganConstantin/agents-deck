@@ -27,6 +27,7 @@ No config. No install step. Ctrl+C to stop.
 - **Persistent replay** — events survive restarts; the log at `~/.claude/agent-dag/events.jsonl` replays the last session on open
 - **Workspace filter** — `--scope` limits capture to the current directory; `--workspace <path>` for any subtree
 - **Zero trust step for Codex** — no hook install, no `/hooks` trust prompt; the server tails `~/.codex/sessions/` directly
+- **Version drift warning** — Node caches modules at startup, so a deck upgraded while running keeps executing the old code. The topbar says so, and points at the restart or the upgrade command
 
 ## How it works
 
@@ -61,6 +62,22 @@ agents-deck [options]
       --uninstall          Remove agents-deck hooks from settings files
   -h, --help               Show this help
 ```
+
+Environment:
+
+```
+AGENT_DAG_PORT               Default port, same as -p
+CODEX_HOME                   Override ~/.codex
+AGENTS_DECK_NO_INSTALL=1     Never install or update claude-swap / ccusage,
+                             and don't ask npm about newer agents-deck releases
+AGENTS_DECK_NO_UPDATE_CHECK=1  Don't ask npm about releases, but keep everything else
+AGENTS_DECK_NO_FRESHEN=1     Never nudge claude-swap to collect usage early
+```
+
+The update check is one ~20-byte GET to `registry.npmjs.org`, at most once a day,
+and it never installs anything. Being told to restart after an upgrade is local
+only — no network involved — and cannot be turned off, because a deck running
+superseded code is a bug you cannot see any other way.
 
 ## Uninstall
 

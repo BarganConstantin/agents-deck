@@ -101,7 +101,9 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
 .app:has(.session-list) .canvas-wrap,
 .app:has(.accounts-panel) .canvas-wrap { grid-column: 2; }
 .app:has(.session-list) .conn-banner,
-.app:has(.accounts-panel) .conn-banner { grid-column: 2; }
+.app:has(.accounts-panel) .conn-banner,
+.app:has(.session-list) .ver-banner,
+.app:has(.accounts-panel) .ver-banner { grid-column: 2; }
 .canvas-wrap { grid-column: 1; grid-row: 3; }
 .detail { grid-column: 2; grid-row: 2 / -1; }
 .app:has(.session-list) .detail { grid-column: 3; }
@@ -126,6 +128,10 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   align-items: center;
   gap: 10px;
   font-size: 14px;
+  /* The version chip grows when it carries a drift warning; the product name
+     must not break onto two lines to make room for it. */
+  white-space: nowrap;
+  flex: none;
 }
 .topbar .brand .logo {
   width: 14px; height: 14px;
@@ -138,6 +144,40 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   font-weight: 400;
   font-size: 11px;
   margin-left: 2px;
+}
+/* Version drift lives here permanently. The banner can be dismissed; the fact
+   that this process is running superseded code cannot, so the chip keeps
+   carrying it — and clicking brings the banner back. */
+.topbar .brand button.v {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 130ms, border-color 130ms, color 130ms;
+}
+.topbar .brand button.v.stale {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 34%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.topbar .brand button.v.stale:hover {
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+}
+.topbar .brand button.v .v-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 7px var(--warn);
+  animation: pulse 2.4s infinite;
 }
 .topbar .actions {
   display: flex; gap: 8px; align-items: center;
@@ -401,6 +441,89 @@ button.btn.icon-btn {
   box-shadow: 0 0 8px var(--err);
   animation: pulse 1.2s infinite;
 }
+
+/* ---------------- version-drift banner ---------------- */
+/* Same slot and shape as .conn-banner, one step calmer: this is important but
+   it is not an outage, so it takes --warn and a slower pulse. */
+.ver-banner {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 13%, transparent), transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  color: var(--warn);
+  font-size: 12.5px;
+  font-weight: 500;
+  animation: fadeIn 200ms ease;
+}
+.ver-banner .ver-dot {
+  flex: none;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+  animation: pulse 2.4s infinite;
+}
+.ver-banner strong { font-weight: 600; }
+/* The consequence, in the voice of the person who has to act on it. Dimmer
+   than the headline so the two read in order rather than competing. */
+.ver-banner strong, .ver-banner .ver-sub { white-space: nowrap; }
+.ver-banner .ver-sub {
+  color: var(--muted);
+  font-weight: 400;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ver-banner .ver-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 5px 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 130ms, background 130ms;
+}
+.ver-banner .ver-cmd:hover { border-color: var(--accent-dim); background: var(--panel); }
+.ver-banner .ver-cmd code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  /* Stated, not assumed: if the copy button ever fails, selecting this by hand
+     is the fallback, and it must survive any future user-select:none above. */
+  user-select: text;
+}
+.ver-banner .ver-cmd-hint {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+/* Sits directly after the message, not pinned to the far edge: the Usage panel
+   is position:fixed at z-index 20 and covers the right end of this row, so a
+   right-anchored × would be unclickable whenever that panel is open. */
+.ver-banner .ver-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+  flex: none;
+  width: 18px; height: 18px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.ver-banner .ver-close:hover { background: var(--line); color: var(--text); }
 
 /* dim nodes that don't match search */
 .react-flow__node.rf-dim { opacity: 0.22; filter: saturate(0.4); }

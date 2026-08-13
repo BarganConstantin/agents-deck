@@ -71,6 +71,21 @@ const SESSION_LIST_OPEN_KEY = "agent-dag.sessionListOpen";
 const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 const USAGE_PANEL_OPEN_KEY = "agent-dag.usagePanelOpen";
 const ACCOUNTS_PANEL_OPEN_KEY = "agent-dag.accountsPanelOpen";
+const VERSION_DISMISSED_KEY = "agent-dag.versionNoticeDismissed";
+
+// What GET /api/version answers. `running` is the version this server process
+// booted with; `installed` is what is on disk right now. They diverge the
+// moment npm upgrades a deck that is already running, and Node's module cache
+// means the process keeps executing the old code until it restarts.
+type VersionNotice = { kind: "restart" | "upgrade"; from: string; to: string };
+type VersionInfo = {
+  name: string;
+  running: string | null;
+  installed: string | null;
+  latest: string | null;
+  notice: VersionNotice | null;
+  command: string;
+};
 
 // First-run layout: Usage and Accounts open, everything else closed. Those two
 // answer "how much have I got left, and on which account" — the questions you
@@ -621,6 +636,77 @@ function Inner() {
     } catch { /* server unreachable */ }
     finally { setSoundBusy(false); }
   }, [soundOn]);
+
+  // ── version drift ─────────────────────────────────────────────────────────
+  // A deck upgraded while it was running keeps executing the old code, silently
+  // and indefinitely. Nothing else in the product can tell you that, so this
+  // asks the server which version it actually booted with.
+  const [version, setVersion] = useState<VersionInfo | null>(null);
+  const [versionDismissed, setVersionDismissed] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    try { return window.localStorage.getItem(VERSION_DISMISSED_KEY) ?? ""; } catch { return ""; }
+  });
+  const [cmdCopied, setCmdCopied] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/version")
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (alive && d) setVersion(d as VersionInfo); })
+        .catch(() => {});
+    };
+    load();
+    const iv = window.setInterval(load, 5 * 60_000);
+    // Coming back to this tab is exactly the moment after someone ran the
+    // upgrade in another window — cheaper and far more timely than the interval.
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      alive = false;
+      window.clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+  const notice = version?.notice ?? null;
+  // Keyed to the version it is about, so dismissing today's notice does not
+  // silence next month's release.
+  const noticeKey = notice ? `${notice.kind}:${notice.to}` : "";
+  const noticeOpen = notice != null && versionDismissed !== noticeKey;
+  const toggleNotice = useCallback(() => {
+    if (!notice) return;
+    const next = versionDismissed === noticeKey ? "" : noticeKey;
+    setVersionDismissed(next);
+    try { window.localStorage.setItem(VERSION_DISMISSED_KEY, next); } catch { /* private mode */ }
+  }, [notice, noticeKey, versionDismissed]);
+  const copyCommand = useCallback(async () => {
+    const cmd = version?.command;
+    if (!cmd) return;
+    // navigator.clipboard is undefined outside a secure context and can sit
+    // unresolved while the browser decides on permission, which would leave the
+    // button silently dead. Race it, and fall back to the old selection trick.
+    let ok = false;
+    try {
+      ok = await Promise.race([
+        navigator.clipboard?.writeText(cmd).then(() => true) ?? Promise.resolve(false),
+        new Promise<boolean>(r => window.setTimeout(() => r(false), 500)),
+      ]);
+    } catch { ok = false; }
+    if (!ok) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = cmd;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        ta.remove();
+      } catch { ok = false; }
+    }
+    if (!ok) return; // the command stays on screen and selectable
+    setCmdCopied(true);
+    window.setTimeout(() => setCmdCopied(false), 1600);
+  }, [version?.command]);
 
   // One left column, two things that want it. Opening either evicts the other
   // rather than fighting over the same grid slot.
@@ -1439,7 +1525,26 @@ function Inner() {
       <header className="topbar">
         <div className="brand">
           <span className="logo" />
-          agents-deck <span className="v">v{__APP_VERSION__}</span>
+          agents-deck
+          {/* The server's own version, not the bundle's — an upgrade replaces
+              dist/ too, so a reloaded page can show a number the running
+              process never had. Stale → the chip stays lit even after the
+              banner is dismissed, and clicking it brings the banner back. */}
+          {notice ? (
+            <button
+              type="button"
+              className="v stale"
+              onClick={toggleNotice}
+              title={notice.kind === "restart"
+                ? `Running v${notice.from}; v${notice.to} is installed on disk. Restart to pick it up.`
+                : `Running v${notice.from}; v${notice.to} is on npm.`}
+            >
+              v{notice.from}
+              <span className="v-dot" aria-hidden />
+            </button>
+          ) : (
+            <span className="v">v{version?.running ?? __APP_VERSION__}</span>
+          )}
         </div>
         {selected && (() => {
           const c = costForUsage(selected.usage, selected.model);
@@ -1635,10 +1740,37 @@ function Inner() {
         </div>
       </header>
 
-      {everConnected && !live && (
+      {everConnected && !live ? (
         <div className="conn-banner" role="alert">
           <span className="conn-dot" />
           Lost connection to agents-deck server. Reconnecting…
+        </div>
+      ) : noticeOpen && notice && (
+        // Both banners want grid row 2, and a dead connection is the more
+        // urgent of the two — the version notice waits its turn.
+        <div className={`ver-banner ${notice.kind}`} role="status">
+          <span className="ver-dot" />
+          {notice.kind === "restart" ? (
+            <>
+              <strong>v{notice.to} is installed — this deck still runs v{notice.from}.</strong>
+              <span
+                className="ver-sub"
+                title="Node loads every module once, at startup. An upgrade replaces the files on disk but not the code already in memory, so this process keeps running the old version until it is restarted."
+              >Restart it to pick up the new code.</span>
+            </>
+          ) : (
+            <>
+              <strong>agents-deck v{notice.to} is out — you are on v{notice.from}.</strong>
+              <button type="button" className="ver-cmd" onClick={copyCommand} title="Copy to clipboard">
+                <code>{version?.command}</code>
+                <span className="ver-cmd-hint">{cmdCopied ? "copied" : "copy"}</span>
+              </button>
+            </>
+          )}
+          <span role="button" tabIndex={0} aria-label="Dismiss" className="ver-close"
+            onClick={toggleNotice}
+            onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleNotice(); } }}
+          >×</span>
         </div>
       )}
 
