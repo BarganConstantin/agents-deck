@@ -201,6 +201,24 @@ if (process.env.AGENTS_DECK_NO_INSTALL !== "1") {
   else if (cu.state === "installing") process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}installing in background${C.reset}\n`);
 }
 
+// A newer release on npm, said once, in the place the upgrade gets typed.
+// Started here and collected below so the lookup overlaps the rest of boot, and
+// hard-capped so a slow registry cannot delay the server — the answer is
+// usually already cached in ~/.agents-deck/.self-update-check anyway. It has to
+// resolve BEFORE the pulse indicator starts writing over the last line.
+const selfCheck = import(pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href)
+  .then(m => m.versionReport({ running: PKG_VERSION, pkgRoot: PKG_ROOT }))
+  .catch(() => null);
+const upgrade = await Promise.race([
+  selfCheck.then(r => r?.notice?.kind === "upgrade" ? r : null),
+  new Promise(r => setTimeout(() => r(null), 1200)),
+]);
+if (upgrade) {
+  process.stdout.write(
+    `  ${C.yellow}↑${C.reset} update           ${C.dim}v${upgrade.notice.to} available — ${C.reset}${C.yellow}${upgrade.command}${C.reset}\n`,
+  );
+}
+
 sp = spinner("starting server…");
 const server = await startServer({ port, persist, workspace, codex: wantCodex }).catch(err => {
   sp.stop(false, `server failed: ${err.message}`);

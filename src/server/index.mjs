@@ -2,7 +2,7 @@
 // Single-file pure Node HTTP server, zero deps.
 import { createServer } from "node:http";
 import { readFile, stat, mkdir, appendFile, open, truncate, readdir, unlink } from "node:fs/promises";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, dirname as pdirname, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,6 +12,14 @@ import { createInterface } from "node:readline";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
 const WEB_DIST = resolve(PKG_ROOT, "dist", "web");
+
+// Read at import — i.e. at boot, before an upgrade can overwrite these files.
+// Reading it later would report whatever npm has since installed and hide the
+// exact drift /api/version exists to expose. See src/server/self-update.mjs.
+const RUNNING_VERSION = (() => {
+  try { return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8"))?.version ?? null; }
+  catch { return null; }
+})();
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -1007,6 +1015,13 @@ function handleSse(req, res) {
   });
 }
 
+async function handleVersion(_req, res) {
+  const { versionReport } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href
+  );
+  send(res, 200, await versionReport({ running: RUNNING_VERSION, pkgRoot: PKG_ROOT }));
+}
+
 async function handleQuota(req, res) {
   const { fetchClaudeQuota } = await import(
     pathToFileURL(join(PKG_ROOT, "src/server/quota.mjs")).href
@@ -1207,6 +1222,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
+    if (req.method === "GET"  && url.pathname === "/api/version")     return guard(handleVersion(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/quota")       return guard(handleQuota(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return guard(handleCodexUsage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-quota") return guard(handleCodexQuota(req, res), res);
