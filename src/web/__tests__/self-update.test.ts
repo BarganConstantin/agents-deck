@@ -151,3 +151,25 @@ describe("lastMeaningfulLine", () => {
     expect(lastMeaningfulLine("x".repeat(1000)).length).toBe(300);
   });
 });
+
+describe("upgradeCommand — the command must match how this copy was installed", () => {
+  // Reported: the Update button never appeared. It could not: a git checkout
+  // skipped the registry lookup entirely, so `latest` was always null, so the
+  // upgrade notice never rendered — and the "this is a checkout" explanation
+  // lived inside that notice, with nowhere to appear. The lookup now runs
+  // everywhere; only the command differs.
+  it("tells a checkout to pull and rebuild, never to npm i -g over it", () => {
+    // dist/ is built, not shipped, so a pull alone leaves the old bundle.
+    expect(upgradeCommand(process.cwd())).toBe("git pull && npm run build");
+  });
+
+  it("still names npx for an npx cache", () => {
+    expect(upgradeCommand("/Users/x/.npm/_npx/9a1c/node_modules/agents-deck"))
+      .toBe("npx -y agents-deck@latest");
+  });
+
+  it("still names the global install otherwise", () => {
+    expect(upgradeCommand("/usr/local/lib/node_modules/agents-deck"))
+      .toBe("npm i -g agents-deck@latest");
+  });
+});
