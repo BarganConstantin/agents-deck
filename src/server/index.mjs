@@ -1028,6 +1028,17 @@ async function handleVersion(_req, res) {
   send(res, 200, { ...report, canRestart: _canRestart });
 }
 
+// Runs `npm i -g agents-deck@latest`, and only that: the argument vector is
+// fixed inside self-update.mjs, so nothing about what gets installed comes from
+// the request. Answers immediately — progress is read back from /api/version.
+async function handleUpgrade(_req, res) {
+  const { startUpgrade } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href
+  );
+  const out = startUpgrade({ pkgRoot: PKG_ROOT });
+  send(res, out.ok ? 200 : 409, out);
+}
+
 // Restart is a two-party act: this half answers before it stops listening, so
 // the caller learns it was accepted rather than losing the socket mid-reply.
 function handleRestart(_req, res) {
@@ -1257,6 +1268,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
     if (req.method === "GET"  && url.pathname === "/api/version")     return guard(handleVersion(req, res), res);
+    if (req.method === "POST" && url.pathname === "/api/upgrade")     return guard(handleUpgrade(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/restart")     return handleRestart(req, res);
     if (req.method === "GET"  && url.pathname === "/api/quota")       return guard(handleQuota(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return guard(handleCodexUsage(req, res), res);

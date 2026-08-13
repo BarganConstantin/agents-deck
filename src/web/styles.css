@@ -537,6 +537,9 @@ button.btn.icon-btn {
   border-color: color-mix(in srgb, var(--warn) 70%, transparent);
 }
 .ver-banner .ver-act:disabled { opacity: 0.6; cursor: default; }
+/* A failed install is not a warning, it is a failure, and the command beside it
+   is now the only way forward — so it reads in the error colour. */
+.ver-banner .ver-sub.fail { color: var(--err); }
 
 /* Reads as a sentence continuing the button: "Restart now · auto when idle".
    Off is the stated state, not an absence, so the dot is always drawn. */

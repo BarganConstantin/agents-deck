@@ -28,7 +28,7 @@ No config. No install step. Ctrl+C to stop.
 - **Workspace filter** — `--scope` limits capture to the current directory; `--workspace <path>` for any subtree
 - **Zero trust step for Codex** — no hook install, no `/hooks` trust prompt; the server tails `~/.codex/sessions/` directly
 - **Version drift warning** — Node caches modules at startup, so a deck upgraded while running keeps executing the old code. The topbar says so, and points at the restart or the upgrade command
-- **Restarts itself when idle** — once the newer code is on disk, the deck comes back on the same port as soon as nothing has been running for 30 seconds. The canvas replays; it never installs anything on your behalf
+- **One-click update** — when a newer release is on npm, `Update now` installs it in the background and the deck restarts itself as soon as nothing is running. Never runs behind your back, and declines outright where it could do harm
 
 ## How it works
 
@@ -75,10 +75,29 @@ AGENTS_DECK_NO_UPDATE_CHECK=1  Don't ask npm about releases, but keep everything
 AGENTS_DECK_NO_FRESHEN=1     Never nudge claude-swap to collect usage early
 ```
 
-The update check is one ~20-byte GET to `registry.npmjs.org`, at most once a day,
-and it never installs anything. Being told to restart after an upgrade is local
-only — no network involved — and cannot be turned off, because a deck running
-superseded code is a bug you cannot see any other way.
+The update check is one ~20-byte GET to `registry.npmjs.org`, at most once a day.
+Being told to restart after an upgrade is local only — no network involved — and
+cannot be turned off, because a deck running superseded code is a bug you cannot
+see any other way.
+
+### Updating
+
+`Update now` runs `npm install -g agents-deck@latest` and nothing else — the
+argument vector is fixed in the server, not taken from the request. When it
+finishes, the newer files on disk trigger the ordinary restart path below.
+
+Nothing is ever installed unless you click. The button is replaced by the reason
+when installing would be wrong:
+
+| | |
+|---|---|
+| git checkout | your working copy leads npm; pull instead |
+| npx | its cache directory is never upgraded in place |
+| directory not writable | a root-owned global prefix — declined up front rather than failing inside npm |
+| `AGENTS_DECK_NO_INSTALL=1` | you asked for no installs |
+
+If npm fails anyway, the banner shows npm's own last line and the command to run
+by hand. The command is always on screen, button or no button.
 
 ### Restarting
 
