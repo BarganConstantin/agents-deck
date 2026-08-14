@@ -28,7 +28,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSpec } from "../src/server/exec.mjs";
 import { installedVersion, npxRestartSpec } from "../src/server/self-update.mjs";
-import { workerExitAction } from "../src/server/supervisor.mjs";
+import { dieOfSignal, workerExitAction } from "../src/server/supervisor.mjs";
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
@@ -94,8 +94,11 @@ function launch(respawn) {
       return;
     }
     // Anything else is the worker's own verdict and belongs to whoever started
-    // us — including the ccdeck wrapper, which exits with our code in turn.
-    if (signal) process.kill(process.pid, signal);
+    // us — including the ccdeck wrapper, which exits with our code in turn. A
+    // worker killed by a signal is reported by dying of the same one; doing
+    // that naively re-enters the handlers below and exits 0 — see
+    // supervisor.mjs.
+    if (signal) dieOfSignal(signal);
     else process.exit(next.code);
   });
 
@@ -182,7 +185,7 @@ function launchNpx() {
     clearInterval(probe);
     child = null;
     if (stopping || served) {
-      if (signal) process.kill(process.pid, signal);
+      if (signal) dieOfSignal(signal);
       else process.exit(code ?? 0);
       return;
     }
