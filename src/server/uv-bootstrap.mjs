@@ -86,21 +86,54 @@ async function download(url, { asText = false } = {}) {
 }
 
 /**
- * Unpack the artifact.
+ * A path as a PowerShell single-quoted string literal.
+ *
+ * Inside single quotes PowerShell expands nothing, so a doubled quote is both
+ * the only escape it has and the only one needed. Windows filenames cannot
+ * contain `"`, `<`, `>` or `|`, but they can contain an apostrophe — and the
+ * archive lands under os.tmpdir(), which on Windows is inside the user's own
+ * profile: C:\Users\O'Brien\AppData\Local\Temp. Pasted in raw, that apostrophe
+ * ended the string mid-path and Expand-Archive died of a syntax error, so uv
+ * could never be bootstrapped on an account whose owner has that name.
+ */
+const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
+/**
+ * The command that unpacks the artifact, as file + argv.
  *
  * `tar` is present on macOS, on Linux, and on Windows 10 1803 and later (as
  * bsdtar), but Windows ships .zip and older Windows has no tar at all — so zip
  * goes through PowerShell's Expand-Archive, which is always there.
+ *
+ * Exported, pure, and with the platform as a parameter, because the branch that
+ * needs checking is the one that never runs on the machine running the tests.
+ *
+ * Only the tar branch gets to pass its paths as arguments. `powershell.exe
+ * -Command` has no argument channel to pass them through — everything after
+ * -Command is joined back into the script text — so the paths are part of a
+ * PowerShell program either way, and quoting them for PowerShell is the whole
+ * job. Nothing else is quoting them on the way there: powershell.exe is an .exe,
+ * so exec.mjs spawns it directly with shell:false and the -Command string
+ * arrives as one intact argv entry, never seeing cmd.exe.
  */
-async function extract(archivePath, destDir) {
-  if (archivePath.endsWith(".zip")) {
-    const r = await run("powershell.exe", [
-      "-NoProfile", "-NonInteractive", "-Command",
-      `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destDir}' -Force`,
-    ], { timeout: 120_000 });
-    return r.ok;
+export function extractCommand(archivePath, destDir, platform = process.platform) {
+  if (platform === "win32" && archivePath.endsWith(".zip")) {
+    return {
+      file: "powershell.exe",
+      args: [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `Expand-Archive -LiteralPath ${psQuote(archivePath)} ` +
+        `-DestinationPath ${psQuote(destDir)} -Force`,
+      ],
+    };
   }
-  const r = await run("tar", ["-xzf", archivePath, "-C", destDir], { timeout: 120_000 });
+  return { file: "tar", args: ["-xzf", archivePath, "-C", destDir] };
+}
+
+/** Unpack the artifact. */
+async function extract(archivePath, destDir) {
+  const { file, args } = extractCommand(archivePath, destDir);
+  const r = await run(file, args, { timeout: 120_000 });
   return r.ok;
 }
 

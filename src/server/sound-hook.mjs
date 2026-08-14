@@ -10,13 +10,13 @@
 // Only ever touches its own entry, tagged `__agent-dag-sound`. Hooks the user
 // wrote themselves are left exactly as found — including the platform-specific
 // ones this replaces, which are reported rather than deleted.
-import { readFile, writeFile, copyFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { claudeConfigDir } from "./claude-dir.mjs";
-import { readSettingsForWrite, writeFileAtomic } from "./installer.mjs";
+import { readSettingsForWrite, writeFileAtomic, installScript } from "./installer.mjs";
 
 const PKG_ROOT      = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLAUDE_DIR    = claudeConfigDir();
@@ -229,7 +229,10 @@ export async function setSoundHook(enabled) {
 
   if (enabled) {
     if (!existsSync(INSTALL_DIR)) await mkdir(INSTALL_DIR, { recursive: true });
-    await copyFile(join(PKG_ROOT, "hook", "notify.js"), NOTIFY_PATH);
+    // Same reason the event forwarder is installed this way: the Stop hook fires
+    // notify.js from sessions that are already running, and toggling the sound
+    // on must not leave one of them executing a half-copied file.
+    await installScript(join(PKG_ROOT, "hook", "notify.js"), NOTIFY_PATH);
     others.push({
       [MARK]: true,
       hooks: [{

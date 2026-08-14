@@ -13,9 +13,17 @@
 // POSIX delivers it to the foreground process group, Windows raises
 // CTRL_C_EVENT for the whole console — so `stopping` is a parameter and both
 // answers are asserted.
-import { describe, it, expect } from "vitest";
+//
+// The second half of the file is the other way a worker can end — not with an
+// exit code at all, but killed by a signal — and what the supervisor owes its
+// caller then.
+import { describe, it, expect, afterAll } from "vitest";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // @ts-expect-error — .mjs server module, no types
-import { workerExitAction, RESTART_CODE, UPGRADE_CODE } from "../../server/supervisor.mjs";
+import { workerExitAction, signalExitAction, RESTART_CODE, UPGRADE_CODE } from "../../server/supervisor.mjs";
 
 describe("workerExitAction while the deck is running", () => {
   it("brings the worker back from disk on 75", () => {
@@ -59,5 +67,69 @@ describe("workerExitAction after Ctrl+C", () => {
   it("still reports a real failure the worker had on its way out", () => {
     expect(workerExitAction(1, true)).toEqual({ relaunch: null, code: 1 });
     expect(workerExitAction(0, true)).toEqual({ relaunch: null, code: 0 });
+  });
+});
+
+describe("signalExitAction", () => {
+  it("re-raises on POSIX, where dying of the signal is the real status", () => {
+    for (const platform of ["linux", "darwin"]) {
+      expect(signalExitAction("SIGHUP", platform)).toEqual({ reraise: "SIGHUP", code: 129 });
+      expect(signalExitAction("SIGINT", platform)).toEqual({ reraise: "SIGINT", code: 130 });
+      expect(signalExitAction("SIGTERM", platform)).toEqual({ reraise: "SIGTERM", code: 143 });
+    }
+  });
+
+  it("exits with the number on Windows, which has no signal to die of", () => {
+    // TerminateProcess is not a signal: nothing there sets the killed-by-signal
+    // bit, so 128 + n is the whole of what a caller can be told. Windows is the
+    // platform this repo cannot execute, so the branch is asserted instead.
+    expect(signalExitAction("SIGHUP", "win32")).toEqual({ reraise: null, code: 129 });
+    expect(signalExitAction("SIGTERM", "win32")).toEqual({ reraise: null, code: 143 });
+  });
+
+  it("falls back to a plain failure for a name it could not re-raise", () => {
+    expect(signalExitAction("SIGNOTASIGNAL", "linux")).toEqual({ reraise: null, code: 1 });
+    expect(signalExitAction(undefined, "linux")).toEqual({ reraise: null, code: 1 });
+  });
+});
+
+// The regression, run for real: signals are POSIX, so this is skipped on
+// Windows — where signalExitAction's own branch above is what applies.
+describe.skipIf(process.platform === "win32")("dieOfSignal in a process that traps signals", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ccdeck-signal-"));
+  const script = join(dir, "supervisor-like.mjs");
+  const supervisor = new URL("../../server/supervisor.mjs", import.meta.url).href;
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  // Exactly the shape of bin/agent-dag.js: the same three traps, and the same
+  // handler that exits 0 once there is no child left to stop.
+  writeFileSync(script, [
+    `import { dieOfSignal } from ${JSON.stringify(supervisor)};`,
+    `for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => process.exit(0));`,
+    `dieOfSignal(process.argv[2]);`,
+  ].join("\n"));
+
+  const runAndDie = (signal: string) =>
+    new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+      const child = spawn(process.execPath, [script, signal], { stdio: "ignore" });
+      child.on("exit", (code, sig) => resolve({ code, signal: sig }));
+    });
+
+  it("dies of the signal instead of being caught by its own handler", async () => {
+    // Before the fix, the re-raise walked into the trap above and exited 0 —
+    // `kill -HUP` on the deck reported success to the shell. deck.js installs no
+    // SIGHUP handler at all, so this is the everyday case, not a corner one.
+    expect(await runAndDie("SIGHUP")).toEqual({ code: null, signal: "SIGHUP" });
+  });
+
+  it("does the same for the signals the supervisor traps for shutdown", async () => {
+    // SIGTERM and SIGINT reach the worker during the seconds before deck.js
+    // registers its own handlers, and it dies by signal there too.
+    expect(await runAndDie("SIGTERM")).toEqual({ code: null, signal: "SIGTERM" });
+    expect(await runAndDie("SIGINT")).toEqual({ code: null, signal: "SIGINT" });
+  });
+
+  it("exits 1 rather than 0 for a signal name it cannot re-raise", async () => {
+    expect(await runAndDie("SIGNOTASIGNAL")).toEqual({ code: 1, signal: null });
   });
 });

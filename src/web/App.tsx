@@ -23,8 +23,9 @@ import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, shouldReloadBundle } from "./restart";
 import { isBrowserChord } from "./shortcuts";
-import { pruneStaleEntries } from "./prune";
+import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
+import { createPauseGate } from "./pause";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -546,6 +547,14 @@ function snapshotToFlow(
   // canvas — where a later session, laid out from the top, gets stacked
   // straight onto it.
   pruneStaleEntries(pinned, state.agents);
+  // Drop measurements for nodes that no longer exist. This cache is not
+  // restored from storage, but it is not rebuilt either: nothing but the Clear
+  // button ever removed an id, so a tab left open for days holds a size for
+  // every agent and every session that has ever been on the canvas. columnGap()
+  // takes the widest measured node of all, and a session drag handle is as wide
+  // as the whole session box, so a single long-gone session kept the gap
+  // between columns at its width for the rest of the tab's life.
+  pruneStaleEntries(measured, measuredNodeIds(state.agents.values()));
   // Never silently drop a visible node — if its position is missing, place
   // it at {0,0} for THIS frame and force a fresh dagre pass on the next
   // frame by invalidating lastLayoutSigRef. The previous skip-this-frame
@@ -841,8 +850,19 @@ function Inner() {
    */
   const dragPatchRef = useRef<Map<string, { x: number; y: number }> | null>(null);
   const [dragMoveTick, setDragMoveTick] = useState(0);
+  // Pause freezes the canvas; it does not drop the connection. The gate owns
+  // both the flag and the held events so the SSE handler can read the current
+  // pause state out of a ref — see pause.ts for why closing over the state
+  // variable instead made every toggle replay the server's whole ring buffer.
+  // `paused` mirrors the gate for rendering; the gate stays the source of truth.
+  const pauseRef = useRef(createPauseGate<HookEnvelope>());
   const [paused, setPaused] = useState(false);
-  const queueRef = useRef<HookEnvelope[]>([]);
+  const togglePause = useCallback(() => {
+    const gate = pauseRef.current;
+    const held = gate.setPaused(!gate.paused);
+    for (const env of held) stateRef.current = applyEvent(stateRef.current, env);
+    setPaused(gate.paused);
+  }, []);
   const [now, setNow] = useState(Date.now());
 
   // ── restart ───────────────────────────────────────────────────────────────
@@ -1024,7 +1044,7 @@ function Inner() {
     es.addEventListener("hook", (e) => {
       try {
         const env: HookEnvelope = JSON.parse((e as MessageEvent).data);
-        if (paused) { queueRef.current.push(env); return; }
+        if (!pauseRef.current.accept(env)) return; // paused: held for the resume
         stateRef.current = applyEvent(stateRef.current, env);
         const isReplay = env.replay === true
           || replayActiveRef.current
@@ -1037,16 +1057,10 @@ function Inner() {
       es.close();
       coalescer.cancel();
     };
-  }, [paused, rerender]);
-
-  // Drain queue when un-paused
-  useEffect(() => {
-    if (paused) return;
-    if (queueRef.current.length === 0) return;
-    for (const env of queueRef.current) stateRef.current = applyEvent(stateRef.current, env);
-    queueRef.current.length = 0;
-    rerender();
-  }, [paused, rerender]);
+    // Deliberately not keyed on `paused`: a pause must not tear this stream
+    // down, because the reconnect carries no Last-Event-ID and the server
+    // answers with a full replay of its ring buffer. The gate handles pausing.
+  }, [rerender]);
 
   // Tick clock so elapsed-time fields refresh smoothly + exit animations
   // clean up. Same tick also reaps in-flight tools whose PostToolUse never
@@ -1703,7 +1717,7 @@ function Inner() {
       // Ctrl+R is reload, and both arrive here as the bare letter.
       if (isBrowserChord(e)) return;
       if (e.key === "/") { e.preventDefault(); searchInputRef.current?.focus(); return; }
-      if (e.key === " ") { e.preventDefault(); setPaused(p => !p); }
+      if (e.key === " ") { e.preventDefault(); togglePause(); }
       if (e.key === "c" || e.key === "C") handleClear();
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
@@ -1717,7 +1731,7 @@ function Inner() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleClear, handleRelayout, handleFit, clearSelection, stepAgent]);
+  }, [handleClear, handleRelayout, handleFit, clearSelection, stepAgent, togglePause]);
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
@@ -1878,8 +1892,8 @@ function Inner() {
               );
             })()}
           </span>
-          <button className={`btn ${paused ? "warn" : ""}`} onClick={() => setPaused(p => !p)} title="Pause/resume live updates (Space)">
-            {paused ? `Resume${queueRef.current.length ? ` · ${queueRef.current.length}` : ""}` : "Pause"}
+          <button className={`btn ${paused ? "warn" : ""}`} onClick={togglePause} title="Pause/resume live updates (Space)">
+            {paused ? `Resume${pauseRef.current.size ? ` · ${pauseRef.current.size}` : ""}` : "Pause"}
           </button>
           <button
             className={`btn icon-btn ${usagePanelOpen ? "primary" : ""}`}

@@ -60,24 +60,44 @@ describe("parseResetToSec", () => {
   // The CLI prints its reset times in the user's local zone with no timezone,
   // and drops ":00" on the hour — "resets Jun 21, 9am". Those used to fall out
   // of the parser as null, which cost the bar its countdown and its pace line.
-  const local = (month: number, day: number, hour: number, min: number) =>
-    new Date(new Date().getFullYear(), month, day, hour, min, 0, 0).getTime() / 1000;
+  // Every instant below is built from local calendar parts and "now" is passed
+  // in, so these expectations hold in any timezone and on any day of the year.
+  const at = (year: number, month: number, day: number, hour: number, min: number) =>
+    new Date(year, month, day, hour, min, 0, 0).getTime();
+  const sec = (ms: number) => ms / 1000;
+  const JUNE = at(2026, 5, 17, 12, 0);
 
   it("reads an on-the-hour time that carries no minutes", () => {
-    expect(parseResetToSec("Jun 21, 9am")).toBe(local(5, 21, 9, 0));
-    expect(parseResetToSec("Jun 21, 12am")).toBe(local(5, 21, 0, 0));
-    expect(parseResetToSec("Jun 21, 12pm")).toBe(local(5, 21, 12, 0));
+    expect(parseResetToSec("Jun 21, 9am", JUNE)).toBe(sec(at(2026, 5, 21, 9, 0)));
+    expect(parseResetToSec("Jun 21, 12am", JUNE)).toBe(sec(at(2026, 5, 21, 0, 0)));
+    expect(parseResetToSec("Jun 21, 12pm", JUNE)).toBe(sec(at(2026, 5, 21, 12, 0)));
   });
 
   it("still reads the minute-bearing form the CLI usually prints", () => {
-    expect(parseResetToSec("Jun 18, 4:09pm")).toBe(local(5, 18, 16, 9));
-    expect(parseResetToSec("Jun 21, 8:59am")).toBe(local(5, 21, 8, 59));
-    expect(parseResetToSec("Jun 21, 9 AM")).toBe(local(5, 21, 9, 0));
+    expect(parseResetToSec("Jun 18, 4:09pm", JUNE)).toBe(sec(at(2026, 5, 18, 16, 9)));
+    expect(parseResetToSec("Jun 21, 8:59am", JUNE)).toBe(sec(at(2026, 5, 21, 8, 59)));
+    expect(parseResetToSec("Jun 21, 9 AM", JUNE)).toBe(sec(at(2026, 5, 21, 9, 0)));
+  });
+
+  // The reset string carries no year, so the parser has to supply one. Stamping
+  // the current year onto it put a window that resets in January eleven months
+  // into the past every new year's eve: the countdown disappeared and the pace
+  // marker sat at 100% on a brand-new weekly window.
+  it("carries a reset past new year into the year it belongs to", () => {
+    expect(parseResetToSec("Jan 2, 9:00am", at(2026, 11, 30, 12, 0)))
+      .toBe(sec(at(2027, 0, 2, 9, 0)));
+    expect(parseResetToSec("Jan 1, 3am", at(2026, 11, 31, 23, 30)))
+      .toBe(sec(at(2027, 0, 1, 3, 0)));
+  });
+
+  it("leaves a reset read just after new year in the year that ended", () => {
+    expect(parseResetToSec("Dec 31, 11:59pm", at(2027, 0, 1, 0, 30)))
+      .toBe(sec(at(2026, 11, 31, 23, 59)));
   });
 
   it("has nothing to say about an empty reset", () => {
-    expect(parseResetToSec(null)).toBeNull();
-    expect(parseResetToSec("")).toBeNull();
+    expect(parseResetToSec(null, JUNE)).toBeNull();
+    expect(parseResetToSec("", JUNE)).toBeNull();
   });
 });
 

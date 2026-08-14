@@ -1,5 +1,6 @@
-// The one decision bin/agent-dag.js makes when the worker dies: bring it back,
-// fetch a newer one, or let the whole thing stop.
+// What bin/agent-dag.js does when the worker dies: bring it back, fetch a
+// newer one, or let the whole thing stop — and, for a worker that was killed
+// rather than exited, how to hand that on to whoever started the deck.
 //
 // It lives here rather than inline in the supervisor because the supervisor
 // launches a real child process the moment it is imported, so the rule could
@@ -19,6 +20,8 @@
 // CTRL_C_EVENT for every process attached to it, which Node surfaces as
 // 'SIGINT'. What differs is only how the child dies, which is not this
 // function's business.
+
+import { constants } from "node:os";
 
 // Chosen because they mean nothing else here: the worker exits 0 normally and
 // non-zero on failure, both of which must pass straight through.
@@ -46,4 +49,60 @@ export function workerExitAction(code, stopping) {
   const ours = code === RESTART_CODE || code === UPGRADE_CODE;
   if (ours && !stopping) return { relaunch: code === UPGRADE_CODE ? "npx" : "disk" };
   return { relaunch: null, code: ours ? 0 : code ?? 0 };
+}
+
+/**
+ * How to report a worker that did not exit at all but was killed by a signal.
+ *
+ *   { reraise: "SIGHUP", code: 129 } — die of the same signal; `code` is only
+ *                                      the fallback if that somehow returns
+ *   { reraise: null, code: 129 }     — no signal to die of, exit with the number
+ *
+ * A supervisor that just exits 0 here tells the shell the deck stopped cleanly
+ * after somebody killed it. The status a caller expects is the shell's own
+ * convention, 128 + the signal number: 129 for SIGHUP, 143 for SIGTERM. On
+ * POSIX the honest way to produce it is to die of the signal rather than to
+ * exit with the arithmetic — only that also sets the "killed by a signal" bit
+ * every wait(2)-based caller reads, and `$?` comes out the same either way.
+ *
+ * Windows has no signals: a process there cannot die of one, and `process.kill`
+ * against ourselves would be a TerminateProcess with an unrelated status. So
+ * the number is all we can offer, and it is still better than 0 — the deck was
+ * killed, and whatever started it should be able to see that.
+ *
+ * The signal numbers come from `os.constants.signals`, which is also the table
+ * `process.kill` accepts, so a name missing from it is a name we could not
+ * re-raise anyway; it becomes a plain failure exit.
+ */
+export function signalExitAction(signal, platform = process.platform, numbers = constants.signals) {
+  const n = numbers?.[signal];
+  if (typeof n !== "number") return { reraise: null, code: 1 };
+  return { reraise: platform === "win32" ? null : signal, code: 128 + n };
+}
+
+/**
+ * End this process the way the worker ended: killed by `signal`.
+ *
+ * The re-raise is the obvious half and on its own it does not work, which is
+ * the reason this is a function rather than one line at the call site. The
+ * supervisor traps SIGINT, SIGTERM and SIGHUP — and those are exactly the
+ * signals a worker is most likely to die of, since deck.js does not handle
+ * SIGHUP at all and registers the other two only after a boot that takes
+ * seconds. For all three the re-raise lands back in our own handler, which
+ * finds no child left and exits 0: `kill -HUP` on the deck was reported to the
+ * shell as a clean, successful stop. Dropping the handler first restores the
+ * default action, which is to die of the signal.
+ *
+ * `proc` is a parameter so the whole sequence can be driven in a test child.
+ */
+export function dieOfSignal(signal, proc = process) {
+  const { reraise, code } = signalExitAction(signal, proc.platform);
+  if (reraise) {
+    proc.removeAllListeners(reraise);
+    try { proc.kill(proc.pid, reraise); } catch { /* fall through to the number */ }
+  }
+  // Reached on Windows, and on POSIX only when the signal is ignored or
+  // blocked — inherited dispositions survive spawn — so the kill above returns
+  // instead of ending us.
+  proc.exit(code);
 }
