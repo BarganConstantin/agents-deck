@@ -439,8 +439,8 @@ function snapshotToFlow(
   lineage: Set<string> | null,
   visibleIds: Set<string>,
   onOpenContext: (sessionId: string) => void,
-): { nodes: Node<AgentNodeData & { now: number; dim?: boolean; onOpenContext?: (sessionId: string) => void }>[]; edges: Edge[] } {
-  const nodes: Node<AgentNodeData & { now: number; dim?: boolean; onOpenContext?: (sessionId: string) => void }>[] = [];
+): { nodes: Node<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>[]; edges: Edge[] } {
+  const nodes: Node<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>[] = [];
   const edges: Edge[] = [];
   const matchSet = new Set<string>();
   if (query) {
@@ -470,7 +470,7 @@ function snapshotToFlow(
       id: a.id,
       type: "agent",
       position: { x: 0, y: 0 },
-      data: { ...a, now, dim, onOpenContext },
+      data: { ...a, now, onOpenContext },
       className: cls,
       ...(m ? { width: m.width, height: m.height } : null),
     });

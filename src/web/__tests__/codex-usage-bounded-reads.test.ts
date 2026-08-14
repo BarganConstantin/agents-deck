@@ -59,8 +59,11 @@ process.env.HOME = DIR;
 process.env.USERPROFILE = DIR;
 process.env.CODEX_HOME = CODEX_HOME;
 
+// Every call below passes `force: true` — the same thing /api/codex-usage does
+// for ?refresh=1 — which skips the 60s cache outright, so each case really does
+// rescan the directory it just wrote.
 // @ts-expect-error — .mjs server module, no types
-const { fetchCodexUsage, invalidateCodexUsageCache } = await import("../../server/codex-usage.mjs");
+const { fetchCodexUsage } = await import("../../server/codex-usage.mjs");
 
 const restore = (key: "HOME" | "USERPROFILE" | "CODEX_HOME", was: string | undefined) => {
   if (was === undefined) delete process.env[key]; else process.env[key] = was;
@@ -120,7 +123,6 @@ describe("fetchCodexUsage over a week of rollout files", () => {
       writeFileSync(join(dir, rolloutName(`session-${String(i).padStart(2, "0")}`)), tokenCount(1000), "utf8");
     }
     probe.reset();
-    invalidateCodexUsageCache();
 
     const res = await fetchCodexUsage({ force: true });
 
@@ -142,7 +144,6 @@ describe("fetchCodexUsage over a week of rollout files", () => {
     // ~1.5 MB in a single line, well past any sane chunk size.
     writeFileSync(join(dir, rolloutName("session-big")), tokenCount(2000, "x".repeat(1_500_000)), "utf8");
     probe.reset();
-    invalidateCodexUsageCache();
 
     const res = await fetchCodexUsage({ force: true });
 
@@ -163,7 +164,6 @@ describe("fetchCodexUsage over a week of rollout files", () => {
     let body = "";
     for (let i = 1; i <= EVENTS; i++) body += tokenCount(i * 100, "🙂".repeat(10_000));
     writeFileSync(join(dir, rolloutName("session-many")), body, "utf8");
-    invalidateCodexUsageCache();
 
     const res = await fetchCodexUsage({ force: true });
 
@@ -176,7 +176,6 @@ describe("fetchCodexUsage over a week of rollout files", () => {
     const dir = freshDayDir();
     // A session that is still being written to can end mid-flush.
     writeFileSync(join(dir, rolloutName("session-open")), tokenCount(700).trimEnd(), "utf8");
-    invalidateCodexUsageCache();
 
     const res = await fetchCodexUsage({ force: true });
 

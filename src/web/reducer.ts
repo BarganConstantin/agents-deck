@@ -132,15 +132,12 @@ function subagentIdFor(sessionId: string, agentId: string): string {
   return `${sessionId}::${agentId}`;
 }
 
-/** True if this event explicitly identifies a subagent (vs the root session). */
-function isExplicitSubagent(p: HookPayload): boolean {
-  return Boolean(p.agent_id || p.parent_tool_use_id);
-}
-
 function subagentLabel(p: HookPayload): string {
   return p.agent_type ?? p.subagent_type ?? "subagent";
 }
 
+/** The key under which this event explicitly identifies a subagent, or null
+ *  when it belongs to the root session. */
 function explicitSubagentKey(p: HookPayload): string | null {
   if (p.agent_id) return p.agent_id;
   if (p.parent_tool_use_id) return p.parent_tool_use_id;
@@ -163,7 +160,6 @@ function ensureRoot(state: GraphState, sessionId: string, now: number, synthetic
     toolCount: 0,
     childCount: 0,
     synthetic,
-    inFlightTool: null,
     usage: emptyUsage(),
   };
   state.agents.set(id, a);
@@ -250,7 +246,6 @@ function ensureSubagent(state: GraphState, sessionId: string, key: string, p: Ho
     cwdBasename: basename(p.cwd),
     toolCount: 0,
     childCount: 0,
-    inFlightTool: null,
     usage: emptyUsage(),
   };
   state.agents.set(id, a);
@@ -297,16 +292,6 @@ function shortPreview(input: any, max = 80): string {
   }
 }
 
-function refreshInFlight(a: AgentNodeData): void {
-  // Most recently started, not-yet-ended tool.
-  let latest: ToolCall | null = null;
-  for (let i = a.tools.length - 1; i >= 0; i--) {
-    const t = a.tools[i];
-    if (t.endedAt == null) { latest = t; break; }
-  }
-  a.inFlightTool = latest;
-}
-
 /** How many ToolCalls we keep per agent. A root session left open all day
  *  makes thousands of calls and nothing used to drop any of them — the agent
  *  caps below only evict whole finished agents/sessions, so one long-lived
@@ -333,14 +318,12 @@ function trimTools(state: GraphState, a: AgentNodeData): void {
   const tools = a.tools;
   if (tools.length > MAX_TOOLS_PER_AGENT) {
     const dropped = tools.splice(0, tools.length - MAX_TOOLS_PER_AGENT);
-    let hadInFlight = false;
     for (const t of dropped) {
       // An evicted call can still be in-flight; leaving it in the live index
       // would strand an entry no PostToolUse or stale sweep can ever reach.
-      if (state.toolIndex.delete(t.id)) hadInFlight = true;
+      state.toolIndex.delete(t.id);
       state.toolOwner.delete(t.id);
     }
-    if (hadInFlight) refreshInFlight(a);
   }
   // Entries below the blob window are always trimmed already, so this walks
   // back only over the ones that just crossed it (normally exactly one).
@@ -467,7 +450,6 @@ export function pruneDoneSessions(state: GraphState, now: number, cap: number, g
 export function sweepStaleTools(state: GraphState, now: number, maxMs: number): boolean {
   let changed = false;
   for (const a of state.agents.values()) {
-    let agentTouched = false;
     for (const t of a.tools) {
       if (t.endedAt == null && now - t.startedAt > maxMs) {
         t.endedAt = t.startedAt + maxMs;
@@ -477,11 +459,9 @@ export function sweepStaleTools(state: GraphState, now: number, maxMs: number): 
         // try to settle it after the fact.
         state.toolIndex.delete(t.id);
         state.toolOwner.delete(t.id);
-        agentTouched = true;
         changed = true;
       }
     }
-    if (agentTouched) refreshInFlight(a);
   }
   return changed;
 }
@@ -716,7 +696,6 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       owner.state = "active";
       state.toolIndex.set(id, tc);
       state.toolOwner.set(id, owner.id);
-      refreshInFlight(owner);
       trimTools(state, owner);
       break;
     }
@@ -754,12 +733,9 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       state.toolIndex.delete(id);
       const ownerId = state.toolOwner.get(id) ?? tc.agentId;
       state.toolOwner.delete(id);
-      if (ownerId) {
+      if (ownerId && usage) {
         const oa = state.agents.get(ownerId);
-        if (oa) {
-          if (usage) addUsage(oa.usage, usage);
-          refreshInFlight(oa);
-        }
+        if (oa) addUsage(oa.usage, usage);
       }
       break;
     }
@@ -789,7 +765,6 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       if (!sub) break;
       sub.state = "done";
       sub.endedAt = now;
-      refreshInFlight(sub);
       popActive(state, sessionId, key);
       break;
     }
@@ -808,7 +783,6 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       const root = ensureRoot(state, sessionId, now, false);
       root.state = "done";
       root.endedAt = now;
-      refreshInFlight(root);
       state.activeSubagentStack.delete(sessionId);
       break;
     }

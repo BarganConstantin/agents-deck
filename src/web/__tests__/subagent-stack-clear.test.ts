@@ -44,7 +44,7 @@ describe("Stop / SessionEnd and the active subagent stack", () => {
     const root = state.agents.get(SESSION)!;
     expect(root.prompts.map(p => p.text)).toEqual(["next turn"]);
     expect(root.tools.map(t => t.name)).toEqual(["Read"]);
-    expect(root.inFlightTool?.name).toBe("Read");
+    expect(root.tools.filter(t => t.endedAt == null).map(t => t.name)).toEqual(["Read"]);
 
     const sub = state.agents.get(SUB)!;
     expect(sub.prompts).toHaveLength(0);

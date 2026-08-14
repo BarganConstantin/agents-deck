@@ -562,6 +562,15 @@ async function _doFetch(now, force = false) {
   return result;
 }
 
+/**
+ * Drop the held reading so the next /api/quota recomputes from scratch.
+ *
+ * Unreferenced today, and deliberately kept: `?refresh=1` is the browser asking
+ * for a fresh read, while this is the server knowing the cached numbers are
+ * wrong. A Claude account switch makes them wrong — the figures belong to the
+ * account that was active when they were read — and it happens server-side,
+ * where no tab is in a position to send the flag. #309 wires it up.
+ */
 export function invalidateQuotaCache() {
   _cache = null;
   _cacheAt = 0;

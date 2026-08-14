@@ -80,8 +80,6 @@ export interface AgentNodeData {
   /** When true, we synthesised this node because a child arrived before any
    *  event from this agent itself (e.g. CC was already running). */
   synthetic?: boolean;
-  /** Tool call currently in-flight (most recently started + not yet ended). */
-  inFlightTool?: ToolCall | null;
   /** Number of direct subagents spawned by this agent. */
   childCount: number;
   usage: TokenUsage;

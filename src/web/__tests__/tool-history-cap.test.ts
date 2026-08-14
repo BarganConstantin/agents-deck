@@ -143,7 +143,7 @@ describe("per-agent tool history", () => {
     expect(state.toolOwner.has("lost")).toBe(false);
     // The settled calls left the index on their own PostToolUse.
     expect(state.toolIndex.size).toBe(0);
-    expect(root.inFlightTool).toBeNull();
+    expect(root.tools.filter(t => t.endedAt == null)).toEqual([]);
   });
 
   it("caps each agent separately — a busy subagent can't evict the root's history", () => {
