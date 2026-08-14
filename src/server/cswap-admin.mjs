@@ -16,6 +16,7 @@
 // concurrent adds pick the same number and the second write silently drops the
 // first account's record. Nothing upstream prevents it, so every mutation here
 // goes through one mutex.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -49,15 +50,28 @@ function backupRoot() {
 
 let _chain = Promise.resolve();
 
+// Whether the code running right now is itself the mutation holding the lock.
+// Async context rather than a plain boolean, which could not tell that apart
+// from another request that merely arrived while the lock was held — and would
+// wave that one through, which is the opposite of a mutex.
+const _holder = new AsyncLocalStorage();
+
 /**
  * One store mutation at a time.
  *
  * Not defence against another process — that would need claude-swap's own file
  * lock, which `add` does not take either. This is defence against ourselves:
  * two browser tabs, or a double-click, are enough to race a slot assignment.
+ *
+ * Re-entrant, because a mutation that reaches for the lock from inside one
+ * would otherwise wait for itself forever: the chain cannot advance past the
+ * outer link until it settles, and the outer link is blocked on this call. It
+ * already has exclusive access, so it simply runs.
  */
 export function withStoreLock(fn) {
-  const next = _chain.then(fn, fn);
+  if (_holder.getStore()) return Promise.resolve().then(fn);
+  const held = () => _holder.run(true, fn);
+  const next = _chain.then(held, held);
   // Keep the chain alive even when a link rejects, or every later mutation
   // inherits the failure.
   _chain = next.then(() => {}, () => {});
@@ -329,13 +343,26 @@ export async function submitLoginCode(code) {
 export async function cancelLogin() {
   const flow = _login;
   if (!flow) return { ok: true, ...loginState() };
+  // Stopping the child touches no file, so it happens straight away: a cancel
+  // that waited its turn first would leave `claude auth login` sitting on the
+  // user's next attempt for the rest of its five minutes.
   try { flow.child?.kill(); } catch { /* already gone */ }
-  // The login may have completed before the cancel arrived, in which case the
-  // live credentials already moved and putting them back is the point.
-  await restoreActive(flow.previousActive);
-  invalidateClaudeAccountsCache();
-  _login = null;
-  return { ok: true, ...loginState() };
+  // Switching back does touch the store, so it is queued like every other
+  // mutation. Cancel is reachable while submitLoginCode holds the lock — the
+  // dialog fires it on Escape, mid-registration — and running `cswap switch`
+  // beside an in-flight `cswap add` is precisely the unlocked read-modify-write
+  // of sequence.json the mutex exists to prevent: claude-swap takes no file lock
+  // around `add`, so whichever write lands second drops the other's record.
+  return withStoreLock(async () => {
+    // The login may have completed before the cancel arrived, in which case the
+    // live credentials already moved and putting them back is the point.
+    await restoreActive(flow.previousActive);
+    invalidateClaudeAccountsCache();
+    // A newer sign-in can have started while this waited its turn; clearing the
+    // slot then would drop a live flow's handle instead of this dead one's.
+    if (flow === _login) _login = null;
+    return { ok: true, ...loginState() };
+  });
 }
 
 /** Put the account that was active before the login back in front. */

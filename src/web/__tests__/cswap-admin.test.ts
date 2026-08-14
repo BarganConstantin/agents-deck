@@ -5,11 +5,11 @@
 // --yes flag and must be answered by matching it, and a shared account is a
 // live credential that has to stop working on its own.
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error — plain JS module, no types
-import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, withStoreLock, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
 // @ts-expect-error — plain JS module, no types
 import { looksMissing } from "../../server/exec.mjs";
 // @ts-expect-error — plain JS module, no types
@@ -53,10 +53,19 @@ const fakeLogin = vi.hoisted(() => {
   return { spawn, child, children };
 });
 
+// Every argument vector `run` was given, in order — the only way to see WHEN a
+// `cswap switch` was reached, which is what the store-lock test is about. The
+// command still runs for real; this only watches.
+const ranArgs = vi.hoisted(() => [] as string[][]);
+
 vi.mock("../../server/exec.mjs", async (importOriginal) => {
   const real = await importOriginal<Record<string, any>>();
   return {
     ...real,
+    run: (cmd: string, args: string[], opts: unknown) => {
+      ranArgs.push(args);
+      return real.run(cmd, args, opts);
+    },
     runInteractive: (cmd: string, args: string[], opts: unknown) =>
       args[0] === "auth" && args[1] === "login" ? fakeLogin.spawn() : real.runInteractive(cmd, args, opts),
   };
@@ -354,6 +363,78 @@ describe("a startLogin that gives up after a newer one took over", () => {
 // a genuinely refused import says. This one runs the whole function, with cswap
 // pointed at a path that cannot exist, so a ReferenceError anywhere between the
 // envelope and the child fails the test instead of shipping.
+// Cancelling used to reach the store without the mutex. `cswap add` runs inside
+// the lock and takes no file lock of its own, so a cancel arriving during the
+// registration — which the dialog fires on Escape — put `cswap switch` in the
+// middle of add's read-modify-write of sequence.json, and whichever write landed
+// second dropped the other's record: the account that had just been added could
+// simply vanish.
+describe("cancelLogin and the store lock", () => {
+  it("switches back only once the in-flight mutation has finished", async () => {
+    const claude = process.env.AGENTS_DECK_CLAUDE;
+    const cswap = process.env.AGENTS_DECK_CSWAP;
+    const backup = process.env.CLAUDE_SWAP_BACKUP;
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-cancel-"));
+    const seq = join(dir, "sequence.json");
+    const store = (active: number) =>
+      writeFileSync(seq, JSON.stringify({ activeAccountNumber: active, accounts: { 1: { email: "a@b.c" }, 2: { email: "d@e.f" } } }));
+    const switches = () => ranArgs.filter(a => a[0] === "switch");
+    // A store of our own, and two CLIs that are not there — nothing in here may
+    // touch the account the machine running the tests is signed in as.
+    store(1);
+    process.env.CLAUDE_SWAP_BACKUP = dir;
+    process.env.AGENTS_DECK_CLAUDE = join(dir, "no-such-claude");
+    process.env.AGENTS_DECK_CSWAP = join(dir, "no-such-cswap");
+    const nth = fakeLogin.children.length;
+    try {
+      const start = startLogin();
+      const child = await fakeLogin.child(nth);
+      child.say(`If the browser didn't open, visit: ${AUTHORIZE}`);
+      expect(await start).toMatchObject({ ok: true, state: "awaiting_code" });
+      const before = switches().length;
+
+      // The lock, held the way submitLoginCode holds it while `cswap add` runs.
+      let release!: () => void;
+      const busy = withStoreLock(() => new Promise<void>((r) => { release = r; }));
+      // And the active account has moved meanwhile — by the add itself, or by
+      // the deck's own auto-switch tick. That is what gives cancel something to
+      // undo, and what makes the two writes collide.
+      store(2);
+
+      const cancelled = cancelLogin();
+      await new Promise((r) => setTimeout(r, 50));
+      // The child is gone immediately: nothing about killing it touches a file.
+      expect(child.killed).toBe(true);
+      // The store is not: the switch waits its turn.
+      expect(switches().length).toBe(before);
+
+      release();
+      await busy;
+      expect(await cancelled).toMatchObject({ ok: true, state: "idle" });
+      expect(switches().slice(before)).toEqual([["switch", "1"]]);
+    } finally {
+      await cancelLogin();
+      for (const c of fakeLogin.children) c.end({ ok: false, killed: true });
+      if (claude === undefined) delete process.env.AGENTS_DECK_CLAUDE;
+      else process.env.AGENTS_DECK_CLAUDE = claude;
+      if (cswap === undefined) delete process.env.AGENTS_DECK_CSWAP;
+      else process.env.AGENTS_DECK_CSWAP = cswap;
+      if (backup === undefined) delete process.env.CLAUDE_SWAP_BACKUP;
+      else process.env.CLAUDE_SWAP_BACKUP = backup;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is re-entrant, so a mutation can be queued from inside one", async () => {
+    // The other half of queueing cancel: a caller that already holds the lock
+    // would otherwise wait for itself — the chain cannot advance past the link
+    // it is inside — and every later mutation would wait behind it forever.
+    expect(await withStoreLock(async () => withStoreLock(async () => "inner"))).toBe("inner");
+    // And the lock still works afterwards.
+    expect(await withStoreLock(async () => "after")).toBe("after");
+  });
+});
+
 describe("importAccount reaches the CLI", () => {
   it("returns a refusal, not a crash, when cswap cannot be run", async () => {
     const before = process.env.AGENTS_DECK_CSWAP;
