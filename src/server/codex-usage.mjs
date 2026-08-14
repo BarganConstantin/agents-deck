@@ -4,6 +4,7 @@
 import { readdir, open, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { StringDecoder } from "node:string_decoder";
 
 const CODEX_HOME = process.env.CODEX_HOME
   ? process.env.CODEX_HOME
@@ -17,6 +18,47 @@ const CACHE_MS = 60_000;
 
 const WINDOW_5H_MS  = 5 * 60 * 60 * 1000;
 const WINDOW_7D_MS  = 7 * 24 * 60 * 60 * 1000;
+
+// A rollout file grows for as long as its session runs, and a week's worth of
+// them is however much the user happened to type. Reading them all at once made
+// the peak working set a function of that total; these two caps make it a
+// function of the pool instead — at most MAX_PARALLEL_READS files in flight,
+// each holding one chunk plus the line it is still assembling.
+const READ_CHUNK_BYTES = 256 * 1024;
+const MAX_PARALLEL_READS = 4;
+
+// Run `worker` over `items` with at most `limit` of them in flight. Workers
+// pull from a shared cursor, so a slow file delays only its own worker instead
+// of stalling a fixed-size batch.
+async function forEachLimited(items, limit, worker) {
+  let next = 0;
+  const workers = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) {
+    workers.push((async () => {
+      while (next < items.length) await worker(items[next++]);
+    })());
+  }
+  await Promise.all(workers);
+}
+
+// Append one rollout line's token_count event to the series, if it has one.
+function foldTokenLine(series, raw) {
+  // Cheap pre-filter before the (relatively) expensive JSON.parse.
+  if (!raw.includes("total_token_usage")) return;
+  let obj;
+  try { obj = JSON.parse(raw); } catch { return; }
+  if (obj.type !== "event_msg" || obj.payload?.type !== "token_count") return;
+  const u = obj.payload.info?.total_token_usage;
+  if (!u) return;
+  const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+  series.push({
+    ts:     isNaN(ts) ? null : ts,
+    inp:    u.input_tokens         ?? 0,
+    out:    u.output_tokens        ?? 0,
+    cacheR: u.cached_input_tokens  ?? 0,
+    total:  u.total_tokens         ?? ((u.input_tokens ?? 0) + (u.output_tokens ?? 0)),
+  });
+}
 
 // Read the full series of cumulative token_count events from a rollout file.
 // Each token_count event carries `info.total_token_usage` — the running total
@@ -34,25 +76,32 @@ async function readTokenSeries(filePath) {
     fd = await open(filePath, "r");
     const { size } = await fd.stat();
     if (size === 0) return null;
-    const text = (await fd.readFile()).toString("utf8");
     const series = [];
-    for (const raw of text.split("\n")) {
-      // Cheap pre-filter before the (relatively) expensive JSON.parse.
-      if (!raw.includes("total_token_usage")) continue;
-      let obj;
-      try { obj = JSON.parse(raw); } catch { continue; }
-      if (obj.type !== "event_msg" || obj.payload?.type !== "token_count") continue;
-      const u = obj.payload.info?.total_token_usage;
-      if (!u) continue;
-      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
-      series.push({
-        ts:     isNaN(ts) ? null : ts,
-        inp:    u.input_tokens         ?? 0,
-        out:    u.output_tokens        ?? 0,
-        cacheR: u.cached_input_tokens  ?? 0,
-        total:  u.total_tokens         ?? ((u.input_tokens ?? 0) + (u.output_tokens ?? 0)),
-      });
+    // A chunk at a time rather than the whole file: only the token_count
+    // numbers survive the pass, so buffering megabytes of prompt text (once as
+    // a Buffer, again as a string, a third time as the split array) bought
+    // nothing. StringDecoder carries a UTF-8 sequence that straddles a chunk
+    // boundary over to the next chunk.
+    const buf = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    const decoder = new StringDecoder("utf8");
+    let pending = "";
+    let pos = 0;
+    while (pos < size) {
+      const { bytesRead } = await fd.read(buf, 0, READ_CHUNK_BYTES, pos);
+      if (bytesRead <= 0) break;
+      pos += bytesRead;
+      pending += decoder.write(buf.subarray(0, bytesRead));
+      let from = 0;
+      let nl;
+      while ((nl = pending.indexOf("\n", from)) >= 0) {
+        foldTokenLine(series, pending.slice(from, nl));
+        from = nl + 1;
+      }
+      if (from > 0) pending = pending.slice(from);
     }
+    // A rollout still being written can end without its final newline.
+    pending += decoder.end();
+    if (pending) foldTokenLine(series, pending);
     return series.length ? series : null;
   } catch { return null; }
   finally { fd?.close().catch(() => {}); }
@@ -161,13 +210,16 @@ export async function fetchCodexUsage({ force = false } = {}) {
     // longer drops active-but-old sessions or over-counts the pre-window tail.
     const files = await listRolloutFiles(WINDOW_7D_MS);
 
-    await Promise.all(files.map(async ({ path }) => {
+    // Bounded fan-out: a week of rollouts is an open-ended list, and opening
+    // every one of them at once also risked EMFILE, which readTokenSeries
+    // swallows into a silent undercount.
+    await forEachLimited(files, MAX_PARALLEL_READS, async ({ path }) => {
       const series = await readTokenSeries(path);
       if (!series) return;
       // Same series feeds both windows; baseline differs per window start.
       addTo(w5h, windowDelta(series, start5h));
       addTo(w7d, windowDelta(series, start7d));
-    }));
+    });
   } catch (err) {
     console.error("agents-deck codex-usage: scan failed:", err?.message ?? err);
     const result = { ok: false, fetchedAt: now };
