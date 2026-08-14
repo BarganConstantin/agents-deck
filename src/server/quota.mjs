@@ -563,15 +563,30 @@ async function _doFetch(now, force = false) {
 }
 
 /**
- * Drop the held reading so the next /api/quota recomputes from scratch.
+ * Forget every reading held for the account that was active when it was taken.
  *
- * Unreferenced today, and deliberately kept: `?refresh=1` is the browser asking
- * for a fresh read, while this is the server knowing the cached numbers are
- * wrong. A Claude account switch makes them wrong — the figures belong to the
- * account that was active when they were read — and it happens server-side,
- * where no tab is in a position to send the flag. #309 wires it up.
+ * `?refresh=1` is the browser asking for a fresher read; this is the server
+ * knowing the numbers it holds are the wrong account's. A Claude account switch
+ * makes them that — every percentage here belongs to whoever was active when it
+ * was collected — and the switch happens server-side, where no tab is in a
+ * position to send the flag: it is driven from the accounts panel, and the usage
+ * panel neither owns that state nor hears about it.
+ *
+ * `_lastGood` goes with the result cache, and it is the half that matters.
+ * Clearing `_cache` alone only shortens the wrong answer's life to the next
+ * poll, because both fallbacks in _doFetch hand `_lastGood` straight back — and
+ * freshest() ranks by fetchedAt, so a reading the deck already paid for beats
+ * any row the store holds for an account nobody has collected for since. The
+ * panel would print the previous account's percentages under a "stale" label
+ * instead of admitting it has no answer for this one yet.
+ *
+ * The self-poll floor deliberately survives: a switch is not a reason to spend
+ * the shared request budget, and one that reset it would make switching a way to
+ * hammer it. Until the store answers for the new account, "no reading yet" is
+ * the honest thing to serve.
  */
 export function invalidateQuotaCache() {
   _cache = null;
   _cacheAt = 0;
+  _lastGood = null;
 }
