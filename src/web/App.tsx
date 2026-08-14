@@ -31,6 +31,7 @@ import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separat
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
+import { versionChipLabel, versionChipTitle } from "./version-chip";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -728,12 +729,19 @@ function Inner() {
   // `force` asks npm now instead of reusing the answer cached on disk. Used by
   // the chip, because "no banner" and "no check ran" look identical from here.
   const lastForcedRef = useRef(0);
+  // A forced check is a round-trip to the registry, and on a slow line that is
+  // seconds during which the chip would otherwise not move at all — clicking it
+  // felt like clicking nothing. Only forced checks are shown: the unforced
+  // polls are answered from a marker on disk and would just make the chip
+  // flicker for no reason the user could act on.
+  const [versionChecking, setVersionChecking] = useState(false);
   const loadVersion = useCallback((force = false) => {
-    if (force) lastForcedRef.current = Date.now();
+    if (force) { lastForcedRef.current = Date.now(); setVersionChecking(true); }
     fetch(force ? "/api/version?refresh=1" : "/api/version")
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setVersion(d as VersionInfo); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (force) setVersionChecking(false); });
   }, []);
   // Every unforced poll is answered from the server's on-disk marker, so once a
   // deck had checked, nothing it could do would ever learn about a release
@@ -1813,19 +1821,30 @@ function Inner() {
             // Not decoration: "no banner" and "the check never ran" look the
             // same from a chair, and on a machine that only ever runs
             // `npx ccdeck` the difference is the whole feature. Clicking asks
-            // npm now.
-            <button
-              type="button"
-              className="v"
-              onClick={() => loadVersion(true)}
-              title={version?.checkDisabled
-                ? "Update checks are off (AGENTS_DECK_NO_UPDATE_CHECK=1)."
-                : `${version?.latest ? `npm has v${version.latest}` : "npm not reached yet"}${
-                    version?.checkedAt ? ` · checked ${shortAgo(now - version.checkedAt)}` : ""
-                  } · click to check now`}
-            >
-              v{version?.running ?? __APP_VERSION__}
-            </button>
+            // npm now, ahead of the poll — so it has to look like a control and
+            // say so out loud, which a dim version number does neither of.
+            (() => {
+              const copy = {
+                running: version?.running ?? __APP_VERSION__,
+                latest: version?.latest,
+                latestPending: version?.latestPending,
+                checkedAgo: version?.checkedAt ? shortAgo(now - version.checkedAt) : null,
+                checkDisabled: version?.checkDisabled,
+                checking: versionChecking,
+              };
+              return (
+                <button
+                  type="button"
+                  className={versionChecking ? "v checking" : "v"}
+                  onClick={() => loadVersion(true)}
+                  aria-busy={versionChecking || undefined}
+                  aria-label={versionChipLabel(copy)}
+                  title={versionChipTitle(copy)}
+                >
+                  v{copy.running}
+                </button>
+              );
+            })()
           )}
         </div>
         {selected && (() => {

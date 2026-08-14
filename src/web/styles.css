@@ -164,11 +164,26 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   transition: background 130ms, border-color 130ms, color 130ms;
 }
 /* The same chip when nothing is stale: still a button — clicking it asks npm
-   now — but it must not draw attention to itself for saying "up to date". */
-.topbar .brand button.v:not(.stale) { color: var(--muted); font-weight: 400; }
+   now — but it must not draw attention to itself for saying "up to date".
+   Quiet is not the same as invisible, though: with a fully transparent border
+   it read as a caption in the same colour as the product name beside it, so
+   nobody found the manual re-check by accident. A hairline outline is enough
+   to say "control" without competing with anything. */
+.topbar .brand button.v:not(.stale) {
+  color: var(--muted);
+  font-weight: 400;
+  border-color: var(--line);
+}
 .topbar .brand button.v:not(.stale):hover {
-  color: var(--fg);
-  border-color: var(--border);
+  color: var(--text);
+  border-color: var(--muted-dim);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+/* A forced check is a request to npm, which on a slow line is seconds. Without
+   this the click looks like it did nothing at all. */
+.topbar .brand button.v.checking {
+  cursor: progress;
+  opacity: 0.6;
 }
 .topbar .brand button.v.stale {
   color: var(--warn);
