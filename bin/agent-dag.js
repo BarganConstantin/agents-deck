@@ -26,6 +26,7 @@ import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSpec } from "../src/server/exec.mjs";
 import { installedVersion, npxRestartSpec } from "../src/server/self-update.mjs";
 
 // Chosen because they mean nothing else here: the worker exits 0 normally and
@@ -36,7 +37,8 @@ const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
 const PKG_ROOT = dirname(BIN_DIR);
 
-// npx is a .cmd shim on Windows, which spawn can only launch through a shell.
+// npx is a .cmd shim on Windows, which spawn can only launch through cmd.exe —
+// spawnSpec is how, with the arguments quoted rather than pasted together.
 const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
 const VERSION = installedVersion(PKG_ROOT) ?? "?";
 
@@ -141,7 +143,14 @@ function launchNpx() {
   args.push("--no-open");
 
   process.stdout.write(`\n  ↻  fetching ${spec}…\n`);
-  const started = spawn(NPX, args, { stdio: "inherit", shell: process.platform === "win32" });
+  // Not `shell: true`. Everything after the spec is the user's own argv, and
+  // Node would paste it into one command line unquoted: `--workspace C:\Users\
+  // John Smith\proj` would reach the new deck as two arguments, the second one
+  // silently dropped by its parser — an upgraded deck watching the wrong
+  // directory. spawnSpec routes npx.cmd through cmd.exe with every argument
+  // quoted, and is a plain spawn everywhere else.
+  const { file, args: argv, opts } = spawnSpec(NPX, args);
+  const started = spawn(file, argv, { stdio: "inherit", ...opts });
   child = started;
 
   // Whether the replacement ever got as far as serving. An npx that cannot

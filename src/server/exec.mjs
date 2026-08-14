@@ -59,6 +59,25 @@ export function viaCmd(file, args) {
   };
 }
 
+/**
+ * What to hand `spawn`/`execFile` for `file` and `args` on this platform, with
+ * the argument vector intact and no shell.
+ *
+ * The alternative every caller reaches for first — `shell: true`, because a
+ * .cmd cannot be spawned any other way — is the one thing that must not be
+ * used: Node joins the array into a command line with a single space and no
+ * per-argument quoting, so `--workspace C:\Users\John Smith\proj` arrives as
+ * two arguments and an `&` in a path ends the command early. Batch files go
+ * through cmd.exe with each argument quoted; everything else is spawned as
+ * given. The platform is a parameter so both branches can be tested.
+ *
+ * The one thing quoting cannot cover: cmd.exe expands `%VAR%` inside quotes
+ * too, and a command line has no escape for it. Every other metacharacter —
+ * `&`, `|`, `>`, `^`, `(` — is inert once quoted.
+ */
+export const spawnSpec = (file, args, platform = process.platform) =>
+  isBatch(file, platform) ? viaCmd(file, args) : { file, args, opts: {} };
+
 // Reasons to try the next candidate spelling rather than give up. EINVAL and
 // UNKNOWN show up on Windows for a file that exists but cannot be executed the
 // way it was asked for; both mean "not this one", not "no such tool".
