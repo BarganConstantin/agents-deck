@@ -4,7 +4,7 @@
 // Both providers share the discovery dir at <claude config dir>/agent-dag/ so a
 // single running server can receive events from either CLI. Re-runs are safe;
 // entries are tagged with __agent-dag and de-duped.
-import { readFile, writeFile, mkdir, copyFile, unlink, rename, open, stat, chmod } from "node:fs/promises";
+import { readFile, writeFile, mkdir, unlink, rename, open, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -203,11 +203,33 @@ async function writeFileAtomic(target, text) {
   }
 }
 
+/**
+ * Install one of the packaged hook scripts without ever exposing a partial one.
+ *
+ * copyFile truncates the destination and then fills it, and the destination here
+ * is a script every live Claude Code session runs on each tool call. Starting the
+ * deck while sessions are open — the normal way this is used — puts a hook
+ * invocation inside that window sooner or later, and what it executes is an
+ * empty or half-written program: a dropped event at best, a SyntaxError in the
+ * user's session at worst. Renaming a finished copy over the name closes it, so
+ * a session opens either the old script or the new one and both are whole.
+ *
+ * Re-installs are the common case and almost always produce the same bytes, so
+ * identical content skips the write and the file is not replaced at all.
+ */
+async function installScript(src, dst) {
+  const text = await readFile(src, "utf8");
+  const current = await readFile(dst, "utf8").catch(() => null);
+  if (current === text) return false;
+  await writeFileAtomic(dst, text);
+  return true;
+}
+
 async function installHookScript(installDir) {
   await ensureDir(installDir);
   const src = join(PKG_ROOT, "hook", "hook.js");
   const dst = join(installDir, "hook.js");
-  await copyFile(src, dst);
+  await installScript(src, dst);
   return dst;
 }
 
@@ -300,5 +322,7 @@ export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS, CODEX_EVENTS };
 // Exported for the other modules that rewrite settings.json — the sound toggle
 // today. Every one of them needs the same two guarantees: a file we cannot
 // parse is never treated as an empty one, and the replacement is a single
-// rename rather than a truncate a reader can land inside.
-export { readSettingsForWrite, writeFileAtomic };
+// rename rather than a truncate a reader can land inside. installScript carries
+// the same guarantee to the hook scripts themselves, which are the files live
+// sessions are actually executing.
+export { readSettingsForWrite, writeFileAtomic, installScript };
