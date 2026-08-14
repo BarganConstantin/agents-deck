@@ -3598,6 +3598,10 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   text-transform: uppercase;
 }
 .ap-manage-hint { color: var(--text-dim); font-size: 10px; }
+/* The one thing this row ever has to announce rather than label: a move that
+   relocated a second account. Dim is right for "rotation order" and wrong for
+   news, so the notice takes the accent the row's own select hovers to. */
+.ap-manage-hint.ap-manage-swap { color: var(--accent); }
 .ap-manage-input {
   flex: 1;
   min-width: 0;
