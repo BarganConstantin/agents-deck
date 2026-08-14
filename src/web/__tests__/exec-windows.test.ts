@@ -4,11 +4,12 @@
 // the server down before it finished starting — on Windows only, which is
 // exactly the platform this repo cannot execute. Hence tests.
 import { describe, it, expect } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error — .mjs server module, no types
-import { isBatch, viaCmd, tryNext, runInteractive } from "../../server/exec.mjs";
+import { isBatch, viaCmd, tryNext, runInteractive, killTree } from "../../server/exec.mjs";
 
 describe("batch-file detection", () => {
   it("catches the extensions that cannot be spawned directly, on Windows only", () => {
@@ -88,6 +89,114 @@ describe("an interactive run that has to retry a spelling", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+const waitFor = async (cond: () => boolean, ms: number) => {
+  const until = Date.now() + ms;
+  while (!cond() && Date.now() < until) await new Promise(r => setTimeout(r, 50));
+  return cond();
+};
+
+describe("killing a child", () => {
+  it("stops one that has no wrapper, on every platform", async () => {
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
+    await new Promise(r => child.once("spawn", r));
+    expect(alive(child.pid!)).toBe(true);
+    killTree(child);
+    const end = await new Promise<unknown>(r => child.once("close", (code, signal) => r(signal ?? code)));
+    // SIGTERM on POSIX, a non-zero exit where taskkill did it. Either way the
+    // child did not choose to leave.
+    expect(end === "SIGTERM" || end !== 0).toBe(true);
+  }, 20_000);
+
+  // On Windows a .cmd runs through cmd.exe, so the tool is a GRANDCHILD and
+  // ChildProcess.kill() — one TerminateProcess against the wrapper — leaves it
+  // running. Every cancelled or expired `claude auth login` leaked a node.exe
+  // that way, still holding the stdin pipe the deck wrote to, and holding the
+  // wrapper's 'close' open so the run never even settled. Windows is the
+  // platform this repo cannot execute, so cmd.exe and taskkill are stood in for
+  // and the real tree is built out of real processes.
+  it.skipIf(process.platform === "win32")("stops the tool under the cmd.exe wrapper too", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-kill-"));
+    const base = join(dir, "ccdeck-hang-cli");
+    const pidFile = join(dir, "grandchild.pid");
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const was = { ComSpec: process.env.ComSpec, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot };
+    let grandchild = 0;
+    try {
+      // Stands in for cmd.exe: same /d /s /c convention, and it runs the batch
+      // file as a child rather than replacing itself with it — which is the
+      // whole point, since that is what makes the tool a grandchild.
+      const shim = join(dir, "fake-cmd.sh");
+      writeFileSync(shim, [
+        "#!/bin/sh",
+        `target=$(printf '%s' "$4" | tr -d '"')`,
+        `sh "$target"`,
+        "status=$?", // keeps the run above off the last line, so no shell execs it
+        "exit $status",
+      ].join("\n") + "\n");
+      chmodSync(shim, 0o755);
+
+      // Stands in for taskkill: same argument shape, and a real recursive walk,
+      // so only a kill that asks for the tree gets one.
+      const taskkill = join(dir, "taskkill");
+      writeFileSync(taskkill, [
+        "#!/bin/sh",
+        'pid=""',
+        "while [ $# -gt 0 ]; do",
+        '  if [ "$1" = "/pid" ]; then shift; pid="$1"; fi',
+        "  shift",
+        "done",
+        '[ -n "$pid" ] || exit 1',
+        "kill_tree() {",
+        '  for kid in $(ps -A -o pid=,ppid= | awk -v p="$1" \'$2 == p { print $1 }\'); do kill_tree "$kid"; done',
+        '  kill -9 "$1" 2>/dev/null',
+        "}",
+        'kill_tree "$pid"',
+        "exit 0",
+      ].join("\n") + "\n");
+      chmodSync(taskkill, 0o755);
+
+      // The tool: announces its own pid, then hangs the way `claude auth login`
+      // hangs on the code it is waiting for.
+      writeFileSync(`${base}.cmd`, [
+        "#!/bin/sh",
+        `echo $$ > "${pidFile}"`,
+        "echo ready",
+        "sleep 60",
+      ].join("\n") + "\n");
+
+      process.env.ComSpec = shim;
+      process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
+      // Windows always has one and killTree prefers System32 over PATH there;
+      // here there is none, so the stand-in on PATH is found instead.
+      delete process.env.SystemRoot;
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+      const h = runInteractive(base, [], { timeout: 60_000 });
+      expect(await waitFor(() => existsSync(pidFile), 10_000)).toBe(true);
+      grandchild = Number(readFileSync(pidFile, "utf8").trim());
+      expect(alive(grandchild)).toBe(true);
+
+      h.kill();
+      // The tool itself, not just the wrapper the deck happened to spawn.
+      expect(await waitFor(() => !alive(grandchild), 10_000)).toBe(true);
+      // And with nothing left holding the stdout it inherited, the run settles
+      // at last — killing only the wrapper left `done` pending forever.
+      const r = await h.done;
+      expect(r.killed).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      for (const [key, value] of Object.entries(was)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (grandchild) { try { process.kill(grandchild, "SIGKILL"); } catch { /* already gone */ } }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("a .cmd spelling cmd.exe could not find", () => {

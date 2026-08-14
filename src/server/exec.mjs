@@ -78,6 +78,47 @@ export function viaCmd(file, args) {
 export const spawnSpec = (file, args, platform = process.platform) =>
   isBatch(file, platform) ? viaCmd(file, args) : { file, args, opts: {} };
 
+/**
+ * Stop a child AND everything it started.
+ *
+ * On POSIX the child is the tool, so a signal to it is the whole job and this
+ * is exactly the `child.kill()` it replaces. On Windows a .cmd or .bat runs
+ * THROUGH cmd.exe (see viaCmd), so the tool — node, for the claude and npm
+ * shims — is a grandchild, and a kill is one TerminateProcess against the
+ * wrapper. Windows terminates no descendants and libuv's job object lets them
+ * break away, so the wrapper vanished and the work carried on: every cancelled
+ * or expired `claude auth login` left a node.exe blocked forever on the stdin
+ * pipe this process holds, and because that node.exe kept the inherited stdout
+ * handle open, the wrapper's 'close' never arrived either — the run that was
+ * reported dead never settled.
+ *
+ * `taskkill /T` is the descendant walk Windows does have, and `/F` is what
+ * stops a console app that is not pumping its message queue. Taking it from
+ * System32 rather than from PATH matters here: PATH is the user's, and this is
+ * the program we hand a pid to kill. If it cannot run at all, the plain kill
+ * still happens, which is no worse than before.
+ *
+ * A process group would be the tidier answer and is the wrong one on Windows:
+ * `detached` there only means CREATE_NEW_PROCESS_GROUP, and Node cannot signal
+ * a group — `process.kill(-pid)` is POSIX-only.
+ */
+export function killTree(child, signal) {
+  const plain = () => { try { child?.kill(signal); } catch { /* already gone */ } };
+  if (process.platform !== "win32" || !child?.pid) return plain();
+  try {
+    const root = process.env.SystemRoot || process.env.systemroot;
+    const exe = root ? `${root}\\System32\\taskkill.exe` : "taskkill";
+    const killer = spawn(exe, ["/pid", String(child.pid), "/T", "/F"], {
+      stdio: "ignore", windowsHide: true,
+    });
+    killer.on("error", plain);
+    killer.on("exit", (code) => { if (code !== 0) plain(); });
+    killer.unref?.();
+  } catch {
+    plain();
+  }
+}
+
 // Reasons to try the next candidate spelling rather than give up. EINVAL and
 // UNKNOWN show up on Windows for a file that exists but cannot be executed the
 // way it was asked for; both mean "not this one", not "no such tool".
@@ -124,7 +165,15 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
         ? viaCmd(raw, args)
         : { file: raw, args, opts: {} };
 
+      // execFile's own `timeout` ends with one signal to the process it
+      // started, which for a batch candidate is the cmd.exe wrapper: the
+      // deadline was reported as enforced while the tool underneath went on
+      // running. A batch candidate is timed here instead, on the whole tree.
+      const tree = isBatch(raw);
+      let timer = null, timedOut = false;
+
       const done = (err, stdout, stderr) => {
+        clearTimeout(timer);
         // cmd.exe's "is not recognized" counts as "not this spelling" too, and
         // it arrives as a normal non-zero exit rather than a spawn error.
         const missing = Boolean(err) && looksMissing(`${stderr ?? ""}\n${stdout ?? ""}`);
@@ -135,14 +184,21 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
           // A tool cmd.exe could not find is missing, not "exited 1" — callers
           // key their message off this.
           code: missing ? "ENOENT" : (err?.code ?? 0),
-          killed: Boolean(err?.killed),
+          // Our own tree kill is not `killed` as far as execFile can tell, so
+          // a timeout reports the same either way.
+          killed: Boolean(err?.killed) || timedOut,
           stdout: String(stdout ?? ""),
           stderr: String(stderr ?? ""),
         });
       };
 
       try {
-        execFile(file, argv, { timeout, shell: false, windowsHide: true, maxBuffer, ...opts }, done);
+        const cp = execFile(file, argv,
+          { timeout: tree ? 0 : timeout, shell: false, windowsHide: true, maxBuffer, ...opts }, done);
+        if (tree) {
+          timer = setTimeout(() => { timedOut = true; killTree(cp); }, timeout);
+          timer.unref?.();
+        }
       } catch (err) {
         // Synchronous throw — the EINVAL case. Same handling as a callback
         // error; letting it propagate here is what crashed the server, because
@@ -210,7 +266,7 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
 
   const timer = setTimeout(() => {
     timedOut = true;
-    try { child?.kill(); } catch { /* already gone */ }
+    killTree(child);
   }, timeout);
   timer.unref?.();
 
@@ -287,9 +343,11 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
     end() {
       try { child?.stdin?.end(); } catch { /* already closed */ }
     },
+    /** Stop the run. On Windows that means the tool under the cmd.exe wrapper
+     *  too — see killTree; a cancelled sign-in used to leave it running. */
     kill() {
       killed = true;
-      try { child?.kill(); } catch { /* already gone */ }
+      killTree(child);
     },
     onLine(cb) { lineSubs.push(cb); },
     done,

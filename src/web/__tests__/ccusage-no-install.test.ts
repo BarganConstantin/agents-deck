@@ -24,6 +24,12 @@ vi.mock("node:child_process", () => ({
     calls.push({ cmd, args });
     return { status: 1, stdout: "", stderr: "test: spawnSync blocked" };
   },
+  // Nothing here calls it, but exec.mjs — reached through ccusage.mjs for
+  // killTree — imports it by name, and a name the mock omits is a load error.
+  execFile: (cmd: string, args: string[] = []) => {
+    calls.push({ cmd, args });
+    throw new Error("test: execFile blocked");
+  },
 }));
 
 // ccusage.mjs resolves ~/.agents-deck/ccusage at import time from os.homedir(),
