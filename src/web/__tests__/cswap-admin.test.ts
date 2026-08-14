@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error — plain JS module, no types
-import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, withStoreLock, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, countCodePrompts, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, submitLoginCode, withStoreLock, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
 // @ts-expect-error — plain JS module, no types
 import { looksMissing } from "../../server/exec.mjs";
 // @ts-expect-error — plain JS module, no types
@@ -28,14 +28,32 @@ const fakeLogin = vi.hoisted(() => {
   function spawn() {
     let settle!: (r: any) => void;
     const subs: Sub[] = [];
+    let pending = "";
     const child = {
       done: new Promise((r) => { settle = r; }),
       killed: false,
       onLine(cb: Sub) { subs.push(cb); },
-      write(_text: string) {},
+      written: [] as string[],
+      write(text: string) { child.written.push(text); },
       kill() { child.killed = true; },
-      /** What the CLI writes. */
-      say(line: string) { for (const cb of subs) cb(line, false); },
+      /**
+       * Bytes out of the CLI, cut into lines exactly the way exec.mjs cuts
+       * them — complete lines once, then the still-unterminated tail on every
+       * chunk, which is what makes a prompt without a newline arrive again and
+       * again as it grows.
+       */
+      out(text: string) {
+        pending += text;
+        let nl;
+        while ((nl = pending.indexOf("\n")) !== -1) {
+          const line = pending.slice(0, nl).replace(/\r$/, "");
+          pending = pending.slice(nl + 1);
+          for (const cb of subs) cb(line, false);
+        }
+        if (pending) for (const cb of subs) cb(pending, true);
+      },
+      /** What the CLI writes, as a finished line. */
+      say(line: string) { child.out(line + "\n"); },
       /** How the CLI ends. */
       end(r: unknown) { settle(r); },
     };
@@ -203,6 +221,27 @@ describe("removePromptMatches", () => {
   });
 });
 
+describe("countCodePrompts", () => {
+  const PROMPT = "Paste code here if prompted > ";
+
+  it("counts one ask however much the CLI adds to its line", () => {
+    // exec.mjs re-offers the unterminated prompt line on every chunk, so all
+    // three of these are the SAME ask, one delivery later.
+    expect(countCodePrompts(PROMPT)).toBe(1);
+    expect(countCodePrompts(PROMPT + ".")).toBe(1);
+    expect(countCodePrompts(PROMPT + "\x1b[2K\r⠙ verifying…")).toBe(1);
+  });
+
+  it("counts a genuine re-ask, including a carriage-return redraw", () => {
+    expect(countCodePrompts(`${PROMPT}wrong\rInvalid code. ${PROMPT}`)).toBe(2);
+  });
+
+  it("is zero for output that is not the prompt", () => {
+    expect(countCodePrompts("Opening browser to sign in…")).toBe(0);
+    expect(countCodePrompts("")).toBe(0);
+  });
+});
+
 describe("firstUseful / addFailureText", () => {
   it("takes the last real line, which is where a CLI puts its verdict", () => {
     expect(firstUseful("checking…\nError: No active Claude account found. Please log in first.\n"))
@@ -355,6 +394,94 @@ describe("a startLogin that gives up after a newer one took over", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// A rejected code announces itself by the CLI asking a second time — the
+// process does not exit on a typo, it just re-prompts. That signal used to fire
+// on any byte written after the prompt instead: the ask has no newline, so
+// exec.mjs re-offers it as its line grows, and a progress dot or a spinner
+// frame made the text differ from the one already counted. A login the CLI was
+// busy completing came back as "that code was not accepted" — with the account
+// never registered and the live credentials left on it.
+describe("submitLoginCode and the second prompt", () => {
+  /** An empty store and CLIs that are not there, so no test can switch the
+   *  account of the machine running it. Returns the teardown. */
+  function sandbox(name: string) {
+    const claude = process.env.AGENTS_DECK_CLAUDE;
+    const cswap = process.env.AGENTS_DECK_CSWAP;
+    const backup = process.env.CLAUDE_SWAP_BACKUP;
+    const dir = mkdtempSync(join(tmpdir(), name));
+    process.env.CLAUDE_SWAP_BACKUP = dir;
+    process.env.AGENTS_DECK_CLAUDE = join(dir, "no-such-claude");
+    process.env.AGENTS_DECK_CSWAP = join(dir, "no-such-cswap");
+    return async () => {
+      await cancelLogin();
+      for (const c of fakeLogin.children) c.end({ ok: false, killed: true });
+      if (claude === undefined) delete process.env.AGENTS_DECK_CLAUDE;
+      else process.env.AGENTS_DECK_CLAUDE = claude;
+      if (cswap === undefined) delete process.env.AGENTS_DECK_CSWAP;
+      else process.env.AGENTS_DECK_CSWAP = cswap;
+      if (backup === undefined) delete process.env.CLAUDE_SWAP_BACKUP;
+      else process.env.CLAUDE_SWAP_BACKUP = backup;
+      rmSync(dir, { recursive: true, force: true });
+    };
+  }
+
+  /** A login that has printed its link and is sitting on the prompt. */
+  async function waiting() {
+    const nth = fakeLogin.children.length;
+    const start = startLogin();
+    const child = await fakeLogin.child(nth);
+    child.out(`If the browser didn't open, visit: ${AUTHORIZE}\nPaste code here if prompted > `);
+    expect(await start).toMatchObject({ ok: true, state: "awaiting_code" });
+    return child;
+  }
+
+  it("does not read progress on the prompt's own line as a rejection", async () => {
+    const teardown = sandbox("ccdeck-accepted-");
+    try {
+      const child = await waiting();
+      const verdict = submitLoginCode("ABC-123");
+      expect(child.written).toEqual(["ABC-123\n"]);
+      // The CLI verifies the code and says so where it stands — no newline, so
+      // exec.mjs hands back the prompt's line again, longer each time. A dot,
+      // then a spinner frame redrawn with \r on the shared stderr buffer.
+      child.out(".");
+      child.out("\x1b[2K\r⠙ verifying…");
+      // Past the first poll of the verdict race, which is where the phantom
+      // second prompt used to win it.
+      await new Promise((r) => setTimeout(r, 250));
+      child.end({ ok: true, code: 0, killed: false, timedOut: false, stdout: "", stderr: "" });
+
+      // The fake claude cannot answer the identity check that comes next, so
+      // the login stops there. The point is that it got that far at all:
+      // the code was taken as accepted rather than reported rejected.
+      const out = await verdict;
+      expect(out.reason).toBe("no_identity");
+      expect(out.reason).not.toBe("code_rejected");
+    } finally {
+      await teardown();
+    }
+  }, 10_000);
+
+  it("still hears a real re-ask, on the line after — CRLF included", async () => {
+    const teardown = sandbox("ccdeck-rejected-");
+    try {
+      const child = await waiting();
+      const verdict = submitLoginCode("ABC-123");
+      // What a typo gets: the CLI ends the prompt's line, says why, and asks
+      // again. Windows line endings, since the child's are whatever it uses.
+      child.out("\r\nInvalid code.\r\nPaste code here if prompted > ");
+
+      const out = await verdict;
+      expect(out).toMatchObject({ ok: false, reason: "code_rejected", state: "awaiting_code" });
+      // And the flow stays usable, so the user can retype instead of starting
+      // the whole sign-in over.
+      expect(loginState().url).toBe(AUTHORIZE);
+    } finally {
+      await teardown();
+    }
+  }, 10_000);
 });
 
 // The import path used to call a helper that did not exist. Nothing caught it:
