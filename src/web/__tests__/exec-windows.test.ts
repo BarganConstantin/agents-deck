@@ -4,8 +4,11 @@
 // the server down before it finished starting — on Windows only, which is
 // exactly the platform this repo cannot execute. Hence tests.
 import { describe, it, expect } from "vitest";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // @ts-expect-error — .mjs server module, no types
-import { isBatch, viaCmd, tryNext } from "../../server/exec.mjs";
+import { isBatch, viaCmd, tryNext, runInteractive } from "../../server/exec.mjs";
 
 describe("batch-file detection", () => {
   it("catches the extensions that cannot be spawned directly, on Windows only", () => {
@@ -49,5 +52,40 @@ describe("which failures mean 'try the next spelling'", () => {
     expect(tryNext({ code: 1 })).toBe(false);
     expect(tryNext({ code: "ETIMEDOUT" })).toBe(false);
     expect(tryNext(null)).toBe(false);
+  });
+});
+
+describe("an interactive run that has to retry a spelling", () => {
+  // A spelling that cannot be spawned emits 'error' and then 'close' with code
+  // -2. The abandoned child's 'close' used to settle the run, so on Windows —
+  // where claude.exe is missing and claude.cmd is the real one — `claude auth
+  // login` was reported as failed while the retry child was still driving the
+  // login. The run must wait for the spelling that actually runs.
+  it("reports the child that ran, not the one that could not be spawned", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-exec-"));
+    const base = join(dir, "ccdeck-fake-cli");
+    // Windows stops at the .cmd candidate; elsewhere cmd.exe is missing too, so
+    // it falls through to the extensionless one. Both spell the same tool.
+    writeFileSync(`${base}.cmd`, "@echo off\r\necho ready\r\n");
+    writeFileSync(base, "#!/bin/sh\necho ready\n");
+    chmodSync(base, 0o755);
+    // The multi-candidate path is Windows-only, and Windows is the platform
+    // this repo cannot execute — so claim to be it. On a real Windows box this
+    // is a no-op and the same test exercises the native path.
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const lines: string[] = [];
+      const h = runInteractive(base, [], { timeout: 20_000 });
+      h.onLine((line: string, partial: boolean) => { if (!partial) lines.push(line.trim()); });
+      const r = await h.done;
+      expect(r.stdout).toContain("ready");
+      expect(r.ok).toBe(true);
+      expect(r.code).toBe(0);
+      expect(lines).toContain("ready");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
