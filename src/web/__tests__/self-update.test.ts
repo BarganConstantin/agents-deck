@@ -6,7 +6,7 @@
 // These tests pin the three-way comparison that makes that state visible.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode } from "../../server/self-update.mjs";
+import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, nextMarker, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode } from "../../server/self-update.mjs";
 
 describe("isOlder", () => {
   it("compares numerically, not lexically", () => {
@@ -292,5 +292,69 @@ describe("checkDue", () => {
     // A clock moved backwards — by a VM resume or a timezone fix — would
     // otherwise silence the check until real time caught up.
     expect(checkDue({ at: NOW + 86_400_000, now: NOW })).toBe(true);
+  });
+});
+
+// Reported: a deck on a flaky line said "checked 2 minutes ago" and showed no
+// banner, because a timeout was stamped into the marker exactly like an answer
+// — same fresh timestamp, previous version — and then reported as the moment
+// npm was asked. "npm has nothing newer" and "npm never replied" were the same
+// state on the wire. These pin the two halves of telling them apart: the
+// marker records the outcome, and a failure buys a short retry, not an hour.
+describe("nextMarker", () => {
+  const NOW = 1_800_000_000_000;
+  const answered = { at: NOW - 3600_000, version: "1.33.0", failedAt: null };
+
+  it("stamps the moment npm answered, and clears the last failure", () => {
+    expect(nextMarker({ prev: { ...answered, failedAt: NOW - 60_000 }, now: NOW, ok: true, version: "1.34.0" }))
+      .toEqual({ at: NOW, version: "1.34.0", failedAt: null });
+  });
+
+  it("records a failure as a failure, leaving the last real answer alone", () => {
+    // The whole bug: `at` used to move to `now` here, so the UI reported an
+    // hour-old version as freshly confirmed.
+    expect(nextMarker({ prev: answered, now: NOW, ok: false, version: null }))
+      .toEqual({ at: answered.at, version: "1.33.0", failedAt: NOW });
+  });
+
+  it("invents no check when the very first lookup fails", () => {
+    // Nothing has ever been confirmed, so there is no timestamp to report and
+    // no version to keep — but the attempt still has to be remembered, or the
+    // backoff below has nothing to work from.
+    expect(nextMarker({ prev: null, now: NOW, ok: false, version: null }))
+      .toEqual({ at: null, version: null, failedAt: NOW });
+  });
+});
+
+describe("checkDue after a failed lookup", () => {
+  const HOUR = 3600_000;
+  const RETRY = 300_000;
+  const NOW = 1_800_000_000_000;
+
+  it("retries sooner than it would after an answer", () => {
+    // Rate-limiting exists so npm is not asked a question it already answered.
+    // It answered nothing, so the hour does not apply.
+    expect(checkDue({ at: NOW - 2 * HOUR, failedAt: NOW - RETRY - 1, now: NOW })).toBe(true);
+  });
+
+  it("still waits, so a registry that is down is not asked on every poll", () => {
+    expect(checkDue({ at: NOW - 2 * HOUR, failedAt: NOW - 1000, now: NOW })).toBe(false);
+  });
+
+  it("does not read a first failed attempt as 'never checked'", () => {
+    // `at` is null after a failure with no prior answer. Falling through to the
+    // never-checked branch would fetch on every single /api/version call.
+    expect(checkDue({ at: null, failedAt: NOW - 1000, now: NOW })).toBe(false);
+    expect(checkDue({ at: null, failedAt: NOW - RETRY, now: NOW })).toBe(true);
+  });
+
+  it("yields to an explicit ask and to a fresh process", () => {
+    // Clicking the chip while offline should retry, not repeat the backoff.
+    expect(checkDue({ at: null, failedAt: NOW - 1000, now: NOW, force: true })).toBe(true);
+    expect(checkDue({ at: null, failedAt: NOW - 1000, now: NOW, first: true })).toBe(true);
+  });
+
+  it("does not wait out a failure timestamp from the future", () => {
+    expect(checkDue({ at: NOW - 2 * HOUR, failedAt: NOW + HOUR, now: NOW })).toBe(true);
   });
 });

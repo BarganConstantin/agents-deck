@@ -36,6 +36,13 @@ import { dirname, join, resolve } from "node:path";
 // is the case where it bites hardest, since npx runs are short-lived and each
 // one inherits the same stale marker. The request is ~20 bytes.
 const CHECK_MS = 3600_000;
+// A lookup that failed is not an answer, so it must not spend the hour an
+// answer buys. It still has to spend something: the reason to rate-limit is
+// gone, but a registry that is down would otherwise be asked again on every
+// single poll. Five minutes is the compromise — short enough that a network
+// coming back is noticed while the user is still looking at the deck, long
+// enough that a full npm outage costs a dozen ~20-byte requests an hour.
+const RETRY_MS = 300_000;
 const FETCH_TIMEOUT_MS = 6_000;
 // A third marker path: ccusage owns ~/.agents-deck/ccusage/.last-update-check
 // and cswap owns ~/.agents-deck/.cswap-update-check. Sharing one would make the
@@ -158,36 +165,64 @@ export function upgradeCommand(pkgRoot, name = "agents-deck") {
 
 // The dist-tags endpoint answers with ~20 bytes ({"latest":"1.30.7"}); the full
 // packument is >2 KB and needs parsing we have no use for.
+//
+// Answers `{ ok, version }` rather than a bare string, because "npm says the
+// latest is X" and "npm did not answer" used to arrive here as the same null.
+// `ok` is true only when the registry handed back a usable version — a
+// timeout, a non-200 and a 200 with no `latest` in it are all failures, and
+// the caller has to be able to tell them from an up-to-date deck.
 async function fetchLatest(name) {
   try {
     const res = await fetch(`https://registry.npmjs.org/-/package/${name}/dist-tags`, {
       headers: { accept: "application/json", "user-agent": "agents-deck" },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { ok: false, version: null };
     const v = (await res.json())?.latest;
-    return typeof v === "string" ? v : null;
+    return typeof v === "string" ? { ok: true, version: v } : { ok: false, version: null };
   } catch {
-    return null;
+    return { ok: false, version: null };
   }
 }
 
 // The marker carries the answer, not just the timestamp. The existing markers
 // store only an mtime, which means a restart inside the 24h window forgets what
 // npm said and shows nothing until the window expires.
+//
+// It carries the outcome too. `at` is when npm last ANSWERED and `version` is
+// what it said; `failedAt` is when the last attempt failed, and is null the
+// moment one succeeds. Keeping them apart is what lets the deck say "checked
+// 3m ago" and "could not reach npm" as the different things they are, instead
+// of reporting a timeout as a fresh, up-to-date check.
 function readMarker() {
   try {
     const m = JSON.parse(readFileSync(MARKER, "utf8"));
-    return typeof m?.at === "number" ? m : null;
+    // Either half is enough to be worth keeping: a marker written by a first
+    // attempt that failed has no `at` yet, and markers written before
+    // `failedAt` existed have no `failedAt` at all.
+    return (typeof m?.at === "number" || typeof m?.failedAt === "number") ? m : null;
   } catch {
     return null;
   }
 }
-function writeMarker(at, version) {
+function writeMarker(marker) {
   try {
     mkdirSync(dirname(MARKER), { recursive: true });
-    writeFileSync(MARKER, JSON.stringify({ at, version: version ?? null }));
+    writeFileSync(MARKER, JSON.stringify(marker));
   } catch { /* a read-only home must not break the deck */ }
+}
+
+/** What the marker should hold after an attempt. Pure, because "a failed
+ *  lookup must not be recorded as a successful one" is precisely the rule this
+ *  file used to get wrong, and a rule worth a bug is worth a test.
+ *
+ *  A success stamps the hour and clears the failure. A failure records only
+ *  itself, leaving the last real answer and the time it arrived untouched —
+ *  the deck keeps showing what it knew, and stops claiming it just confirmed
+ *  it. */
+export function nextMarker({ prev, now, ok, version }) {
+  if (ok) return { at: now, version: version ?? null, failedAt: null };
+  return { at: prev?.at ?? null, version: prev?.version ?? null, failedAt: now };
 }
 
 // The marker is shared by every deck on the machine, so one deck's check
@@ -201,8 +236,16 @@ let _askedThisProcess = false;
  * banner appear" is the question this feature gets asked, and the rule behind
  * it should be readable in one place.
  */
-export function checkDue({ at, now, first = false, force = false, ttlMs = CHECK_MS }) {
+export function checkDue({ at, failedAt, now, first = false, force = false, ttlMs = CHECK_MS, retryMs = RETRY_MS }) {
   if (force || first) return true;      // explicit ask, or this process's first
+  // The last attempt failed, so there is nothing to reuse and the long window
+  // does not apply — but the short one does, or an unreachable registry turns
+  // every poll into another request. Answered first: `at` here is the older,
+  // successful check, and letting it decide would ask again immediately.
+  if (typeof failedAt === "number") {
+    if (failedAt > now) return true;    // clock moved; do not wait it out
+    return now - failedAt >= retryMs;
+  }
   if (typeof at !== "number") return true;  // never checked
   if (at > now) return true;            // marker from the future: a moved clock
   return now - at >= ttlMs;
@@ -217,13 +260,16 @@ async function latestOnNpm(name, now, force = false) {
   const m = readMarker();
   const first = !_askedThisProcess;
   _askedThisProcess = true;
-  if (!checkDue({ at: m?.at, now, first, force })) return m?.version ?? null;
+  if (!checkDue({ at: m?.at, failedAt: m?.failedAt, now, first, force })) return m?.version ?? null;
   if (_inflight) return _inflight;
   _inflight = fetchLatest(name)
-    // Stamp before deciding what to keep: a failed lookup must burn the day's
-    // slot rather than retry on every poll, but it must not erase a version we
-    // already knew.
-    .then(v => { writeMarker(now, v ?? m?.version ?? null); return v ?? m?.version ?? null; })
+    // Record the outcome, not just the moment. Only an answer stamps `at`; a
+    // failure takes the short retry window instead of the hour, and keeps the
+    // version we already knew rather than erasing it.
+    .then(({ ok, version }) => {
+      writeMarker(nextMarker({ prev: m, now, ok, version }));
+      return (ok ? version : null) ?? m?.version ?? null;
+    })
     .catch(() => m?.version ?? null)
     .finally(() => { _inflight = null; });
   return _inflight;
@@ -398,15 +444,22 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     process.env.AGENTS_DECK_NO_UPDATE_CHECK === "1" ||
     process.env.AGENTS_DECK_NO_INSTALL === "1";
   const latest = skipRegistry ? null : await latestOnNpm(name, now, force);
+  const marker = skipRegistry ? null : readMarker();
   const blocked = upgradeBlock(pkgRoot);
   return {
     name,
     running: running ?? null,
     installed,
     latest,
-    // When npm was last asked, so the UI can say it rather than leaving the
-    // user to wonder whether the check runs at all.
-    checkedAt: skipRegistry ? null : (readMarker()?.at ?? null),
+    // When npm last ANSWERED, so the UI can say it rather than leaving the
+    // user to wonder whether the check runs at all. A lookup that failed does
+    // not move this: "checked 2 minutes ago" over an hour-old answer is the
+    // one thing this field must never say.
+    checkedAt: marker?.at ?? null,
+    // …and when it last failed, null once one succeeds. Without it, the single
+    // most common reason for a missing update button — a proxy, a flaky line,
+    // an offline machine — is indistinguishable from being up to date.
+    checkFailedAt: marker?.failedAt ?? null,
     checkDisabled: skipRegistry,
     notice: pickNotice({ running, installed, latest }),
     command: upgradeCommand(pkgRoot, name),
