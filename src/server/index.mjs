@@ -1440,6 +1440,23 @@ function originMatchesHost(origin, host) {
   return fromOrigin !== "" && fromOrigin === fromHost;
 }
 
+// A request handler rejected. Two audiences, two different amounts of detail:
+// the operator, who needs the whole error — stack included — to find the bug,
+// and the HTTP client, which needs to know only that the request failed.
+//
+// They used to get the same string, on the theory that this server binds
+// 127.0.0.1 and its only client is the user's own tab. A DNS-rebound page
+// reaches a loopback server as same-origin and can read the body, and the
+// errors that land here carry absolute paths out of the user's home directory
+// — a failed rename of ~/.claude/settings.json, an ENOENT from an import. So
+// stderr keeps every byte and the response body carries none of it; nothing is
+// swallowed, it just stops travelling over the wire.
+export function sendInternalError(res, err, log = console.error) {
+  log("agents-deck: request handler failed:", err);
+  if (!res.headersSent) send(res, 500, { error: "internal error" });
+  else res.end();
+}
+
 async function tryListen(server, port, host) {
   return new Promise((res, rej) => {
     server.once("error", rej);
@@ -1479,17 +1496,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
   // default for an unhandled rejection is to kill the process, which would
   // take the whole deck down — SSE stream, hook ingest and all — because one
   // background quota poll hit a network error. Answer the request instead.
-  const guard = (p, res) => Promise.resolve(p).catch(err => {
-    console.error("agents-deck: request handler failed:", err?.message ?? err);
-    // The message goes to the browser too. This server binds 127.0.0.1 and its
-    // only client is the user's own tab, so the usual reason to withhold it
-    // does not apply — while withholding it is how a ReferenceError in the
-    // import path spent a release looking like a rejected share.
-    if (!res.headersSent) {
-      send(res, 500, { error: "internal error", detail: String(err?.message ?? err).slice(0, 300) });
-    }
-    else res.end();
-  });
+  const guard = (p, res) => Promise.resolve(p).catch(err => sendInternalError(res, err));
 
   const server = createServer((req, res) => {
     const url = requestUrl(req.url);
