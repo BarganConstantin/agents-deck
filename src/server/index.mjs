@@ -86,6 +86,15 @@ const pendingTranscriptReads = new Set(); // sessionId currently being read
 const modelLastReadAt = new Map();        // sessionId -> ms timestamp (re-read throttle)
 const MODEL_READ_THROTTLE_MS = 2500;
 
+/** The cache entry is `{ rootModel, subsSig }`, but `payload.model` is a
+ *  model *string* — that is the only shape the client's recursive scanner
+ *  reads. Returns the root model id, or null when the session resolved
+ *  only subagent models and has no root model yet. */
+export function cachedModelId(cached) {
+  const rootModel = cached?.rootModel;
+  return typeof rootModel === "string" && rootModel ? rootModel : null;
+}
+
 /** Read the main session JSONL. Returns the root model and any
  *  legacy-schema subagent models (older CC versions kept subagent blocks
  *  inline with `isSidechain:true` + `parentToolUseID`). Current CC versions
@@ -846,8 +855,8 @@ function pushEvent(raw, source, opts = {}) {
   // Synchronous enrichment: if we already know this session's model, stamp
   // it on the payload so the client's recursive scanner picks it up.
   if (raw && typeof raw === "object" && raw.session_id && !raw.model) {
-    const cached = modelBySession.get(raw.session_id);
-    if (cached) raw.model = cached;
+    const modelId = cachedModelId(modelBySession.get(raw.session_id));
+    if (modelId) raw.model = modelId;
   }
 
   const seq = nextSeq++;
