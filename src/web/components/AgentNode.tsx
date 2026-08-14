@@ -1,13 +1,17 @@
 import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
-import { cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel } from "../pricing";
+import { billedInputTokens, cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel } from "../pricing";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
  *  multiplication so the user can verify pricing is sane.
- *  e.g. "input  725 × $5/M     = $0.00"  */
-function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefined): string {
+ *  e.g. "input  725 × $5/M     = $0.00"
+ *
+ *  Every row must multiply out to the figure printed beside it, and the rows
+ *  must sum to the total: this tooltip exists only to be checked by hand, so a
+ *  row whose operands don't produce its own result is worse than no row. */
+export function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefined): string {
   const rates = ratesForModel(modelId);
   if (!rates) return "no rates for this model";
   const fmtN = (n: number) => n.toLocaleString();
@@ -24,9 +28,17 @@ function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefined): s
         `cache w1h${fmtN(cw.tokens1h).padStart(14)}  × ${fmtR(rates.cacheWrite1h ?? rates.cacheWrite).padEnd(11)} = ${fmtCost(cw.usd1h)}`,
       ]
     : [`cache w  ${fmtN(cw.tokens5m).padStart(14)}  × ${fmtR(rates.cacheWrite).padEnd(11)} = ${fmtCost(cw.usd5m)}`];
+  // Codex reports a single `input_tokens` that already contains the cached
+  // prefix, and only the remainder is billed at the input rate — so the raw
+  // count printed here disagreed with its own dollar column by ~10x on a
+  // multi-turn session. Print the tokens the rate is applied to, and relabel
+  // the row when that differs from what the agent reported so the missing
+  // tokens are visibly the ones on the cache-read line below.
+  const inputTokens = billedInputTokens(usage, modelId);
+  const inputLabel = inputTokens === usage.inputTokens ? "input" : "uncached";
   return [
     `model: ${modelId}`,
-    `input    ${fmtN(usage.inputTokens).padStart(14)}  × ${fmtR(rates.input).padEnd(11)} = ${fmtCost(c.input)}`,
+    `${inputLabel.padEnd(9)}${fmtN(inputTokens).padStart(14)}  × ${fmtR(rates.input).padEnd(11)} = ${fmtCost(c.input)}`,
     `output   ${fmtN(usage.outputTokens).padStart(14)}  × ${fmtR(rates.output).padEnd(11)} = ${fmtCost(c.output)}`,
     `cache r  ${fmtN(usage.cacheReadTokens).padStart(14)}  × ${fmtR(rates.cacheRead).padEnd(11)} = ${fmtCost(c.cacheRead)}`,
     ...cacheWriteRows,
