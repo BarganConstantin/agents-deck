@@ -23,6 +23,7 @@ import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, shouldReloadBundle } from "./restart";
 import { isBrowserChord } from "./shortcuts";
+import { pruneStaleEntries } from "./prune";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -528,22 +529,17 @@ function snapshotToFlow(
   // is false during a state transition) doesn't lose the position and snap
   // the node to {0,0} on return — that was causing "nodes vanish on action
   // change" while bursts (which gate on visibleIds) also disappeared.
-  for (const id of Array.from(positions.keys())) {
-    if (!state.agents.has(id)) positions.delete(id);
-  }
+  // Like the pins below, this is guarded on a non-empty graph: positions are
+  // restored from storage before the event log has replayed, so pruning them
+  // against an empty agent map would wipe the whole saved arrangement on every
+  // page load and re-derive it with dagre.
+  pruneStaleEntries(positions, state.agents);
   // Drop pins for agents that are gone. Pinned positions are restored from
   // localStorage on every load, so without this a drag from some previous run
   // outlives the agent it belonged to and keeps claiming that spot on the
   // canvas — where a later session, laid out from the top, gets stacked
   // straight onto it.
-  // Guarded on a non-empty graph: these are restored from storage before the
-  // event log has replayed, and pruning against an empty agent map would drop
-  // every position the user arranged.
-  if (state.agents.size > 0) {
-    for (const id of Array.from(pinned.keys())) {
-      if (!state.agents.has(id)) pinned.delete(id);
-    }
-  }
+  pruneStaleEntries(pinned, state.agents);
   // Never silently drop a visible node — if its position is missing, place
   // it at {0,0} for THIS frame and force a fresh dagre pass on the next
   // frame by invalidating lastLayoutSigRef. The previous skip-this-frame
