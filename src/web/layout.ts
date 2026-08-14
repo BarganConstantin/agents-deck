@@ -372,6 +372,29 @@ export function fillGapsWithNewSessions(
   };
   const posOf = (id: string) => pinned.get(id) ?? positions.get(id);
 
+  // Only a session that arrived WHOLE may be relocated.
+  //
+  // The caller hands over every node that had no stored position, which for a
+  // session already on screen that spawns a subagent is just that one child.
+  // Treating it as an arrival makes it a one-card block whose own parent sits
+  // in `settled` as a cross-session obstacle, so the child gets dropped into
+  // some distant gap hundreds of pixels from the session it belongs to: the
+  // cluster box stretches across the canvas to reach it and the parent→child
+  // edge runs the length of the screen. A partially-new session keeps the slot
+  // dagre just gave its new cards, beside their siblings.
+  const membersBySession = new Map<string, Node[]>();
+  for (const n of nodes) {
+    if (!posOf(n.id)) continue;
+    const sid = sessionOfNode(n);
+    const list = membersBySession.get(sid);
+    if (list) list.push(n);
+    else membersBySession.set(sid, [n]);
+  }
+  const wholeSessionArrived = new Set<string>();
+  for (const [sid, members] of membersBySession) {
+    if (members.every(n => newIds.has(n.id) && !pinned.has(n.id))) wholeSessionArrived.add(sid);
+  }
+
   // Group the arrivals, and keep anything already placed as an obstacle.
   const arriving = new Map<string, Node[]>();
   const settled: Array<{ x: number; y: number; w: number; h: number }> = [];
@@ -379,8 +402,8 @@ export function fillGapsWithNewSessions(
     const p = posOf(n.id);
     if (!p) continue;
     const { w, h } = sizeOf(n.id);
-    if (newIds.has(n.id) && !pinned.has(n.id)) {
-      const sid = sessionOfNode(n);
+    const sid = sessionOfNode(n);
+    if (wholeSessionArrived.has(sid)) {
       (arriving.get(sid) ?? arriving.set(sid, []).get(sid)!).push(n);
     } else {
       settled.push({ x: p.x, y: p.y, w, h });
