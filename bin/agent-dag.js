@@ -28,7 +28,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { npxFailureHint, npxFailureSummary, npxLaunch } from "../src/server/npx.mjs";
 import {
-  bareSpecName, clearRestartFailure, installedVersion, npxRestartSpec, recordRestartFailure,
+  bareSpecName, claimRestartFailureKey, clearRestartFailure, installedVersion, npxRestartSpec,
+  recordRestartFailure,
 } from "../src/server/self-update.mjs";
 import { dieOfSignal, workerExitAction } from "../src/server/supervisor.mjs";
 
@@ -37,6 +38,15 @@ const WORKER = join(BIN_DIR, "deck.js");
 const PKG_ROOT = dirname(BIN_DIR);
 
 const VERSION = installedVersion(PKG_ROOT) ?? "?";
+
+// Who the restart-failure note below belongs to. Several decks of the same
+// package run out of one home directory — two `npx ccdeck` runs even share the
+// _npx directory and therefore the version — so a note named after the package
+// alone was read by every one of them, and a deck that had never asked for an
+// update reported someone else's failed npx as its own. Our pid is unique among
+// the decks alive on the machine, and putting it in our own environment is what
+// carries it to the worker: launch() spawns with a copy of it.
+claimRestartFailureKey();
 
 // The port the worker actually bound, which is not necessarily the one it was
 // asked for — the first launch falls back to a random port when 4317 is taken.
