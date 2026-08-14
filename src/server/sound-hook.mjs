@@ -15,10 +15,11 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { claudeConfigDir } from "./claude-dir.mjs";
 import { readSettingsForWrite, writeFileAtomic } from "./installer.mjs";
 
 const PKG_ROOT      = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const CLAUDE_DIR    = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+const CLAUDE_DIR    = claudeConfigDir();
 const SETTINGS_PATH = join(CLAUDE_DIR, "settings.json");
 const INSTALL_DIR   = join(CLAUDE_DIR, "agent-dag");
 const NOTIFY_PATH   = join(INSTALL_DIR, "notify.js");

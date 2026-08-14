@@ -2381,7 +2381,8 @@ function agentNoneCopy() {
       </p>
       <p className="hint-row">
         Not seeing anything? Make sure <code>agents-deck</code> is running and that
-        hooks are installed in <code>~/.claude/settings.json</code> and{" "}
+        hooks are installed in your Claude settings (<code>$CLAUDE_CONFIG_DIR</code>{" "}
+        if you set it, otherwise <code>~/.claude/settings.json</code>) and{" "}
         <code>~/.codex/hooks.json</code>. (Codex requires{" "}
         <code>/hooks</code> trust on first run.)
       </p>

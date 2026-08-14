@@ -2,8 +2,8 @@
 // agent-dag hook forwarder. Invoked by Claude Code or Codex CLI as a command
 // hook. Reads stdin (event JSON), tags it with the provider passed via
 // `--provider <name>`, finds the matching agent-dag server via per-workspace
-// discovery files in ~/.claude/agent-dag/, and POSTs the payload. Dead
-// instances are cleaned up.
+// discovery files in <claude config dir>/agent-dag/, and POSTs the payload.
+// Dead instances are cleaned up.
 "use strict";
 
 const fs = require("fs");
@@ -23,7 +23,16 @@ if (process.env.AGENTS_DECK_INTERNAL === "1") process.exit(0);
 
 // Single shared discovery dir — Claude Code and Codex CLI both register here
 // via the installer. Lets one running agent-dag server receive both providers.
-const DIR = path.join(os.homedir(), ".claude", "agent-dag");
+//
+// This has to name the same directory src/server/claude-dir.mjs does, because
+// the installer writes the files read below. It is duplicated rather than
+// imported because this script is copied out of the package and run standalone
+// by the host CLI, with no path back to the module it came from.
+const configOverride = (process.env.CLAUDE_CONFIG_DIR || "").trim();
+const CLAUDE_DIR = configOverride
+  ? path.resolve(configOverride)
+  : path.join(os.homedir(), ".claude");
+const DIR = path.join(CLAUDE_DIR, "agent-dag");
 
 function parseProvider(argv) {
   for (let i = 0; i < argv.length; i++) {

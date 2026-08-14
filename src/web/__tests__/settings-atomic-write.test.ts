@@ -14,17 +14,20 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The installer resolves ~/.claude at import time from os.homedir(), which reads
-// $HOME on POSIX and %USERPROFILE% on Windows. Both are pointed at a temp
-// directory BEFORE the module is loaded, so nothing in this file can reach the
-// real ~/.claude on any platform.
+// The installer resolves the Claude config dir at import time: CLAUDE_CONFIG_DIR
+// when set, otherwise ~/.claude via os.homedir(), which reads $HOME on POSIX and
+// %USERPROFILE% on Windows. The override is cleared and both home variables are
+// pointed at a temp directory BEFORE the module is loaded, so nothing in this
+// file can reach the developer's own config dir on any platform.
 const FAKE_HOME = mkdtempSync(join(tmpdir(), "ccdeck-atomic-"));
 const prevHome = process.env.HOME;
 const prevUserProfile = process.env.USERPROFILE;
 const prevCodexHome = process.env.CODEX_HOME;
+const prevClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
 delete process.env.CODEX_HOME;
+delete process.env.CLAUDE_CONFIG_DIR;
 
 // @ts-expect-error — .mjs server module, no types
 const { installHooks, CLAUDE_DIR } = await import("../../server/installer.mjs");
@@ -58,7 +61,10 @@ const hardLinksWork = (() => {
   }
 })();
 
-const restore = (key: "HOME" | "USERPROFILE" | "CODEX_HOME", was: string | undefined) => {
+const restore = (
+  key: "HOME" | "USERPROFILE" | "CODEX_HOME" | "CLAUDE_CONFIG_DIR",
+  was: string | undefined,
+) => {
   if (was === undefined) delete process.env[key];
   else process.env[key] = was;
 };
@@ -67,6 +73,7 @@ afterAll(() => {
   restore("HOME", prevHome);
   restore("USERPROFILE", prevUserProfile);
   restore("CODEX_HOME", prevCodexHome);
+  restore("CLAUDE_CONFIG_DIR", prevClaudeConfigDir);
   rmSync(FAKE_HOME, { recursive: true, force: true });
 });
 
