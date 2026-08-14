@@ -19,8 +19,9 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { run, runDetached, runInteractive } from "./exec.mjs";
+import { looksMissing, run, runDetached, runInteractive } from "./exec.mjs";
 import { invalidateClaudeAccountsCache } from "./claude-accounts.mjs";
+import { cswapBin } from "./cswap-install.mjs";
 
 // An OAuth code is short-lived at the source; there is no point holding a child
 // open longer than a user would plausibly take to fetch one.
@@ -65,9 +66,13 @@ export function withStoreLock(fn) {
 
 // ── shared helpers ───────────────────────────────────────────────────────────
 
-async function cswapBin() {
-  return process.env.AGENTS_DECK_CSWAP ?? "cswap";
-}
+// cswapBin comes from cswap-install.mjs, which searches the places uv and pipx
+// actually install to. This module used to answer the bare name "cswap"
+// instead, which is fine on a Mac where ~/.local/bin is usually on PATH and
+// wrong on Windows where it is usually not: every mutation here — share,
+// import, remove, rename, reorder — failed with cmd.exe's "is not recognized",
+// while the read-only half of the panel worked, because it was already using
+// the resolver. Reported from Windows on 2026-08-14.
 async function claudeBin() {
   return process.env.AGENTS_DECK_CLAUDE ?? "claude";
 }
@@ -224,7 +229,7 @@ export async function startLogin({ email } = {}) {
     if (flow !== _login) return;
     if (flow.state === "awaiting_url" || flow.state === "awaiting_code") {
       flow.state = "failed";
-      flow.error = r.timedOut ? "the sign-in window expired" : firstUseful(r.stderr || r.stdout) || "sign-in ended without a code";
+      flow.error = r.timedOut ? "the sign-in window expired" : failureText(r, "claude auth login") || "sign-in ended without a code";
     }
   });
 
@@ -274,7 +279,7 @@ export async function submitLoginCode(code) {
   }
   if (!r.ok) {
     flow.state = "failed";
-    flow.error = r.timedOut ? "the sign-in window expired" : firstUseful(r.stderr || r.stdout) || "the code was not accepted";
+    flow.error = r.timedOut ? "the sign-in window expired" : failureText(r, "claude auth login") || "the code was not accepted";
     return { ok: false, reason: "login_failed", ...loginState() };
   }
 
@@ -372,7 +377,7 @@ export async function shareAccount(num) {
   if (!Number.isInteger(n) || n < 1 || n > 999) return { ok: false, reason: "bad_account" };
   const r = await run(await cswapBin(), ["export", "-", "--account", String(n)], { timeout: CSWAP_TIMEOUT_MS });
   if (!r.ok || !r.stdout.trim()) {
-    return { ok: false, reason: "export_failed", detail: firstUseful(r.stderr || r.stdout) };
+    return { ok: false, reason: "export_failed", detail: failureText(r, "cswap export") };
   }
   return { ok: true, blob: wrapShare(r.stdout), expiresAt: Date.now() + SHARE_TTL_MS };
 }
@@ -390,7 +395,7 @@ export async function importAccount(blob) {
     endStdin(child);
 
     const r = await child.done;
-    if (!r.ok) return { ok: false, reason: "import_failed", detail: firstUseful(r.stderr || r.stdout) };
+    if (!r.ok) return { ok: false, reason: "import_failed", detail: failureText(r, "cswap import") };
 
     const after = await readStore();
     const slot = newSlot(before, after);
@@ -429,7 +434,7 @@ export async function removeAccount(num) {
     });
     const r = await child.done;
     invalidateClaudeAccountsCache();
-    if (!r.ok) return { ok: false, reason: "remove_failed", detail: firstUseful(r.stderr || r.stdout) };
+    if (!r.ok) return { ok: false, reason: "remove_failed", detail: failureText(r, "cswap remove") };
     // Exit 0 without the prompt means cswap declined for its own reason — a
     // live session on that account, most often — and printed why.
     if (!answered) return { ok: false, reason: "not_confirmed", detail: firstUseful(r.stdout || r.stderr) };
@@ -447,7 +452,7 @@ export async function setAlias(num, alias) {
     invalidateClaudeAccountsCache();
     return r.ok
       ? { ok: true, output: firstUseful(r.stdout) }
-      : { ok: false, reason: "alias_failed", detail: firstUseful(r.stderr || r.stdout) };
+      : { ok: false, reason: "alias_failed", detail: failureText(r, "cswap alias") };
   });
 }
 
@@ -460,11 +465,30 @@ export async function moveAccount(num, slot) {
     invalidateClaudeAccountsCache();
     return r.ok
       ? { ok: true, output: firstUseful(r.stdout) }
-      : { ok: false, reason: "move_failed", detail: firstUseful(r.stderr || r.stdout) };
+      : { ok: false, reason: "move_failed", detail: failureText(r, "cswap move") };
   });
 }
 
 // ── text ─────────────────────────────────────────────────────────────────────
+
+/**
+ * What went wrong, in a sentence the user can act on.
+ *
+ * The missing-tool case is singled out because its own output is useless: on
+ * Windows it is cmd.exe's two-line "is not recognized …/operable program or
+ * batch file.", and `firstUseful` — which takes the LAST line, correctly for
+ * every other CLI — leaves the second half on screen by itself.
+ */
+export function failureText(r, what = "cswap") {
+  const out = `${r?.stderr ?? ""}\n${r?.stdout ?? ""}`;
+  const tool = String(what).split(" ")[0];
+  if (r?.code === "ENOENT" || looksMissing(out)) {
+    return tool === "claude"
+      ? "the claude CLI could not be run: not on PATH. Set AGENTS_DECK_CLAUDE to its full path."
+      : "cswap could not be run: not on PATH, and not in the places uv and pipx install to. Set AGENTS_DECK_CSWAP to its full path.";
+  }
+  return firstUseful(out) || `${what} exited ${r?.code}`;
+}
 
 /** The line worth showing a user out of a CLI's output. */
 export function firstUseful(text) {
@@ -488,7 +512,7 @@ export function addFailureText(r) {
   if (/keychain/i.test(text)) {
     return `${text} — start agents-deck from a Terminal window rather than a background service.`;
   }
-  return text || `cswap add exited ${r.code}`;
+  return failureText(r, "cswap add");
 }
 
 async function waitFor(get, timeoutMs, stepMs = 100) {
