@@ -620,11 +620,21 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     }
     case "Stop":
     case "SessionEnd": {
-      // Mark the root done; don't touch subagents (they have their own Stop).
+      // Mark the root done; leave the subagent nodes alone (they have their
+      // own Stop), but drop the session's attribution stack. Keys land there
+      // on SubagentStart and used to come off only on SubagentStop, and hook
+      // POSTs are fire-and-forget — one sent while the server was restarting
+      // is gone for good. A key left behind then swallows every later event
+      // that carries no agent_id, which is all the real UserPromptSubmit and
+      // Pre/PostToolUse traffic: the user's next prompt and the root's tool
+      // calls render under a subagent that finished long ago, and replay
+      // rebuilds the same wrong state on refresh. The root's turn cannot end
+      // while a Task is still running, so by here nothing on the stack is live.
       const root = ensureRoot(state, sessionId, now, false);
       root.state = "done";
       root.endedAt = now;
       refreshInFlight(root);
+      state.activeSubagentStack.delete(sessionId);
       break;
     }
     case "Notification": {
