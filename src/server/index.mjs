@@ -1608,6 +1608,17 @@ async function handleSoundHookSet(req, res) {
   send(res, 200, await setSoundHook(parsed.enabled === true));
 }
 
+// The tree this deck was told to capture, "" when it captures the whole
+// machine. Set by startServer and never changed afterwards.
+//
+// The browser had no way to learn it: the launcher prints the scope on stdout
+// and the hook reads it out of the discovery file, but nothing put it in an
+// HTTP response — so the deck's own empty state guessed, and guessed wrong for
+// everyone who passed --workspace or --scope. Health is where it belongs: it
+// already answers "which deck am I talking to", and it is the one route the UI
+// can read before a single event has arrived.
+let _workspace = "";
+
 function handleHealth(_req, res) {
   send(res, 200, {
     ok: true,
@@ -1615,6 +1626,7 @@ function handleHealth(_req, res) {
     seq: nextSeq - 1,
     clients: sseClients.size,
     uptimeMs: Math.round(process.uptime() * 1000),
+    workspace: _workspace,
   });
 }
 
@@ -1835,6 +1847,7 @@ let _restarting = false;
 export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true, onRestart = null } = {}) {
   _onRestart = typeof onRestart === "function" ? onRestart : null;
   _canRestart = _onRestart != null && persist != null;
+  _workspace = typeof workspace === "string" ? workspace : "";
   const removed = await sweepStaleDiscovery();
   if (removed > 0) console.log(`  swept ${removed} stale discovery file(s)`);
   if (persist) {
