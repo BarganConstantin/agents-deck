@@ -895,9 +895,20 @@ button.btn.icon-btn {
   transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
   animation: nodeSpawn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+/* No terminal keyframe, and that is the whole rule for entrances on this canvas.
+   The animation is declared on the base class, so it stays attached for the
+   node's whole life, and `both` keeps it filling its last keyframe forever —
+   a filling animation outranks every author declaration under it. A `to` that
+   restated the resting opacity and blur would therefore pin both properties,
+   and .rf-dim / .rf-spotlit-out fade with exactly those two: the search would
+   match, the class would land, and nothing on screen would change. Leaving a
+   property out of the last keyframe hands it back to the cascade — the
+   animation interpolates towards whatever the element's own rules say, so an
+   unfiltered node still arrives at opacity 1 with no blur, a dimmed one arrives
+   at 0.22 and stays there, and a class added after the spawn is over is picked
+   up on the next frame. */
 @keyframes nodeSpawn {
   from { opacity: 0; filter: blur(2px); }
-  to   { opacity: 1; filter: blur(0); }
 }
 .react-flow__node.dragging,
 .react-flow__node:active {
@@ -1620,10 +1631,14 @@ button.btn.icon-btn {
     transform: translate(0, 0) scale(1.12);
     filter: blur(0) brightness(1.15);
   }
+  /* transform only, for the reason nodeSpawn carries in full: this animation
+     fills for the bubble's whole life, so anything named here is pinned against
+     the cascade and .tool-burst.dim cannot fade what it names. The transform
+     stays deliberately — the hover lift below is `translate` precisely because
+     this keyframe owns transform — while opacity and filter fall back to the
+     element's own rules, which is 1 and none unless the bubble is dimmed. */
   100% {
-    opacity: 1;
     transform: translate(0, 0) scale(1);
-    filter: blur(0) brightness(1);
   }
 }
 @keyframes bubble-done-flash {
@@ -2182,7 +2197,12 @@ button.tool.clickable:last-child { border-bottom: none; }
   overflow: auto;
 }
 
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* Also the reduced-motion entrance for every node and bubble on the canvas, and
+   there with `both` — so no `to { opacity: 1 }`, which would fill over .rf-dim,
+   .rf-spotlit-out and .tool-burst.dim and leave a reduced-motion user with a
+   search that never dims anything. Fading to the cascade's own opacity is what
+   every caller wanted anyway. */
+@keyframes fadeIn { from { opacity: 0; } }
 @keyframes popIn  { from { opacity: 0; transform: translateY(4px) scale(0.985); } to { opacity: 1; transform: none; } }
 
 /* ---------------- clear confirmation ---------------- */
