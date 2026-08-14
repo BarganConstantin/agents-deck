@@ -21,7 +21,7 @@ import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
-import { autoRestartStep, restartEndedInFailure, shouldReloadBundle, upgradeFailureId } from "./restart";
+import { autoRestartStep, restartEndedInFailure, restartLandingStep, upgradeFailureId } from "./restart";
 import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from "./shortcuts";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
@@ -984,30 +984,31 @@ function Inner() {
     if (step.restart) askRestart();
   }, [autoRestart, notice?.kind, version?.canRestart, now, askRestart]);
 
-  // The page is code too, and nothing else reloads it. Placed before the toast
-  // effect on purpose: the pending marker survives the reload in sessionStorage,
-  // so the confirmation shows once the new bundle is the one rendering it.
-  useEffect(() => {
-    let lastTried: string | null = null;
-    try { lastTried = window.sessionStorage.getItem(BUNDLE_RELOAD_KEY); } catch { return; }
-    if (!shouldReloadBundle({ bundle: __APP_VERSION__, running: version?.running, lastTried })) return;
-    try { window.sessionStorage.setItem(BUNDLE_RELOAD_KEY, version?.running ?? ""); } catch { return; }
-    window.location.reload();
-  }, [version?.running]);
-
-  // Landed. `running` moving to the version we were promised is the only proof
-  // that the new code is actually the code answering.
+  // Landed — here, or in the bundle that is about to replace this one. The page
+  // is code too and nothing else reloads it, so both outcomes hang off the same
+  // move of `running` and have to be decided together: as two effects they were
+  // flushed in one synchronous pass, and since location.reload() only schedules
+  // the navigation the second one still deleted the pending marker that was
+  // supposed to carry the confirmation across it. The rule lives in restart.ts.
   useEffect(() => {
     const running = version?.running;
-    if (!running) return;
     let pending: string | null = null;
-    try { pending = window.sessionStorage.getItem("agent-dag.restartPending"); } catch { return; }
-    if (pending == null) return;
-    if (pending && pending !== running) return; // still the old process
+    let lastTried: string | null = null;
+    try {
+      pending = window.sessionStorage.getItem("agent-dag.restartPending");
+      lastTried = window.sessionStorage.getItem(BUNDLE_RELOAD_KEY);
+    } catch { return; }
+    const step = restartLandingStep({ bundle: __APP_VERSION__, running, pending, lastTried });
+    if (step === "reload") {
+      try { window.sessionStorage.setItem(BUNDLE_RELOAD_KEY, running ?? ""); } catch { return; }
+      window.location.reload();
+      return; // the marker stays put; the new bundle is the one that can show it
+    }
+    if (step !== "confirm") return;
     try { window.sessionStorage.removeItem("agent-dag.restartPending"); } catch {}
     restartAskedRef.current = false;
     setRestarting(false);
-    setRestartedTo(running);
+    setRestartedTo(running ?? null);
     const t = window.setTimeout(() => setRestartedTo(null), 6000);
     return () => window.clearTimeout(t);
   }, [version?.running]);
