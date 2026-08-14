@@ -167,6 +167,43 @@ export async function restoreParkedSoundHooks() {
   return { ok: true, restored: parked.length };
 }
 
+/**
+ * Take the toggle off the machine entirely, for `agents-deck --uninstall`.
+ *
+ * uninstallHooks only knows the `__agent-dag` mark the event forwarders carry;
+ * this entry is marked `__agent-dag-sound` and its command points at notify.js,
+ * so it used to survive an uninstall and keep playing a sound on every turn. The
+ * user's own hooks were the worse half: parked here when the toggle went on,
+ * they stayed in a file under ~/.agents-deck that nothing left on the machine
+ * knew how to open. Removing the entry without putting those back would be the
+ * same loss with a tidier settings.json, so the two go together.
+ */
+export async function uninstallSoundHook() {
+  let settings;
+  try {
+    settings = await readSettings();
+  } catch (err) {
+    if (!isUnreadable(err)) throw err;
+    // Same bargain as everywhere else here: a file we cannot parse is left
+    // untouched, and the parked hooks stay parked until it is repaired.
+    return refusal(err);
+  }
+  const group = settings?.hooks?.[EVENT];
+  let removed = 0;
+  if (Array.isArray(group)) {
+    const others = group.filter(g => !isOurs(g));
+    removed = group.length - others.length;
+    if (removed > 0) {
+      if (others.length) settings.hooks[EVENT] = others;
+      else delete settings.hooks[EVENT];   // don't leave an empty array behind
+      await writeSettings(settings);
+    }
+  }
+  const restore = await restoreParkedSoundHooks();
+  if (restore.ok === false) return restore;
+  return { ok: true, removed, restored: restore.restored ?? 0 };
+}
+
 export async function setSoundHook(enabled) {
   // Read before anything else. A file we cannot parse stops the toggle here,
   // with nothing parked, nothing copied and settings.json untouched.

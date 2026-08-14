@@ -39,6 +39,20 @@ if (flags.uninstall) {
   console.log(claude.changed
     ? `agents-deck: hooks removed from ${claude.settingsPath}`
     : "agents-deck: no Claude hooks to remove");
+  // The sound toggle is a second entry in the same file, marked
+  // __agent-dag-sound rather than __agent-dag, and uninstallHooks does not know
+  // that mark — so it used to be left behind, playing on every turn after the
+  // deck was supposedly gone. It also parks the user's own afplay/PowerShell
+  // Stop hooks while it is on, and once the deck is uninstalled nothing else can
+  // put them back, so this restores them too.
+  const { uninstallSoundHook } = await import(pathToFileURL(join(PKG_ROOT, "src/server/sound-hook.mjs")).href);
+  const sound = await uninstallSoundHook();
+  if (sound.ok === false) {
+    console.error(`agents-deck: sound hook left in place — ${sound.message}`);
+  } else {
+    if (sound.removed) console.log("agents-deck: sound hook removed");
+    if (sound.restored) console.log(`agents-deck: restored ${sound.restored} of your own sound hook(s)`);
+  }
   if (hasCodexInstalled()) {
     const codex = await uninstallHooks({ provider: "codex" });
     console.log(codex.changed
