@@ -3136,6 +3136,9 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 10px;
 }
 .ap-failure {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   margin: 8px 14px 0;
   padding: 6px 8px;
   border-radius: 4px;
@@ -3144,6 +3147,26 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 10px;
   word-break: break-word;
 }
+.ap-failure-text {
+  flex: 1;
+  min-width: 0;
+}
+/* Sized like the message rather than like a button: it sits inside two lines
+   of 10px text in a 288px panel, where anything with a real hit area would be
+   the loudest thing in the box. */
+.ap-failure-x {
+  flex: none;
+  margin: -2px -2px 0 0;
+  padding: 0 3px;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.ap-failure-x:hover { opacity: 1; }
 /* ── auto-switch controls ── */
 .ap-auto {
   padding: 12px 14px 11px;
