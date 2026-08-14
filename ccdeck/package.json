@@ -7,7 +7,9 @@
     "ccdeck": "bin/ccdeck.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "README.md",
+    "LICENSE"
   ],
   "dependencies": {
     "agents-deck": "1.23.1"
