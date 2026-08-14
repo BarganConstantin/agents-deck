@@ -10,6 +10,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
 import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
+import {
+  type Failure,
+  RELOAD_UNREACHABLE,
+  answered,
+  explainReload,
+  nextFailure,
+} from "../accounts-reload";
 
 interface Lane {
   id: string;
@@ -50,19 +57,6 @@ interface AutoTick {
   to?: number | null;
 }
 
-/**
- * What went wrong, and the words the tool used.
- *
- * `text` is the only half that is shown. `raw` is cswap's own stderr, which
- * this panel used to print instead — a traceback or a shell's "is not
- * recognized" in a 288px box at 10px — and it survives only as the title, close
- * enough to copy into an issue and far enough not to be the message.
- */
-interface Failure {
-  text: string;
-  raw?: string;
-}
-
 interface AutoStatus {
   ok: boolean;
   enabled: boolean;
@@ -72,6 +66,10 @@ interface AutoStatus {
 }
 
 const POLL_MS = 15_000;
+// Past this, a reload is called dead rather than slow. Both routes can spawn
+// cswap, and the server kills those at 20 seconds, so anything shorter would
+// abort answers that were still coming.
+const RELOAD_TIMEOUT_MS = 30_000;
 const THRESHOLDS = [70, 80, 85, 90, 95];
 
 /** "3h 43m" / "6d 21h" — recomputed client-side so it never shows a stale countdown. */
@@ -217,6 +215,7 @@ export default function AccountsPanel({ onClose }: Props) {
   const [data, setData] = useState<AccountsData | null>(null);
   const [auto, setAuto] = useState<AutoStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
   const [switching, setSwitching] = useState<number | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
@@ -233,15 +232,32 @@ export default function AccountsPanel({ onClose }: Props) {
   const [share, setShare] = useState<{ num: number; blob: string; expiresAt: number } | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
 
+  // A reload the user asked for, and the same one on a timer. Only the forced
+  // half touches `reloading`: a poll blinking the ↻ every 15 seconds would read
+  // as the panel doing something to itself.
   const load = useCallback(async (force = false) => {
+    if (force) setReloading(true);
+    // A deck that accepts the connection and then wedges never rejects these
+    // fetches. Unbounded, the first load would sit on "Checking…" behind a ↻
+    // disabled forever — the dead button this busy state exists to rule out,
+    // made permanent.
+    const ctl = new AbortController();
+    const bell = window.setTimeout(() => ctl.abort(), RELOAD_TIMEOUT_MS);
     try {
       const [accts, autoRes] = await Promise.all([
-        fetch(`/api/claude-accounts${force ? "?refresh=1" : ""}`),
-        fetch("/api/cswap-auto"),
+        fetch(`/api/claude-accounts${force ? "?refresh=1" : ""}`, { signal: ctl.signal }),
+        fetch("/api/cswap-auto", { signal: ctl.signal }),
       ]);
       if (accts.ok)    setData(await accts.json());
       if (autoRes.ok)  setAuto(await autoRes.json());
-    } catch { /* server unreachable */ }
+      const verdict = explainReload([await answered(accts), await answered(autoRes)]);
+      setFailure(prev => nextFailure(prev, verdict));
+    } catch {
+      setFailure(prev => nextFailure(prev, RELOAD_UNREACHABLE));
+    } finally {
+      window.clearTimeout(bell);
+      if (force) setReloading(false);
+    }
   }, []);
 
   /** Every auto-switch control is one POST; they all reload afterwards. */
@@ -339,13 +355,32 @@ export default function AccountsPanel({ onClose }: Props) {
         <div className="ap-header-right">
           <button type="button" className="btn ap-add" onClick={() => setAddOpen(true)}
             title="Sign in to another Claude account, or paste one shared from another deck">+</button>
-          <button type="button" className="btn ap-refresh" onClick={() => load(true)} title="Reload from claude-swap">↻</button>
+          <button type="button" className="btn ap-refresh" onClick={() => load(true)}
+            disabled={reloading} aria-label="Reload accounts"
+            title="Reload from claude-swap">{reloading ? "…" : "↻"}</button>
           <button type="button" className="btn icon-btn" onClick={onClose} aria-label="Close accounts panel" title="Close (A)">×</button>
         </div>
       </div>
 
+      {/* Nothing has arrived yet. "Checking…" is only true while a request is
+          still out: the panel's failure box lives inside the branch below,
+          which needs a roster to render, so a first load that failed used to
+          leave this word standing with nothing behind it. */}
       {data == null ? (
-        <div className="ap-empty">Checking…</div>
+        failure ? (
+          <div className="ap-empty" role="alert">
+            <span title={failure.raw || undefined}>{failure.text}</span>
+            <span className="ap-hint">
+              No accounts have arrived, so there is nothing to show yet. The panel keeps
+              trying every {POLL_MS / 1000} seconds.
+            </span>
+            <button type="button" className="ap-fix" disabled={reloading} onClick={() => load(true)}>
+              {reloading ? "trying…" : "try again"}
+            </button>
+          </div>
+        ) : (
+          <div className="ap-empty">Checking…</div>
+        )
       ) : !data.ok ? (
         <div className="ap-empty">
           {data.reason === "no_cswap" ? (
@@ -600,7 +635,7 @@ export default function AccountsPanel({ onClose }: Props) {
                       beside it instead of replacing it. */}
                   <button
                     type="button"
-                    className={`ap-auto-state toggle${auto.enabled ? " live" : ""}`}
+                    className={`ap-auto-state${auto.enabled ? " live" : ""}`}
                     role="switch"
                     aria-checked={auto.enabled}
                     disabled={busy != null}
