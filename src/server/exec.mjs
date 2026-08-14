@@ -224,7 +224,16 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
       if (tryNext(err) && !stdout && !stderr) { child = null; return attempt(i + 1); }
       finish(-1, err);
     });
-    proc.on("spawn", () => resolved.set(cmd, raw));
+    // Spawning proves a spelling exists — except a .cmd/.bat one, which is
+    // launched THROUGH cmd.exe. cmd.exe is always there, so it spawns just as
+    // happily for a batch file that is not, and only says so later by exiting
+    // non-zero with "is not recognized". Caching at spawn time therefore
+    // remembered a spelling that never existed, and since `candidates` then
+    // offers only the remembered one, the tool stayed unrunnable — with the
+    // false message "not on PATH" — even after it was installed. A batch
+    // spelling is confirmed by the clean exit below instead, which is the rule
+    // `run` already applies with `if (!err)`.
+    if (!isBatch(raw)) proc.on("spawn", () => resolved.set(cmd, raw));
     // Capped so a runaway child cannot grow the heap without bound; the tail is
     // what carries the error, so the head is what gets dropped.
     const keep = (buf, text) => (buf + text).slice(-maxOutput);
@@ -242,6 +251,9 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
         }
         return finish(-1, { code: "ENOENT" });
       }
+      // Ran to a clean exit, so this spelling is real — the only confirmation a
+      // batch one ever gets.
+      if (code === 0 && !killed && !timedOut) resolved.set(cmd, raw);
       finish(code ?? -1, null);
     });
   };
@@ -281,7 +293,11 @@ export function runDetached(cmd, args) {
     try {
       const child = spawn(file, argv, { stdio: "ignore", shell: false, windowsHide: true, ...opts });
       child.on("error", (err) => { if (tryNext(err)) attempt(i + 1); });
-      child.on("spawn", () => resolved.set(cmd, raw));
+      // Same trap as above: a batch spelling is spawned through cmd.exe, which
+      // succeeds whether or not the batch file is there, so only a clean exit
+      // proves this one is worth remembering.
+      if (isBatch(raw)) child.on("exit", (code) => { if (code === 0) resolved.set(cmd, raw); });
+      else child.on("spawn", () => resolved.set(cmd, raw));
       child.unref?.();
     } catch {
       attempt(i + 1);

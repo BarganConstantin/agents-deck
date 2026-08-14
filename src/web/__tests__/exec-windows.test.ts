@@ -89,3 +89,56 @@ describe("an interactive run that has to retry a spelling", () => {
     }
   });
 });
+
+describe("a .cmd spelling cmd.exe could not find", () => {
+  // A batch candidate is launched THROUGH cmd.exe, and cmd.exe is always there:
+  // it spawns happily for a batch file that is not, then says "is not
+  // recognized" and exits 1. Remembering the spelling at spawn time therefore
+  // recorded claude.bat on a machine with no claude at all, and the memo is the
+  // only candidate afterwards — so installing claude (npm writes claude.cmd)
+  // did not help. Every run still failed with "not on PATH" until the deck was
+  // restarted.
+  it("is not remembered, so the tool runs once it is installed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-exec-"));
+    const base = join(dir, "ccdeck-ghost-cli");
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const comspec = process.env.ComSpec;
+    try {
+      if (process.platform !== "win32") {
+        // Stand in for cmd.exe — same /d /s /c calling convention, same verdict
+        // for a batch file that is not there. Windows uses the real one, and
+        // this whole path is Windows-only, so claim to be it.
+        const shim = join(dir, "fake-cmd.sh");
+        writeFileSync(shim, [
+          "#!/bin/sh",
+          `target=$(printf '%s' "$4" | tr -d '"')`,
+          `if [ -f "$target" ]; then sh "$target"; else`,
+          `  echo "'$target' is not recognized as an internal or external command," >&2`,
+          `  echo 'operable program or batch file.' >&2`,
+          "  exit 1",
+          "fi",
+        ].join("\n") + "\n");
+        chmodSync(shim, 0o755);
+        process.env.ComSpec = shim;
+        Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      }
+
+      // Nothing installed yet: every spelling fails, including both batch ones.
+      const first = await runInteractive(base, [], { timeout: 20_000 }).done;
+      expect(first.ok).toBe(false);
+      expect(first.code).toBe("ENOENT");
+
+      // Now it gets installed, the way npm installs a CLI on Windows.
+      writeFileSync(`${base}.cmd`, "echo ready\r\n");
+
+      const second = await runInteractive(base, [], { timeout: 20_000 }).done;
+      expect(second.ok).toBe(true);
+      expect(second.stdout).toContain("ready");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      if (comspec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = comspec;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
