@@ -194,12 +194,19 @@ let tmpSeq = 0;
  * run. Later runs walk the same names and sweep what they find instead of
  * piling fresh ones beside it. Digits and hyphens only — a legal filename
  * everywhere, Windows included.
+ *
+ * `mode` is the mode the file is created with, which matters when the bytes are
+ * secret: codex-auth stages a rotated Codex refresh token here, and a temp file
+ * that starts at the umask default is readable by every other account on the
+ * box for as long as the write takes, whatever chmod follows it. O_EXCL is what
+ * makes the mode binding — a create honours it only when it is the call that
+ * makes the file, so adopting a leftover would keep the leftover's permissions.
  */
-async function createTemp(target, attempts = 5) {
+async function createTemp(target, { mode = 0o666, attempts = 5 } = {}) {
   for (let attempt = 1; ; attempt++) {
     const tmp = `${target}.agent-dag-${process.pid}-${tmpSeq++}.tmp`;
     try {
-      return { tmp, handle: await open(tmp, "wx") };
+      return { tmp, handle: await open(tmp, "wx", mode) };
     } catch (err) {
       if (attempt >= attempts || err?.code !== "EEXIST") throw err;
       await unlink(tmp).catch(() => {});
@@ -470,5 +477,8 @@ export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS, CODEX_EVENTS };
 // the same guarantee to the hook scripts themselves, which are the files live
 // sessions are actually executing, and renameWithRetry goes out on its own for
 // the files writeFileAtomic cannot write — the fetched uv binary in
-// uv-bootstrap.mjs — which still need the Windows retry.
-export { readSettingsForWrite, writeFileAtomic, installScript, renameWithRetry };
+// uv-bootstrap.mjs — which still need the Windows retry. createTemp goes out for
+// the same reason one step lower: codex-auth.mjs needs the collision-free temp
+// name but not writeFileAtomic's mode handling, which carries over the target's
+// mode and so would leave a brand-new auth.json at whatever the umask allows.
+export { readSettingsForWrite, writeFileAtomic, installScript, renameWithRetry, createTemp };
