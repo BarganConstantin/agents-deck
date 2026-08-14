@@ -1024,11 +1024,15 @@ function handleSse(req, res) {
 // no file to read — so the deck must not offer to do it.
 let _canRestart = false;
 
-async function handleVersion(_req, res) {
+async function handleVersion(req, res) {
   const { versionReport } = await import(
     pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href
   );
-  const report = await versionReport({ running: RUNNING_VERSION, pkgRoot: PKG_ROOT });
+  // ?refresh=1 asks npm now rather than reusing the cached answer — what the
+  // version chip does when clicked, for the user who has just published or is
+  // wondering whether the check is working at all.
+  const force = new URL(req.url, "http://localhost").searchParams.get("refresh") === "1";
+  const report = await versionReport({ running: RUNNING_VERSION, pkgRoot: PKG_ROOT, force });
   send(res, 200, { ...report, canRestart: _canRestart });
 }
 

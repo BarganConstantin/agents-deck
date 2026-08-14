@@ -6,7 +6,7 @@
 // These tests pin the three-way comparison that makes that state visible.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode } from "../../server/self-update.mjs";
+import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode } from "../../server/self-update.mjs";
 
 describe("isOlder", () => {
   it("compares numerically, not lexically", () => {
@@ -251,5 +251,46 @@ describe("upgradeMode", () => {
     // AGENTS_DECK_NO_INSTALL=1 is checked first, so opting out also turns off
     // the npx route — one switch, not two.
     expect(upgradeMode("opted_out")).toBeNull();
+  });
+});
+
+// Reported: a machine running `npx ccdeck` showed no update banner while an
+// update existed. The check itself was fine — the marker was not. It cached
+// npm's answer for 24 HOURS in a file every deck on the machine shares, so a
+// deck started shortly before a release, or after another deck had already
+// asked, showed nothing until the next day. npx runs are short-lived and each
+// one inherited that same stale answer.
+describe("checkDue", () => {
+  const HOUR = 3600_000;
+  const NOW = 1_800_000_000_000;
+
+  it("asks on this process's first call, however fresh the marker is", () => {
+    // The fix for the shared marker: a deck that just started is exactly where
+    // the user expects the truth, and the request is ~20 bytes.
+    expect(checkDue({ at: NOW - 1000, now: NOW, first: true })).toBe(true);
+  });
+
+  it("reuses the cached answer inside the window after that", () => {
+    expect(checkDue({ at: NOW - 5 * 60_000, now: NOW })).toBe(false);
+  });
+
+  it("asks again once the window has passed", () => {
+    expect(checkDue({ at: NOW - HOUR - 1, now: NOW })).toBe(true);
+    expect(checkDue({ at: NOW - HOUR + 1, now: NOW })).toBe(false);
+  });
+
+  it("asks when told to, which is what the chip does", () => {
+    expect(checkDue({ at: NOW, now: NOW, force: true })).toBe(true);
+  });
+
+  it("asks when there is no marker at all", () => {
+    expect(checkDue({ at: undefined, now: NOW })).toBe(true);
+    expect(checkDue({ at: null, now: NOW })).toBe(true);
+  });
+
+  it("asks when the marker is in the future, rather than trusting it forever", () => {
+    // A clock moved backwards — by a VM resume or a timezone fix — would
+    // otherwise silence the check until real time caught up.
+    expect(checkDue({ at: NOW + 86_400_000, now: NOW })).toBe(true);
   });
 });

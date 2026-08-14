@@ -26,7 +26,16 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-const CHECK_MS = 24 * 3600_000; // same daily cadence as the ccusage/cswap checks
+// Once an hour, not once a day.
+//
+// The daily cadence was copied from the ccusage and cswap checks, where it is
+// right: those answer "is a different tool out of date", and nobody is waiting
+// on it. This one answers "is the thing you are looking at out of date", and a
+// day is long enough that a deck started shortly before a release shows nothing
+// at all until tomorrow — reported from a machine running `npx ccdeck`, which
+// is the case where it bites hardest, since npx runs are short-lived and each
+// one inherits the same stale marker. The request is ~20 bytes.
+const CHECK_MS = 3600_000;
 const FETCH_TIMEOUT_MS = 6_000;
 // A third marker path: ccusage owns ~/.agents-deck/ccusage/.last-update-check
 // and cswap owns ~/.agents-deck/.cswap-update-check. Sharing one would make the
@@ -181,11 +190,34 @@ function writeMarker(at, version) {
   } catch { /* a read-only home must not break the deck */ }
 }
 
+// The marker is shared by every deck on the machine, so one deck's check
+// silences the others for the rest of the window. Asking once per PROCESS fixes
+// that, and it lands the check exactly where the user expects the truth: a
+// freshly started deck — which for `npx ccdeck` is every single run.
+let _askedThisProcess = false;
+
+/**
+ * Whether to ask npm, or reuse the answer on disk. Pure, because "why did no
+ * banner appear" is the question this feature gets asked, and the rule behind
+ * it should be readable in one place.
+ */
+export function checkDue({ at, now, first = false, force = false, ttlMs = CHECK_MS }) {
+  if (force || first) return true;      // explicit ask, or this process's first
+  if (typeof at !== "number") return true;  // never checked
+  if (at > now) return true;            // marker from the future: a moved clock
+  return now - at >= ttlMs;
+}
+
 /** Last known npm `latest`, refreshed at most once per CHECK_MS. Returns the
- *  cached answer immediately when the window has not elapsed. */
-async function latestOnNpm(name, now) {
+ *  cached answer immediately when the window has not elapsed.
+ *
+ *  `force` skips the window: the first call in this process, and an explicit
+ *  "check now" from the UI. */
+async function latestOnNpm(name, now, force = false) {
   const m = readMarker();
-  if (m && now - m.at < CHECK_MS) return m.version ?? null;
+  const first = !_askedThisProcess;
+  _askedThisProcess = true;
+  if (!checkDue({ at: m?.at, now, first, force })) return m?.version ?? null;
   if (_inflight) return _inflight;
   _inflight = fetchLatest(name)
     // Stamp before deciding what to keep: a failed lookup must burn the day's
@@ -350,7 +382,7 @@ export function lastMeaningfulLine(text) {
 /** Full answer for GET /api/version. Never throws, never blocks on the network
  *  for longer than FETCH_TIMEOUT_MS, and answers the local half even when the
  *  registry is unreachable. */
-export async function versionReport({ running, pkgRoot, name = "agents-deck", now = Date.now() }) {
+export async function versionReport({ running, pkgRoot, name = "agents-deck", now = Date.now(), force = false }) {
   const installed = installedVersion(pkgRoot);
   // Only an explicit opt-out silences the registry.
   //
@@ -365,13 +397,17 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
   const skipRegistry =
     process.env.AGENTS_DECK_NO_UPDATE_CHECK === "1" ||
     process.env.AGENTS_DECK_NO_INSTALL === "1";
-  const latest = skipRegistry ? null : await latestOnNpm(name, now);
+  const latest = skipRegistry ? null : await latestOnNpm(name, now, force);
   const blocked = upgradeBlock(pkgRoot);
   return {
     name,
     running: running ?? null,
     installed,
     latest,
+    // When npm was last asked, so the UI can say it rather than leaving the
+    // user to wonder whether the check runs at all.
+    checkedAt: skipRegistry ? null : (readMarker()?.at ?? null),
+    checkDisabled: skipRegistry,
     notice: pickNotice({ running, installed, latest }),
     command: upgradeCommand(pkgRoot, name),
     // Why an in-app `npm i -g` is refused, when it is — so the UI can say so
