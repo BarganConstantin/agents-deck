@@ -12,9 +12,14 @@ import {
   sweepStaleTools,
 } from "../reducer";
 import type { GraphState } from "../reducer";
-import type { HookEnvelope, HookPayload } from "../types";
+import type { AgentNodeData, HookEnvelope, HookPayload } from "../types";
 
 const SESSION = "sess-dupe";
+
+/** What the card counts as in-flight: recorded, not yet settled. */
+function inFlight(a: AgentNodeData): string[] {
+  return a.tools.filter(t => t.endedAt == null).map(t => t.id);
+}
 
 let seq = 0;
 
@@ -61,12 +66,12 @@ describe("PreToolUse idempotence on tool_use_id", () => {
     const root = state.agents.get(SESSION)!;
     expect(root.tools.length).toBe(1);
     expect(root.toolCount).toBe(1);
-    expect(root.inFlightTool?.id).toBe("t1");
+    expect(inFlight(root)).toEqual(["t1"]);
 
     state = post(state, "t1");
     expect(root.tools[0].endedAt).toBeGreaterThan(0);
     expect(root.tools[0].ok).toBe(true);
-    expect(root.inFlightTool).toBeNull();
+    expect(inFlight(root)).toEqual([]);
     expect(state.toolIndex.size).toBe(0);
     expect(state.toolOwner.size).toBe(0);
   });
@@ -84,7 +89,7 @@ describe("PreToolUse idempotence on tool_use_id", () => {
     const root = state.agents.get(SESSION)!;
     expect(root.tools.length).toBe(1);
     expect(root.toolCount).toBe(1);
-    expect(root.inFlightTool).toBeNull();
+    expect(inFlight(root)).toEqual([]);
   });
 
   it("never leaves a duplicate behind for the stale sweep to mark failed", () => {
@@ -106,7 +111,7 @@ describe("PreToolUse idempotence on tool_use_id", () => {
     expect(swept).toBe(false);
     expect(root.tools.every(t => t.ok === true)).toBe(true);
     expect(root.tools.some(t => t.errorPreview)).toBe(false);
-    expect(root.inFlightTool).toBeNull();
+    expect(inFlight(root)).toEqual([]);
   });
 
   it("does not reopen a settled call or re-attach a released payload", () => {

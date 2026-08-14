@@ -317,8 +317,3 @@ async function doFetchCodexQuota() {
 
   return finish(result);
 }
-
-export function invalidateCodexQuotaCache() {
-  _cache = null;
-  _cacheAt = 0;
-}

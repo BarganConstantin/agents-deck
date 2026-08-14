@@ -288,7 +288,3 @@ export function primeCcusage() {
   }
   return { state: "installing" };
 }
-
-export function invalidateCcusageCache() {
-  _cache.clear();
-}

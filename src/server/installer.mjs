@@ -506,7 +506,6 @@ export function keepDiscovery({ port, workspace, token, persist = null, codex = 
   return { file: discoveryPath(), check, stop: () => clearInterval(timer) };
 }
 
-export const HOOK_EVENTS = CLAUDE_EVENTS;
 export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS, CODEX_EVENTS };
 // Exported for the other modules that rewrite settings.json — the sound toggle
 // today. Every one of them needs the same two guarantees: a file we cannot

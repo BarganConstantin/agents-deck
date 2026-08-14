@@ -233,8 +233,3 @@ export async function fetchCodexUsage({ force = false } = {}) {
   _cacheAt = now;
   return result;
 }
-
-export function invalidateCodexUsageCache() {
-  _cache = null;
-  _cacheAt = 0;
-}
