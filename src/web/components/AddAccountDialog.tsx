@@ -17,6 +17,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Confetti from "./Confetti";
 import { isLoginOver, loginEndNotice, shouldPollLogin, type LoginServerState } from "../login-flow";
+import { createLoginAnnouncer } from "../login-announce";
 
 /** Server-side login progress, polled while the dialog is open. */
 type LoginState = {
@@ -136,10 +137,20 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     return () => window.clearInterval(iv);
   }, [login]);
 
+  // Both of these are read by the effect below and neither may appear in its
+  // dependency list: AccountsPanel hands this dialog a new `onChanged` on every
+  // render, so depending on it made the roster reload a function of rendering
+  // rather than of the sign-in, and the success card kept the dialog mounted
+  // long enough for that to become a permanent request loop — see
+  // login-announce.ts for what each turn of it cost.
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const announcerRef = useRef(createLoginAnnouncer());
+
   useEffect(() => {
     if (login?.state === "awaiting_code") codeRef.current?.focus();
-    if (login?.state === "done") onChanged();
-  }, [login?.state, onChanged]);
+    if (announcerRef.current.shouldAnnounce(login?.state)) onChangedRef.current();
+  }, [login?.state]);
 
   // The share tab's field is the only thing on it; focusing it saves a click
   // and makes ⌘V the obvious next move.
