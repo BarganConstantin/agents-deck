@@ -27,7 +27,7 @@ import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
 import UsageHistoryModal from "./components/UsageHistoryModal";
-import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
+import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -506,14 +506,26 @@ function snapshotToFlow(
   // How much room each agent's bubbles need. ToolBursts keeps the last four
   // tools as a permanent trail — no time-based culling — so an agent that has
   // called a tool occupies its lane for as long as it is on the canvas, and
-  // dagre has to be told. Without it the next rank is placed 160px away and
-  // lands on top of bubbles that reach 420px out.
+  // every pass that places a box has to be told. Without it the next rank is
+  // placed 160px away and lands on top of bubbles that reach 420px out, and
+  // the repair passes — which run far more often than dagre does — pack the
+  // neighbours straight back over the chips.
   const lanes = new Map<string, number>();
   for (const a of state.agents.values()) {
     if (a.tools.length > 0) lanes.set(a.id, Math.min(4, a.tools.length));
   }
+  // A lane appearing is a structural change, so it invalidates the cached
+  // arrangement the way a new node or a re-measured card does.
+  //
+  // Without this the reservation was applied on exactly one frame per node —
+  // the frame it first appears, which is the frame it has just been created by
+  // SessionStart and has called nothing, so its lane is zero. It then made
+  // forty tool calls, grew 420px sideways, and nothing ever reconsidered its
+  // neighbours. Clamping at four bubbles is what keeps this cheap: the string
+  // stops changing after an agent's fourth tool call.
+  const sig = `${layoutSig}#lanes:${laneSignature(lanes)}`;
   const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
-  if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
+  if (missing.length > 0 || sig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
       const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight, lanes });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
@@ -523,11 +535,11 @@ function snapshotToFlow(
       // bands that hold nothing.
       fillGapsWithNewSessions(
         nodes, positions, pinned, measured,
-        new Set(missing.map(n => n.id)),
+        new Set(missing.map(n => n.id)), lanes,
       );
     }
-    separateOverlaps(nodes, positions, pinned, measured);
-    lastLayoutSigRef.current = layoutSig;
+    separateOverlaps(nodes, positions, pinned, measured, lanes);
+    lastLayoutSigRef.current = sig;
   }
   // A session that just fanned out subagents is wider and taller than it was a
   // frame ago, and is now sitting on whatever was beside it. separateOverlaps
@@ -535,7 +547,7 @@ function snapshotToFlow(
   // block; this nudges the neighbours aside by the least that works, which is
   // both shorter and legible as a cause — the box grew, so the others moved.
   // Self-gating: returns immediately unless something actually grew.
-  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled || dragging);
+  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled || dragging, lanes);
   if (bubbled.length > 0) onBubble(bubbled);
   // Evict cached positions for agents that aren't in state.agents anymore.
   // Stale positions for invisible-but-still-tracked agents are KEPT so a
