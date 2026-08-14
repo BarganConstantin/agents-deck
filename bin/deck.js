@@ -73,9 +73,14 @@ const openBrowser = flags.noOpen !== true;
 // config dir rather than assuming ~/.claude — see src/server/claude-dir.mjs.
 const { claudeConfigDir } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-dir.mjs")).href);
+// Resolved here rather than left as typed: the discovery file publishes this
+// path so the hook can tell which decks share one log and elect a single
+// writer for it, and two spellings of one file would read as two files.
+// startServer resolves it the same way, from this same process, so the two
+// always name the same file.
 const persist = flags.noPersist
   ? null
-  : (flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
+  : resolve(flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
 
 const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
@@ -337,11 +342,15 @@ if (RESPAWN) {
 //
 // The token goes in with the port: it is what lets a hook tell this deck from
 // whatever else may later be listening on the same number. See hookToken().
+//
+// The log path goes in with them, so a hook can see which decks share one events
+// log and elect a single writer for it. See electWriters in hook/hook.js.
 let registered = null;
 const discovery = keepDiscovery({
   port: realPort,
   workspace,
   token: hookToken(),
+  persist,
   onState: (state) => {
     const first = registered === null;
     registered = state.ok;

@@ -50,6 +50,45 @@ const sseClients = new Set();       // res handles
 
 let persistPath = null;             // absolute path to events.jsonl, or null
 
+// ─── Which deck records which session ─────────────────────────────────────
+// The hook posts an event to every deck whose workspace matches, and by
+// default all of them append to one events.jsonl — so each event landed in
+// that file once per running deck, and every later replay of it ingested each
+// tool call that many times. The hook now elects one writer per log file and
+// marks the request to the rest `?persist=0`. That flag covers the hook event
+// itself; this map carries it to the ModelObserved/UsageObserved/
+// ContextObserved events a deck derives from the same session's transcript,
+// which every deck reads for itself and would otherwise duplicate exactly the
+// same way. A session is recorded unless we have been told someone else owns
+// it, so a lone deck — and a deck the hook is too old to flag — still writes
+// everything.
+const foreignSessions = new Set();  // session ids another deck is logging
+const MAX_FOREIGN_SESSIONS = 512;   // bound: insertion order = oldest first
+
+function noteLogWriter(payload, mine) {
+  const sid = payload && typeof payload === "object" ? payload.session_id : null;
+  if (typeof sid !== "string" || sid === "") return;
+  // Delete either way: on re-add it moves the id back to the young end, so the
+  // eviction below drops sessions that stopped being posted, not busy ones.
+  foreignSessions.delete(sid);
+  if (mine) return;
+  foreignSessions.add(sid);
+  if (foreignSessions.size > MAX_FOREIGN_SESSIONS) {
+    foreignSessions.delete(foreignSessions.values().next().value);
+  }
+}
+
+/**
+ * Is this deck the one that writes this payload's session to the log? Every
+ * event goes through here on its way to disk, including the ones this deck
+ * derives from a transcript on its own — that is the point of remembering the
+ * session rather than only honouring the flag on the event that carried it.
+ */
+export function writesLogFor(payload) {
+  const sid = payload && typeof payload === "object" ? payload.session_id : null;
+  return typeof sid !== "string" || sid === "" || !foreignSessions.has(sid);
+}
+
 // ─── Persistence rotation ─────────────────────────────────────────────────
 // 24/7 dev servers used to grow events.jsonl unbounded — saw it hit GBs
 // across weeks. We rotate when the file passes ROTATE_AT_BYTES, archiving
@@ -949,7 +988,7 @@ function pushEvent(raw, source, opts = {}) {
     try { res.write(line); } catch {}
   }
 
-  if (persistPath && !opts.replay) {
+  if (persistPath && !opts.replay && opts.persist !== false && writesLogFor(raw)) {
     // Fire-and-forget append. JSONL = newline-delimited JSON.
     appendFile(persistPath, JSON.stringify(evt) + "\n", "utf8").catch(() => {});
     // Cheap throttled check (every 30s) — only rotates if file > 50MB.
@@ -1048,7 +1087,11 @@ function readBody(req, limit = 64_000) {
   });
 }
 
-function handleEventIngest(req, res) {
+// `persist` is false when the hook posted this event to another deck as well
+// and elected that one to write it to the log they share. The event is still
+// buffered and broadcast here — every matching deck draws it — it is only the
+// second copy on disk that is dropped.
+function handleEventIngest(req, res, persist = true) {
   let body = "";
   req.setEncoding("utf8");
   req.on("data", c => {
@@ -1061,7 +1104,8 @@ function handleEventIngest(req, res) {
     let parsed;
     try { parsed = JSON.parse(body); }
     catch { return send(res, 400, { error: "invalid json" }); }
-    const evt = pushEvent(parsed, "hook");
+    noteLogWriter(parsed, persist);
+    const evt = pushEvent(parsed, "hook", { persist });
     send(res, 200, { ok: true, seq: evt.seq });
   });
   req.on("error", () => send(res, 400, { error: "bad request" }));
@@ -1556,7 +1600,9 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
       return send(res, 403, { error: "cross-site request blocked" });
     }
 
-    if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
+    // `?persist=0` — another deck was elected to write this event to the log
+    // the two of them share. Absent, this deck writes it.
+    if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res, url.searchParams.get("persist") !== "0"), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/api/hook-challenge") return handleHookChallenge(req, res, url);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
