@@ -1,8 +1,9 @@
-// What the accounts panel and its add-account dialog say when the server
-// refuses. Two rankings live here, one per shape of refusal — explainFailure
-// for /api/claude-accounts/admin, whose free text is written for the user, and
-// explainCommandFailure below it for the routes that hand back a subprocess's
-// own output.
+// What the deck says when the server refuses. Three rankings live here, one per
+// shape of refusal — explainFailure for /api/claude-accounts/admin, whose free
+// text is written for the user, explainCommandFailure below it for the routes
+// that hand back a subprocess's own output, and explainCcusageFailure for the
+// usage-history modal, whose subprocess is an external CLI the deck installs
+// itself and so fails in ways the account routes have no code for.
 //
 // Two different things come back on an admin refusal and they are not
 // interchangeable.
@@ -75,6 +76,7 @@ export type CommandFailure = {
   reason?: string;
   output?: string;   // the switch route's name for it
   detail?: string;   // the auto-switch route's
+  error?: string;    // /api/ccusage's
 } | null;
 
 // Every reason the two command routes can answer this panel with, said in the
@@ -127,7 +129,57 @@ export function explainCommandFailure(out: CommandFailure, fallback: string): st
 
 /** What the child actually printed. For a title attribute, never for the box. */
 export function commandOutput(out: CommandFailure): string {
-  return (out?.output || out?.detail || "").trim();
+  return (out?.output || out?.detail || out?.error || "").trim();
+}
+
+/** A failed ccusage run, as /api/ccusage answers it: the reason the run ended,
+ *  and under `error` whatever the thing that failed wrote down. */
+export type CcusageFailure = CommandFailure;
+
+// ccusage is not claude-swap and none of the codes above fit it. It is a package
+// the deck installs into ~/.agents-deck and then runs, so its refusals are about
+// installability and runnability: installs forbidden by AGENTS_DECK_NO_INSTALL,
+// the 90s deadline, output that is not usage data, a run that exited on its own.
+// The route collapsed all four into `error`, so the modal showed whatever
+// `err.message` happened to be — "spawn npx ENOENT" as the entire account of a
+// stats panel with nothing in it.
+export const CCUSAGE_REASONS: Record<string, string> = {
+  no_install: "ccusage is not installed, and AGENTS_DECK_NO_INSTALL=1 forbids fetching it — unset that variable and restart the deck, or install ccusage yourself",
+  timeout: "ccusage took more than 90 seconds and was stopped — a narrower range usually finishes",
+  bad_output: "ccusage ran but printed no usage data — try again, and run ccusage daily --json in a terminal if it keeps happening",
+  run_failed: "ccusage could not report usage — try again",
+  // The browser's own failure, not the server's: the deck never answered, so
+  // there is no reason code to send and the client writes this one itself.
+  unreachable: "the deck did not answer — check it is still running, then try again",
+};
+
+// The one remedy that only ever arrives inside ccusage's own bytes, the same
+// exception KEYCHAIN is above. The npx fallback runs through a shell, so a
+// machine without npx never produces a spawn error for us to code: /bin/sh
+// exits 127 with "npx: command not found", dash writes "npx: not found", and
+// cmd.exe writes "'npx' is not recognized as an internal or external command".
+// All three reach us as run_failed carrying the shell's line, and "ccusage
+// could not report usage" is true, useless, and unfixable by trying again.
+const NO_NPX =
+  "ccusage could not be started — npx is not on this deck's PATH. Install Node's npm/npx, or put ccusage on PATH yourself";
+
+/** Every platform's way of saying the shell could not find npx. */
+function npxMissing(text: string): boolean {
+  return /\bnpx\b/i.test(text)
+    && /(command not found|not found|not recognized|ENOENT)/i.test(text);
+}
+
+/**
+ * The one sentence to show for a failed ccusage run — never the raw output.
+ * Same ranking as explainCommandFailure: the map speaks, and `error` stays
+ * evidence the modal hangs on the status line's title.
+ */
+export function explainCcusageFailure(out: CcusageFailure, fallback: string): string {
+  if (npxMissing(commandOutput(out))) return NO_NPX;
+  if (out?.reason && CCUSAGE_REASONS[out.reason]) return CCUSAGE_REASONS[out.reason];
+  // A build talking to a newer server still names the thing that happened,
+  // which is more than the CLI's last line ever did.
+  return out?.reason || fallback;
 }
 
 /** The one sentence to show for a refusal, most specific first. */

@@ -2817,6 +2817,9 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-range-btn:hover { color: var(--text); }
 .uh-range-btn.on { background: var(--accent-dim); color: var(--text); }
 .uh-reload { width: 24px; height: 24px; font-size: 13px; padding: 0; }
+/* A ccusage run is seconds long and the button is the only thing on the header
+   that moves while it lasts, so it has to read as busy rather than as ignored. */
+.uh-reload:disabled { opacity: 0.5; cursor: default; }
 .uh-close {
   width: 24px; height: 24px; font-size: 16px; line-height: 1;
   border: none; background: transparent; color: var(--muted);
@@ -2825,7 +2828,15 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-close:hover { color: var(--text); background: var(--bg-soft); }
 
 .uh-status { padding: 40px 0; text-align: center; color: var(--muted); font-size: 12px; }
-.uh-status.uh-err { color: var(--err); }
+.uh-status.uh-err { color: var(--err); max-width: 46ch; margin: 0 auto; line-height: 1.5; }
+/* The recovery belongs where the failure is. The header's ↻ is on screen in
+   every branch, but nothing there says it is the fix for what the box says. */
+.uh-retry { margin-top: 14px; }
+.uh-retry:disabled { opacity: 0.5; cursor: default; }
+
+/* Everything the selected range answered, dimmed while a newer run for that
+   same range is still going. */
+.uh-stale { opacity: 0.45; transition: opacity 120ms; }
 
 .uh-totals {
   display: grid; grid-template-columns: repeat(4, 1fr);
