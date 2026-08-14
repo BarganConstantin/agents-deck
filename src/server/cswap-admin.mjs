@@ -158,7 +158,27 @@ export function extractLoginUrl(text) {
 
 // The prompt the CLI blocks on. Matched rather than assumed: writing a code
 // into a child that is not asking for one would send it somewhere unknown.
-const CODE_PROMPT = /paste code here/i;
+const CODE_PROMPT = /paste code here/gi;
+
+/**
+ * How many times one line of output asks for the code.
+ *
+ * Per LINE, not per delivery. The prompt ends without a newline, so exec.mjs
+ * re-offers the same unterminated line on every chunk as it grows — and both
+ * streams share that buffer, so a progress dot, a `\r` spinner frame on stderr,
+ * or simply the prompt split across two writes all arrive as the ask again,
+ * a few characters longer. Counting an ask whenever the text merely CHANGED, as
+ * this used to, turned any of those into a phantom second prompt, and a second
+ * prompt is exactly how submitLoginCode hears "that code was rejected": a
+ * login the CLI was busy completing came back as `code_rejected`, with the
+ * account unregistered and the live credentials left switched.
+ *
+ * A real re-ask writes the prompt again — on a fresh line, or after a `\r`
+ * redraw of this one — so it shows up as another match, not as a longer tail.
+ */
+export function countCodePrompts(line) {
+  return (stripTerminalEscapes(line).match(CODE_PROMPT) ?? []).length;
+}
 
 /**
  * The whole login, as one object, because the browser talks to it twice: once
@@ -219,23 +239,27 @@ export async function startLogin({ email } = {}) {
     // exit, it just asks again, so waiting for exit would hang for the whole
     // five-minute window on a typo.
     prompts: 0,
-    lastPromptText: "",
   };
   const flow = _login;
 
-  child.onLine((line) => {
+  // How many asks the line currently being written has already contributed.
+  // The prompt is an unterminated line, re-delivered as it grows, so the same
+  // ask arrives over and over — and once more, whole, when something else
+  // finally ends the line.
+  let countedOnLine = 0;
+
+  child.onLine((line, partial) => {
     if (!flow.url) {
       const url = extractLoginUrl(line);
       if (url) { flow.url = url; flow.state = "awaiting_code"; }
     }
-    // The prompt is an unterminated line, re-delivered as it grows, so the
-    // same ask must not count twice.
-    const clean = stripTerminalEscapes(line);
-    if (CODE_PROMPT.test(clean)) {
-      if (clean !== flow.lastPromptText) { flow.prompts += 1; flow.lastPromptText = clean; }
-    } else if (clean.trim()) {
-      flow.lastPromptText = "";
+    const asks = countCodePrompts(line);
+    if (asks > countedOnLine) {
+      flow.prompts += asks - countedOnLine;
+      countedOnLine = asks;
     }
+    // A newline ended that line; whatever comes next is a new one.
+    if (!partial) countedOnLine = 0;
   });
   // The child dying before the code was accepted is a failure of the login, not
   // of the deck; say so rather than leaving the dialog spinning.
