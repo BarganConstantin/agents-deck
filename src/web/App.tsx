@@ -1691,19 +1691,34 @@ function Inner() {
   // Same anchoring as relayout — F and the fit button land where it does.
   const handleFit = useCallback(() => fitLeft(500), [fitLeft]);
 
+  // `nodes` is rebuilt by the snapshotToFlow memo on every 250ms tick, so a
+  // callback that closes over it is a new function four times a second — and
+  // the keydown effect below, which lists that callback in its deps, would
+  // unsubscribe and resubscribe the window listener at the same rate. Read
+  // both the node array and the current selection through refs (the pattern
+  // stateRef already uses) so stepAgent is created once and the listener is
+  // registered once. Assigned during render so a keystroke in the same commit
+  // sees the array that was just drawn.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const primarySelectedIdRef = useRef(primarySelectedId);
+  primarySelectedIdRef.current = primarySelectedId;
+
   /** Step through visible agents in render order. `direction` is +1 for
    *  next (j) or -1 for previous (k). Selecting moves the canvas to keep
    *  the chosen agent in view. */
   const stepAgent = useCallback((direction: 1 | -1) => {
-    if (nodes.length === 0) return;
+    const current = nodesRef.current;
+    if (current.length === 0) return;
     // Use the same order ReactFlow's nodes prop has — left-to-right by
     // worldspace position then top-to-bottom. That matches what the eye
     // expects when pressing j.
-    const ordered = nodes
+    const ordered = current
       .slice()
       .sort((a, b) => (a.position.y - b.position.y) || (a.position.x - b.position.x));
-    const currentIdx = primarySelectedId
-      ? ordered.findIndex(n => n.id === primarySelectedId)
+    const selectedId = primarySelectedIdRef.current;
+    const currentIdx = selectedId
+      ? ordered.findIndex(n => n.id === selectedId)
       : -1;
     let next: number;
     if (currentIdx === -1) {
@@ -1720,7 +1735,7 @@ function Inner() {
       try { rf.fitView({ padding: 0.35, duration: 350, nodes: [target] }); } catch {}
       lastFitTimeRef.current = Date.now();
     }, 30);
-  }, [nodes, primarySelectedId, selectAgent, rf]);
+  }, [selectAgent, rf]);
 
   // keyboard shortcuts
   useEffect(() => {
