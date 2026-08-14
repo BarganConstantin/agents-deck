@@ -237,18 +237,29 @@ function stripAnsi(s) {
  */
 // Parse "Jun 18, 4:09pm" (local time, no tz) into unix seconds.
 // Claude shows times in the user's local timezone, so parsing as local is correct.
-export function parseResetToSec(resetStr) {
+// `now` is injectable so the year-boundary case is testable.
+export function parseResetToSec(resetStr, now = Date.now()) {
   if (!resetStr) return null;
   try {
-    const year = new Date().getFullYear();
     // "4:09pm" → "4:09 PM" so Date.parse handles it. Minutes are optional in
     // the CLI's output ("9am"); Date.parse rejects "9 AM", so supply ":00".
     const norm = resetStr
       .replace(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i,
                (_all, h, mm, ampm) => `${h}:${mm ?? "00"} ${ampm}`)
       .trim();
-    const d = new Date(`${norm} ${year}`);
-    return isNaN(d.getTime()) ? null : Math.floor(d.getTime() / 1000);
+    // The CLI prints no year, so we have to supply one. Stamping the current
+    // year blindly puts a "Jan 2" reset read on Dec 30 eleven months in the
+    // past, which hides the countdown and pins the pace marker at 100%. A
+    // reset is never more than a week away, so the neighbouring year that
+    // lands nearest to `now` is the one Claude meant.
+    const thisYear = new Date(now).getFullYear();
+    let best = null;
+    for (const year of [thisYear - 1, thisYear, thisYear + 1]) {
+      const t = new Date(`${norm} ${year}`).getTime();
+      if (isNaN(t)) continue;
+      if (best === null || Math.abs(t - now) < Math.abs(best - now)) best = t;
+    }
+    return best === null ? null : Math.floor(best / 1000);
   } catch { return null; }
 }
 
