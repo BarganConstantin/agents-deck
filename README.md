@@ -1,10 +1,10 @@
 <div align="center">
 
-# agents-deck
+# ccdeck
 
 **A live canvas for your AI agents.** Watch Claude Code and OpenAI Codex fork subagents, call tools, and finish — all on one calm graph, in real time.
 
-[![npm](https://img.shields.io/npm/v/agents-deck?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/agents-deck)
+[![npm](https://img.shields.io/npm/v/ccdeck?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/ccdeck)
 [![npm downloads](https://img.shields.io/npm/dm/agents-deck?color=blue)](https://www.npmjs.com/package/agents-deck)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js >=18](https://img.shields.io/badge/node-%3E%3D18-brightgreen?logo=node.js&logoColor=white)](https://nodejs.org)
@@ -14,7 +14,7 @@
 npx ccdeck
 ```
 
-![agents-deck — live agent DAG](image_2026-06-16_08-58-42.png)
+![ccdeck — live agent DAG](image_2026-06-16_08-58-42.png)
 
 </div>
 
@@ -24,7 +24,7 @@ npx ccdeck
 
 An agent session is a tree, but a terminal shows it as a scroll. Five subagents working in parallel arrive as one interleaved column of text, and the questions you actually have — *what is running right now, what did that subagent do, which one is stuck, what is this costing* — are the ones the scroll answers worst.
 
-agents-deck draws the tree instead. It is read-only, local, and needs no configuration: it registers a hook, listens, and paints.
+ccdeck draws the tree instead. It is read-only, local, and needs no configuration: it registers a hook, listens, and paints.
 
 ## Quick start
 
@@ -53,7 +53,7 @@ No config file. No account. No telemetry. Nothing leaves your machine except one
 
 Two capture paths feed one SSE stream, which feeds one canvas.
 
-**Claude Code** — on first run, agents-deck adds a hook entry to `~/.claude/settings.json` for every relevant event:
+**Claude Code** — on first run, ccdeck adds a hook entry to `~/.claude/settings.json` for every relevant event:
 
 ```
 SessionStart · UserPromptSubmit · PreToolUse · PostToolUse · PostToolUseFailure
@@ -95,14 +95,14 @@ Nothing is ever installed unless you click, the argument vector is fixed in the 
 
 ### Restarting
 
-agents-deck runs as a two-process pair: a supervisor that owns nothing but the lifecycle, and the deck itself. When newer code is found, the deck exits with code 75 and the supervisor brings it back **on the port it actually bound**, which is not always the one it asked for. Ctrl+C, stdout and exit codes behave exactly as before — same terminal, same process group.
+ccdeck runs as a two-process pair: a supervisor that owns nothing but the lifecycle, and the deck itself. When newer code is found, the deck exits with code 75 and the supervisor brings it back **on the port it actually bound**, which is not always the one it asked for. Ctrl+C, stdout and exit codes behave exactly as before — same terminal, same process group.
 
 It restarts on its own only after 30 seconds with nothing running, because hook events are fire-and-forget and anything fired during the gap is lost. The toggle in the banner turns that off; the preference is per-browser. Under `--no-persist` a restart is refused outright — with no event log there is nothing to replay, and the canvas would be gone.
 
 ## Options
 
 ```
-agents-deck [options]
+ccdeck [options]
 
   -p, --port <number>      Preferred port  (default: 4317; fallback: random 4318–4400)
       --no-open            Don't open the browser automatically
@@ -114,7 +114,7 @@ agents-deck [options]
       --no-persist         RAM-only mode — don't write or replay the log
       --codex              Force Codex capture even if ~/.codex/ is missing
       --no-codex           Skip Codex capture (Claude only)
-      --uninstall          Remove agents-deck hooks from settings files
+      --uninstall          Remove ccdeck's hooks from settings files
   -h, --help               Show this help
 ```
 
@@ -135,10 +135,10 @@ Being told to restart after an upgrade is local only — no network involved —
 ## Uninstall
 
 ```bash
-npx agents-deck --uninstall
+npx ccdeck --uninstall
 ```
 
-Removes every hook entry agents-deck injected from `~/.claude/settings.json`, and `~/.codex/hooks.json` if present.
+Removes every hook entry ccdeck injected from `~/.claude/settings.json`, and `~/.codex/hooks.json` if present.
 
 ## Design
 
@@ -151,18 +151,18 @@ One canvas. No tabs. No kanban.
 
 ## Names
 
-The repository is **ccdeck**, because that is what people type. On npm the same
-build is published under three names, and all three ship all three commands —
-use whichever you can remember.
+**ccdeck** is the name — of this repo and of the command. On npm the same build
+is published under three names, and all three ship all three commands, so use
+whichever you can remember.
 
 ```bash
-npx ccdeck        # short, and the name of this repo
-npx agents-deck   # the canonical package name
+npx ccdeck        # this repo's name — the short one
+npx agents-deck   # the canonical npm package (in-app updates install this one)
 npx agent-dag     # the original name; existing installs and scripts keep working
 ```
 
-The old repository URL redirects here, so existing clones, links and bookmarks
-keep working.
+The repository was previously named `agents-deck`; the old URL redirects here,
+so existing clones, links and bookmarks keep working.
 
 ## Requirements
 
