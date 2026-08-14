@@ -11,6 +11,7 @@ import { commandOutput, explainCcusageFailure } from "../admin-failure";
 import { createLatestGuard } from "../latest";
 import { presetSince } from "../usage-range";
 import { usageView } from "../usage-view";
+import { shortModel } from "./AgentNode";
 import { useModalDismiss } from "./use-modal-dismiss";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
@@ -54,13 +55,6 @@ function fmtN(n: number): string {
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
   if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   return `${(n / 1_000_000_000).toFixed(2)}B`;
-}
-
-function shortModel(m: string): string {
-  return m
-    .replace(/^anthropic\./, "")
-    .replace(/^claude-/, "")
-    .replace(/-\d{8}$/, "");
 }
 
 // Stable per-model color. Family-based so opus/sonnet/haiku/gpt read consistently.

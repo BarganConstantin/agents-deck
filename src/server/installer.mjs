@@ -1,9 +1,10 @@
-// Idempotent hook installer. Supports two providers:
+// Idempotent hook installer. One provider installs, two uninstall:
 //  - "claude"  → $CLAUDE_CONFIG_DIR/settings.json (Claude Code, ~/.claude by default)
-//  - "codex"   → $CODEX_HOME/hooks.json           (OpenAI Codex CLI, ~/.codex by default)
-// Both providers share the discovery dir at <claude config dir>/agent-dag/ so a
-// single running server can receive events from either CLI. Re-runs are safe;
-// entries are tagged with __agent-dag and de-duped.
+//  - "codex"   → $CODEX_HOME/hooks.json           (uninstall only — see PROVIDERS)
+// Hooks post to the discovery dir at <claude config dir>/agent-dag/, and Codex
+// sessions reach the same server through the rollout watcher instead, so one
+// running server still sees both CLIs. Re-runs are safe; entries are tagged
+// with __agent-dag and de-duped.
 import { readFile, mkdir, unlink, rename, open, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -42,20 +43,6 @@ const CLAUDE_EVENTS = [
   "Notification",
 ];
 
-// Codex CLI hook events. SubagentStart/Stop exist (multi-agent feature).
-// PostToolUseFailure / SessionEnd / Notification have no Codex equivalent.
-const CODEX_EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PostToolUse",
-  "SubagentStart",
-  "SubagentStop",
-  "Stop",
-  "PreCompact",
-  "PostCompact",
-];
-
 const PROVIDERS = {
   claude: {
     settingsPath: join(CLAUDE_DIR, "settings.json"),
@@ -63,11 +50,14 @@ const PROVIDERS = {
     events: CLAUDE_EVENTS,
     ensureDir: CLAUDE_DIR,
   },
+  // Uninstall-only. Codex hooks do not fire reliably on Windows, so the deck
+  // stopped installing them and reads Codex's rollout files instead — nothing
+  // calls installHooks with this provider any more. The entry stays because a
+  // machine that ran an older deck still has our forwarders in hooks.json, and
+  // uninstallHooks needs the path to take them back out. It reads nothing else:
+  // it walks the events already in the file rather than a list of our own.
   codex: {
     settingsPath: join(CODEX_DIR, "hooks.json"),
-    hookInstallDir: join(CODEX_DIR, "agent-dag"),
-    events: CODEX_EVENTS,
-    ensureDir: CODEX_DIR,
   },
 };
 
@@ -292,6 +282,10 @@ function dedupeOurEntries(group) {
 export async function installHooks({ provider = "claude" } = {}) {
   const cfg = PROVIDERS[provider];
   if (!cfg) throw new Error(`unknown provider: ${provider}`);
+  // An uninstall-only provider has no event list. Saying so beats the
+  // TypeError that installing an undefined list would otherwise raise several
+  // frames deep, after the hook script had already been written to disk.
+  if (!cfg.events) throw new Error(`provider ${provider} is uninstall-only: hooks are not installed for it`);
 
   // Read before writing anything, so a settings file we cannot parse aborts
   // the install without leaving half of it behind.
@@ -338,7 +332,8 @@ export async function uninstallHooks({ provider = "claude" } = {}) {
   return { changed, provider, settingsPath: cfg.settingsPath };
 }
 
-/** True when ~/.codex/ exists — used by CLI to default-enable Codex hooks. */
+/** True when ~/.codex/ exists — the CLI's default answer to whether the Codex
+ *  rollout watcher is worth starting, and whether there are hooks to remove. */
 export function hasCodexInstalled() {
   return existsSync(CODEX_DIR);
 }
@@ -506,7 +501,7 @@ export function keepDiscovery({ port, workspace, token, persist = null, codex = 
   return { file: discoveryPath(), check, stop: () => clearInterval(timer) };
 }
 
-export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS, CODEX_EVENTS };
+export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS };
 // Exported for the other modules that rewrite settings.json — the sound toggle
 // today. Every one of them needs the same two guarantees: a file we cannot
 // parse is never treated as an empty one, and the replacement is a single

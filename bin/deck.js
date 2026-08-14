@@ -87,8 +87,10 @@ const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
 const { startServer, hookToken, releaseRestart } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
 
-// Codex hooks install when ~/.codex/ exists, unless --no-codex was passed.
-// --codex forces install even if the dir is missing (creates it).
+// Whether the server starts the Codex rollout watcher. Nothing is installed
+// and no directory is created either way — Codex hooks are not used any more,
+// so `--codex` only means "watch even though ~/.codex/ is not there yet",
+// which is the right answer for a machine where Codex arrives later.
 const wantCodex = flags.noCodex
   ? false
   : (flags.codex === true || hasCodexInstalled());

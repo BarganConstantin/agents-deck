@@ -18,10 +18,9 @@
 // goes through one mutex.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { looksMissing, run, runDetached, runInteractive } from "./exec.mjs";
-import { invalidateClaudeAccountsCache } from "./claude-accounts.mjs";
+import { backupRoot, invalidateClaudeAccountsCache } from "./claude-accounts.mjs";
 import { cswapBin } from "./cswap-install.mjs";
 
 // An OAuth code is short-lived at the source; there is no point holding a child
@@ -35,16 +34,6 @@ const CODE_VERDICT_MS = 60_000;
 // machine, short enough that a copy left in clipboard history goes stale.
 export const SHARE_TTL_MS = 10 * 60_000;
 const SHARE_PREFIX = "ccdeck1:";
-
-function backupRoot() {
-  if (process.env.CLAUDE_SWAP_BACKUP) return process.env.CLAUDE_SWAP_BACKUP;
-  if (process.platform === "linux") {
-    return process.env.XDG_DATA_HOME
-      ? join(process.env.XDG_DATA_HOME, "claude-swap")
-      : join(homedir(), ".local", "share", "claude-swap");
-  }
-  return join(homedir(), ".claude-swap-backup");
-}
 
 // ── serialization ────────────────────────────────────────────────────────────
 

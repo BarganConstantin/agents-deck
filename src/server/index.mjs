@@ -1914,9 +1914,12 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
   throw Object.assign(new Error(`all ports tried — none available`), { code: "EADDRINUSE" });
 }
 
-// Allow running this file directly for dev.
+// Allow running this file directly for dev (`npm run dev:server`). The port
+// variable is the CLI's, deliberately: this block spent two renames reading a
+// name from the project's first identity that no README ever documented, so
+// the one variable people know worked everywhere except here.
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const port = Number(process.env.CCGRAPH_PORT ?? 4317);
+  const port = Number(process.env.AGENT_DAG_PORT ?? 4317);
   startServer({ port }).then(s => {
     const addr = s.address();
     const p = typeof addr === "object" && addr ? addr.port : port;
