@@ -19,6 +19,7 @@ import Confetti from "./Confetti";
 import { isLoginOver, loginEndNotice, shouldPollLogin, type LoginServerState } from "../login-flow";
 import { createLoginAnnouncer } from "../login-announce";
 import { explainFailure } from "../admin-failure";
+import { useModalDismiss } from "./use-modal-dismiss";
 
 /** Server-side login progress, polled while the dialog is open. */
 type LoginState = {
@@ -79,11 +80,10 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     onClose();
   }, [onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
+  // `close`, not `onClose`: Escape has to cancel the sign-in running on the
+  // server, exactly as the × does. The dialog picks its own first field per
+  // tab, so no focusRef here.
+  useModalDismiss(close);
 
   // Started by the button, never by arriving. `claude auth login` opens a
   // browser tab as its first act, and a dialog that does that before being

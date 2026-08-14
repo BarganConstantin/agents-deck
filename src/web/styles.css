@@ -603,15 +603,24 @@ button.btn.icon-btn {
 .ver-banner .ver-auto.on { color: var(--warn); }
 .ver-banner .ver-auto.on i { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 
+/* A <button> now, so the element brings its own border and background to strip.
+   24px is the floor SC 2.5.8 sets and this was 18: the exception for an
+   undersized target needs 24px of clear space around it, and margin-left: 2px
+   puts this well inside the neighbouring .ver-cmd. The glyph stays at 14px —
+   the box grew, the × did not. */
 .ver-banner .ver-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   margin-left: 2px;
   flex: none;
-  width: 18px; height: 18px;
+  width: 24px; height: 24px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
+  background: none;
   color: var(--muted);
+  font: inherit;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
