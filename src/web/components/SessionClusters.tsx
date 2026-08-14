@@ -138,24 +138,29 @@ export default function SessionClusters() {
     <div className="session-clusters">
       {clusters.map(c => {
         const hue = sessionHue(c.sessionId);
+        // Only the hue. The four colours these two elements used to carry —
+        // label, rim, card border, card wash — were composed here at a
+        // lightness tuned for the dark canvas, which made them the one part of
+        // the palette that could not answer to data-theme; the label measured
+        // 1.21:1 on white across the hue circle. The hue is the half this
+        // component actually knows (it is a hash of the session id); the half
+        // that depends on the theme belongs to the sheet, and is there now.
         const boxStyle: React.CSSProperties = {
           position: "absolute",
           left: c.x * zoom + x,
           top: c.y * zoom + y,
           width: c.w * zoom,
           height: c.h * zoom,
-          borderColor: `hsl(${hue} 65% 55% / 0.32)`,
-          background: `hsl(${hue} 70% 50% / 0.04)`,
-        };
+          "--session-hue": hue,
+        } as React.CSSProperties;
         const labelStyle: React.CSSProperties = {
           position: "absolute",
           left: c.x * zoom + x + 16 * zoom,
           top: (c.y - LABEL_LIFT) * zoom + y,
-          color: `hsl(${hue} 70% 78%)`,
-          borderColor: `hsl(${hue} 65% 55% / 0.5)`,
           transform: `scale(${Math.min(1, zoom)})`,
           transformOrigin: "left top",
-        };
+          "--session-hue": hue,
+        } as React.CSSProperties;
         return (
           <React.Fragment key={c.sessionId}>
             <div className="cluster-card" style={boxStyle} aria-hidden />

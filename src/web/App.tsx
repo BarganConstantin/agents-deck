@@ -479,7 +479,6 @@ function snapshotToFlow(
     });
     if (a.parentId && visibleIds.has(a.parentId)) {
       const hue = sessionHue(a.sessionId);
-      const stroke = a.state === "active" ? `hsl(${hue} 80% 72%)` : `hsl(${hue} 50% 55%)`;
       const edgeDim = query && (!matchSet.has(a.id) && !matchSet.has(a.parentId));
       const fading = exiting;
       // Selected-edge emphasis: thicker stroke + animated for edges that
@@ -492,10 +491,16 @@ function snapshotToFlow(
       const effectiveOpacity = edgeDim || fading
         ? 0.2
         : spotlitOutEdge ? 0.12 : 1;
+      // The class picks the tier, the tier picks the lightness. Which of the
+      // two an edge wears is a state this loop owns; how bright that state has
+      // to be to survive its canvas is the sheet's, and used to be decided
+      // here at a value tuned for #0b0c10 (1.19:1 on white at its worst hue).
       const cls = [
+        "sess-edge",
+        a.state === "active" ? "sess-live" : "sess-idle",
         fading ? "rf-edge-exiting" : "",
         isSelectedEdge ? "rf-edge-selected" : "",
-      ].filter(Boolean).join(" ") || undefined;
+      ].filter(Boolean).join(" ");
       edges.push({
         id: `e:${a.parentId}->${a.id}`,
         source: a.parentId,
@@ -503,7 +508,7 @@ function snapshotToFlow(
         animated: (a.state === "active" || isSelectedEdge) && !edgeDim && !fading,
         type: "smoothstep",
         // No edge label — the target node already displays the agent name.
-        style: { stroke, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "opacity 500ms ease, stroke-width 200ms ease" },
+        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "opacity 500ms ease, stroke-width 200ms ease" } as React.CSSProperties,
         className: cls,
       });
     }
@@ -2080,7 +2085,7 @@ function Inner() {
                   <span
                     key={s.server}
                     className="mcp-dot"
-                    style={{ background: `hsl(${s.hue} 65% 65%)` }}
+                    style={{ "--mcp-hue": s.hue } as React.CSSProperties}
                   />
                 ))}
                 {mcpServers.length > 6 && <span className="mcp-more">+{mcpServers.length - 6}</span>}

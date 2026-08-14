@@ -828,10 +828,12 @@ function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerP
         const titleHead = b.isSub ? `${b.toolName} · ${b.name}` : b.toolName;
         const title = b.inputPreview ? `${titleHead} · ${b.inputPreview}` : titleHead;
         const clickable = onOpenTool != null;
-        // For unknown MCP servers we set --cat-accent inline so each one
-        // gets a distinct hue without needing a static class.
-        const innerStyle: React.CSSProperties & Record<string, string> = b.mcpHue != null
-          ? { "--cat-accent": `hsl(${b.mcpHue} 65% 65%)` }
+        // For unknown MCP servers we hand the sheet the hashed hue and let
+        // .tool-burst.cat-mcp.mcp-hue build --cat-accent from it, so the same
+        // server reads the same on either canvas — the literal colour that
+        // used to be here was 1.40:1 on a white bubble at its worst hue.
+        const innerStyle: React.CSSProperties & Record<string, string | number> = b.mcpHue != null
+          ? { "--mcp-hue": b.mcpHue }
           : {};
         const isDimmed = dimUnmatched != null && !dimUnmatched.has(b.agentId);
         const isSpotOut = spotlight != null && !spotlight.has(b.agentId);
@@ -839,7 +841,7 @@ function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerP
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
             <div
-              className={`tool-burst cat-${b.category} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}${dimClass}`}
+              className={`tool-burst cat-${b.category}${b.mcpHue != null ? " mcp-hue" : ""} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}${dimClass}`}
               style={innerStyle}
               title={title}
               role={clickable ? "button" : undefined}
