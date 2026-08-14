@@ -83,12 +83,65 @@ export function isGitCheckout(pkgRoot) {
   try { return existsSync(join(pkgRoot, ".git")); } catch { return false; }
 }
 
+// ── npx ──────────────────────────────────────────────────────────────────────
+//
+// An npx run lives in ~/.npm/_npx/<hash>/node_modules/<pkg>. The hash is over
+// the SPEC the user typed, so upgrading means fetching a different directory —
+// there is nothing to install over. What there IS, is the spec itself: npm
+// writes it into <hash>/package.json as `_npx.packages`, which is the only
+// record of whether the user typed `ccdeck`, `agent-dag` or `agents-deck`.
+// Re-running the wrong one would work but would leave them on a package they
+// never asked for, so it is worth reading rather than guessing.
+
+/** The `_npx/<hash>` directory this package was unpacked into, or null. Pure —
+ *  path arithmetic only, so both platforms' separators can be tested. */
+export function npxRoot(pkgRoot) {
+  if (typeof pkgRoot !== "string") return null;
+  const parts = pkgRoot.split(/[\\/]/);
+  const i = parts.lastIndexOf("_npx");
+  if (i === -1 || i + 1 >= parts.length) return null;
+  // Keep the separator the input used: a Windows path must come back as one.
+  const sep = pkgRoot.includes("\\") && !pkgRoot.includes("/") ? "\\" : "/";
+  return parts.slice(0, i + 2).join(sep);
+}
+
+/** Package name out of an npm spec, scope intact: `ccdeck@1.2.3` → `ccdeck`,
+ *  `@scope/pkg` → `@scope/pkg`. Null for anything that is not a plain name —
+ *  a tarball URL or a git spec is not something to re-run with `@latest`. */
+export function bareSpecName(spec) {
+  if (typeof spec !== "string") return null;
+  const s = spec.trim();
+  if (!s) return null;
+  const at = s.lastIndexOf("@");
+  const name = at > 0 ? s.slice(0, at) : s;
+  return /^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i.test(name) ? name : null;
+}
+
+/** What to hand `npx -y`, read from the cache directory's own metadata. */
+export function npxSpecFromMeta(meta, fallback = "agents-deck") {
+  const list = meta && meta._npx && Array.isArray(meta._npx.packages) ? meta._npx.packages : [];
+  for (const entry of list) {
+    const name = bareSpecName(entry);
+    if (name) return `${name}@latest`;
+  }
+  return `${fallback}@latest`;
+}
+
+/** The same, answered against the filesystem. Null when this is not an npx run. */
+export function npxRestartSpec(pkgRoot, name = "agents-deck") {
+  const root = npxRoot(pkgRoot);
+  if (!root) return null;
+  let meta = null;
+  try { meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")); } catch { /* fall back to the name */ }
+  return npxSpecFromMeta(meta, name);
+}
+
 /** The exact line the user can paste, for the way THIS copy was installed. */
 export function upgradeCommand(pkgRoot, name = "agents-deck") {
   // A checkout is updated by pulling, and the bundle is built, not shipped —
   // so `npm run build` is part of the answer rather than an afterthought.
   if (isGitCheckout(pkgRoot)) return "git pull && npm run build";
-  if (isNpxInstall(pkgRoot)) return `npx -y ${name}@latest`;
+  if (isNpxInstall(pkgRoot)) return `npx -y ${npxRestartSpec(pkgRoot, name) ?? `${name}@latest`}`;
   return `npm i -g ${name}@latest`;
 }
 
@@ -190,6 +243,23 @@ export function upgradeBlockedReason({ git, npx, writable, optedOut }) {
   // tells the user less than declining up front does.
   if (!writable) return "not_writable";
   return null;
+}
+
+/**
+ * How this copy can update itself, if it can at all.
+ *
+ *   "install" — `npm i -g` here and restart into the new files.
+ *   "npx"     — nothing to install: the supervisor re-runs `npx -y <spec>`,
+ *               which fetches a NEW cache directory and hands the port to it.
+ *   null      — a checkout, an unwritable prefix, or an explicit opt-out; the
+ *               user gets the command and does it themselves.
+ *
+ * Pure, so the policy is one readable expression rather than three conditions
+ * spread across the server and the UI.
+ */
+export function upgradeMode(blockedReason) {
+  if (blockedReason === null || blockedReason === undefined) return "install";
+  return blockedReason === "npx" ? "npx" : null;
 }
 
 function dirWritable(p) {
@@ -296,6 +366,7 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     process.env.AGENTS_DECK_NO_UPDATE_CHECK === "1" ||
     process.env.AGENTS_DECK_NO_INSTALL === "1";
   const latest = skipRegistry ? null : await latestOnNpm(name, now);
+  const blocked = upgradeBlock(pkgRoot);
   return {
     name,
     running: running ?? null,
@@ -303,9 +374,11 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     latest,
     notice: pickNotice({ running, installed, latest }),
     command: upgradeCommand(pkgRoot, name),
-    // Why the Update button is absent, when it is — so the UI can say so
-    // instead of leaving a gap the user has to guess about.
-    upgradeBlocked: upgradeBlock(pkgRoot),
+    // Why an in-app `npm i -g` is refused, when it is — so the UI can say so
+    // instead of leaving a gap the user has to guess about. "npx" is a refusal
+    // of the install, not of the update: upgradeMode says so.
+    upgradeBlocked: blocked,
+    upgradeMode: upgradeMode(blocked),
     upgrade: upgradeStatus(),
   };
 }

@@ -89,8 +89,11 @@ type VersionInfo = {
   // False when nothing is supervising the process, or when --no-persist means a
   // restart would take the canvas with it.
   canRestart?: boolean;
-  /** Why an in-app install is refused here, or null when it is allowed. */
+  /** Why an in-app `npm i -g` is refused here, or null when it is allowed. */
   upgradeBlocked?: string | null;
+  /** How this copy can update itself: install in place, come back through npx,
+   *  or not at all — in which case the command is the whole answer. */
+  upgradeMode?: "install" | "npx" | null;
   upgrade?: { state: "idle" | "running" | "done" | "failed"; command: string | null; error: string | null };
 };
 
@@ -795,26 +798,39 @@ function Inner() {
     });
   }, []);
   const [restarting, setRestarting] = useState(false);
+  // "npx" gets its own word everywhere, because it is a download and not a
+  // process restart: it takes tens of seconds, and a banner that says
+  // "restarting…" for a minute reads as a hang.
+  const [restartMode, setRestartMode] = useState<"restart" | "npx">("restart");
   const [restartedTo, setRestartedTo] = useState<string | null>(null);
   const restartAskedRef = useRef(false);
-  const askRestart = useCallback(async () => {
+  const askRestart = useCallback(async (opts?: { upgrade?: boolean }) => {
     if (restartAskedRef.current) return;
+    const upgrade = opts?.upgrade === true;
     restartAskedRef.current = true;
+    setRestartMode(upgrade ? "npx" : "restart");
     setRestarting(true);
     // Remembered across the reconnect so the deck can confirm what it landed
     // on rather than claiming success the moment the request was accepted.
     try { window.sessionStorage.setItem("agent-dag.restartPending", notice?.to ?? ""); } catch {}
     // The socket dying IS the restart, so a rejection here is a success signal
     // as often as a failure one — neither is worth acting on.
-    try { await fetch("/api/restart", { method: "POST" }); } catch { /* expected */ }
+    try {
+      await fetch("/api/restart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upgrade }),
+      });
+    } catch { /* expected */ }
     // Nothing came back. Rather than leave a disabled button and a banner
-    // frozen on "restarting…", hand the control back so it can be tried again.
+    // frozen mid-sentence, hand the control back so it can be tried again —
+    // after long enough that an npx fetch on a slow line is not cut short.
     window.setTimeout(() => {
       if (!restartAskedRef.current) return;
       restartAskedRef.current = false;
       setRestarting(false);
       try { window.sessionStorage.removeItem("agent-dag.restartPending"); } catch {}
-    }, 30_000);
+    }, upgrade ? 180_000 : 30_000);
   }, [notice?.to]);
 
   // Nothing running for a sustained stretch is the only safe moment: a restart
@@ -1878,7 +1894,11 @@ function Inner() {
       ) : everConnected && !live ? (
         <div className="conn-banner" role="alert">
           <span className="conn-dot" />
-          {restarting ? "Restarting agents-deck…" : "Lost connection to agents-deck server. Reconnecting…"}
+          {restarting
+            ? restartMode === "npx"
+              ? "Fetching the new version with npx — this can take a minute…"
+              : "Restarting agents-deck…"
+            : "Lost connection to agents-deck server. Reconnecting…"}
         </div>
       ) : noticeOpen && notice && (
         // Both banners want grid row 2, and a dead connection is the more
@@ -1890,7 +1910,7 @@ function Inner() {
               <strong>v{notice.to} is installed — this deck still runs v{notice.from}.</strong>
               {version?.canRestart ? (
                 <>
-                  <button type="button" className="ver-act" onClick={askRestart} disabled={restarting}
+                  <button type="button" className="ver-act" onClick={() => askRestart()} disabled={restarting}
                     title="Stop this process and bring it back on the same port. The canvas replays from the event log.">
                     {restarting ? "restarting…" : "Restart now"}
                   </button>
@@ -1914,7 +1934,7 @@ function Inner() {
               <strong>agents-deck v{notice.to} is out — you are on v{notice.from}.</strong>
               {/* One button when we can actually install; the command, always,
                   because the button can fail and the command never does. */}
-              {!version?.upgradeBlocked && upgradeState !== "failed" && (
+              {version?.upgradeMode === "install" && upgradeState !== "failed" && (
                 <button type="button" className="ver-act" onClick={startUpgrade}
                   disabled={upgradeState === "running" || upgradeState === "done"}
                   title={`Runs ${version?.upgrade?.command ?? "npm install -g agents-deck@latest"} here, then restarts once nothing is running.`}>
@@ -1923,9 +1943,25 @@ function Inner() {
                     : "Update now"}
                 </button>
               )}
+              {/* npx never installs anything — there is nothing here to install
+                  over. The update IS the restart: the supervisor re-runs the
+                  spec, npx unpacks a fresh copy, and it takes this port. */}
+              {version?.upgradeMode === "npx" && version?.canRestart && (
+                <button type="button" className="ver-act" onClick={() => askRestart({ upgrade: true })}
+                  disabled={restarting}
+                  title={`Runs ${version?.command} and hands it this port. Nothing is installed globally — npx unpacks its own copy.`}>
+                  {restarting ? "fetching…" : "Update & restart"}
+                </button>
+              )}
               {upgradeState === "failed" ? (
                 <span className="ver-sub fail" title={version?.upgrade?.error ?? ""}>
                   install failed: {version?.upgrade?.error ?? "unknown error"} — run it yourself:
+                </span>
+              ) : version?.upgradeMode === "npx" ? (
+                <span className="ver-sub">
+                  {version?.canRestart
+                    ? "npx cannot upgrade in place, so the deck re-runs:"
+                    : UPGRADE_BLOCK_TEXT.npx}
                 </span>
               ) : version?.upgradeBlocked ? (
                 <span className="ver-sub">
