@@ -15,6 +15,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawnSpec } from "./exec.mjs";
 
 const CACHE_MS = 120_000; // 2 min — modal is manual-open; cheap to keep warm
 const TIMEOUT_MS = 90_000;
@@ -27,12 +28,26 @@ const MARKER = path.join(CACHE_DIR, ".last-update-check");
 
 const _cache = new Map(); // key `${since}|${until}` → { result, at }
 
-// npm is a .cmd shim on Windows, which spawn can only launch through a shell.
-// Everywhere else shell:false — with a shell, Node warns that arguments are
-// concatenated rather than escaped, and the warning lands in our startup
-// banner now that these run at boot.
-const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
-const NPM_SHELL = process.platform === "win32";
+// npm is a .cmd shim on Windows, which spawn can only launch through cmd.exe.
+// `shell: true` is the tempting way to get there and the wrong one: Node then
+// joins file and args with single spaces and no quoting, so on a profile like
+// C:\Users\John Smith the `--prefix <CACHE_DIR>` below arrived as
+// `--prefix C:\Users\John` plus a bogus package spec `Smith\.agents-deck\...`,
+// npm exited non-zero, and the managed install never materialised. spawnSpec
+// routes the .cmd through cmd.exe with every argument quoted, and hands back
+// the argument vector untouched everywhere else.
+function npmSpec(args, platform = process.platform) {
+  return spawnSpec(platform === "win32" ? "npm.cmd" : "npm", args, platform);
+}
+
+/**
+ * What `spawn` gets for `npm install ccusage@<spec>`.
+ * Exported for tests: the platform is a parameter so the Windows command line
+ * can be checked from any OS.
+ */
+export const installSpec = (spec = "latest", platform = process.platform) =>
+  npmSpec(["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
+    "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"], platform);
 
 let _installing = null;   // Promise guard so concurrent calls share one install
 let _checkedThisRun = false; // only kick the daily check once per process boot
@@ -68,11 +83,11 @@ function resolveEntry() {
 // the first-run cold path (we must have a binary before we can answer).
 function installSync(spec = "latest") {
   mkdirSync(CACHE_DIR, { recursive: true });
+  const { file, args, opts } = installSpec(spec);
   const r = spawnSync(
-    NPM,
-    ["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
-     "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"],
-    { shell: NPM_SHELL, windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8" },
+    file,
+    args,
+    { windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8", ...opts },
   );
   if (r.status !== 0) {
     throw new Error(`npm install ccusage failed: ${(r.stderr || "").trim() || r.status}`);
@@ -83,11 +98,11 @@ function installSync(spec = "latest") {
 function installAsync(spec = "latest") {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
+    const { file, args, opts } = installSpec(spec);
     const child = spawn(
-      NPM,
-      ["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
-       "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"],
-      { shell: NPM_SHELL, windowsHide: true, detached: false, stdio: "ignore" },
+      file,
+      args,
+      { windowsHide: true, detached: false, stdio: "ignore", ...opts },
     );
     child.on("error", () => {});
     child.unref?.();
@@ -118,8 +133,8 @@ function maybeBackgroundUpdate(installedVersion) {
   _checkedThisRun = true;
   touchMarker();
   try {
-    const child = spawn(NPM, ["view", "ccusage", "version"],
-      { shell: NPM_SHELL, windowsHide: true });
+    const { file, args, opts } = npmSpec(["view", "ccusage", "version"]);
+    const child = spawn(file, args, { windowsHide: true, ...opts });
     let out = "";
     child.stdout.on("data", d => { out += d; });
     child.on("error", () => {});
