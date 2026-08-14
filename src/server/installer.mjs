@@ -4,7 +4,7 @@
 // Both providers share the discovery dir at <claude config dir>/agent-dag/ so a
 // single running server can receive events from either CLI. Re-runs are safe;
 // entries are tagged with __agent-dag and de-duped.
-import { readFile, writeFile, mkdir, unlink, rename, open, stat, chmod } from "node:fs/promises";
+import { readFile, mkdir, unlink, rename, open, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -309,13 +309,41 @@ function persistField(persist) {
   return typeof persist === "string" && persist !== "" ? persist : null;
 }
 
-// The token is the deck's proof of identity, so the file holding it is the
-// deck's key material: readable and writable by its owner, nobody else. Windows
-// ignores the mode (NTFS ACLs inherit from the profile directory, which is
-// already per-user), and a file left over from an earlier run under a recycled
-// pid keeps its old mode through writeFile, hence the explicit chmod.
+// Every deck's token lives in this directory, and writeFileAtomic's temp file is
+// created beside its target with whatever the umask allows — 0644 on most
+// machines — so for the moment before the rename the token would sit in a
+// world-readable file. 0700 on the directory closes that window from the outside:
+// another user cannot traverse into it whatever the mode of a file inside says.
+// The dir usually predates this code, so the mode is re-asserted rather than only
+// set at creation, where it would be masked by the umask anyway. Windows ignores
+// both — NTFS ACLs inherit from the per-user profile directory.
+async function ensureDiscoveryDir() {
+  if (!existsSync(AGENT_DAG_DIR)) await mkdir(AGENT_DAG_DIR, { recursive: true, mode: 0o700 });
+  await chmod(AGENT_DAG_DIR, 0o700).catch(() => {});
+}
+
+/**
+ * Register this deck, in one step no reader can land inside.
+ *
+ * The record used to go down with a plain writeFile, which truncates the target
+ * and then fills it, so the file existed and was empty for a moment on every
+ * rewrite. Everything that reads this directory parses each record whole —
+ * electWriters in hook/hook.js, readLiveDecks and sweepStaleDiscovery in
+ * index.mjs — and a record that fails to parse is a deck missing from that
+ * cycle: the event it should have logged is either logged by nobody or logged
+ * twice by the decks that remain, which is the exact failure the single-writer
+ * election exists to prevent, reached through the file the election reads. A
+ * rename is atomic on Linux, macOS and Windows alike, so a reader now sees the
+ * previous record or the new one and never half of either.
+ *
+ * The token is the deck's proof of identity, so the file holding it is the
+ * deck's key material: readable and writable by its owner, nobody else. The mode
+ * is pinned after the write because writeFileAtomic can only carry over a mode
+ * the target already had — a first registration, or one left by an earlier run
+ * under a recycled pid, would otherwise keep whatever the umask handed it.
+ */
 export async function writeDiscovery({ port, workspace, token, persist = null, codex = true }) {
-  await ensureDir(AGENT_DAG_DIR);
+  await ensureDiscoveryDir();
   const file = discoveryPath();
   const data = {
     pid: process.pid,
@@ -338,7 +366,7 @@ export async function writeDiscovery({ port, workspace, token, persist = null, c
     codex: codex !== false,
     startedAt: new Date().toISOString(),
   };
-  await writeFile(file, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await writeFileAtomic(file, JSON.stringify(data, null, 2) + "\n");
   await chmod(file, 0o600).catch(() => {});
   return file;
 }
@@ -405,7 +433,7 @@ export function keepDiscovery({ port, workspace, token, persist = null, codex = 
   // reported — the caller learns where it stands before anything else happens.
   let healthy = null;
 
-  const check = async () => {
+  const run = async () => {
     let state;
     try {
       const { rewritten } = await ensureDiscovery({ port, workspace, token, persist, codex });
@@ -418,6 +446,16 @@ export function keepDiscovery({ port, workspace, token, persist = null, codex = 
     if (worthSaying && onState) { try { onState(state); } catch { /* not our problem */ } }
     return state;
   };
+
+  // One check at a time. Registration is a write and a write is now a rename,
+  // which costs an fsync — long enough that a tick can land inside the boot-time
+  // check bin/deck.js runs by hand. That second check reads a file the first has
+  // not renamed into place yet, concludes the deck is unregistered and writes it
+  // again, and the two writes race over one record: the deck reports itself
+  // unregistered on a machine where nothing whatsoever is wrong. A caller that
+  // asks mid-check gets the answer the check already in flight is fetching.
+  let inFlight = null;
+  const check = () => (inFlight ??= run().finally(() => { inFlight = null; }));
 
   const timer = setInterval(() => { check(); }, intervalMs);
   timer.unref?.();
