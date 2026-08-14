@@ -61,6 +61,23 @@ describe("autoLayout — nodes never share space", () => {
     expect(b1.position.y).toBeGreaterThan(600 + H);        // and cleared
   });
 
+  it("does not stack the next session below a pin parked beside the column", () => {
+    // A pin's coordinate is a canvas one; the session it belongs to is packed
+    // from its own origin. Folding the pin's absolute offset into the session's
+    // size made a card dragged to (1200, 800) claim 930px of height for a
+    // session whose real block is one card, so the next session started below
+    // an empty band it never needed to clear.
+    const nodes = [agent("a1", "sa"), agent("a2", "sa"), agent("b1", "sb")];
+    const measured = sizes(["a1", "a2", "b1"]);
+    const pinned = new Map([["a2", { x: 1200, y: 800 }]]);
+
+    const out = autoLayout(nodes, [], { measured, pinned });
+    const b1 = out.find(n => n.id === "b1")!;
+    expect(b1.position.x).toBeLessThan(1200);   // the pin is not in this column
+    expect(b1.position.y).toBeLessThan(800);    // so nothing has to clear it
+    expect(overlaps(out, measured)).toEqual([]);
+  });
+
   it("leaves no gap where a pinned node used to sit", () => {
     // A pinned node is out of the flow, so the remaining nodes should close
     // up rather than lay themselves out around an empty reserved slot.
@@ -176,6 +193,24 @@ describe("autoLayout — packs sessions into columns", () => {
     // Capped: a very wide canvas must not keep splitting into thin columns,
     // which shrinks the fit zoom until the cards are unreadable.
     expect(colsUsed(autoLayout(nodes, [], { ...opts, availableWidth: 9000 }))).toBe(2);
+  });
+
+  it("keeps the second column when a member is pinned far to the right", () => {
+    // A session's width used to be max(width, pin.x + card), so one card
+    // dragged to x=1200 made its session report itself 1460 wide, the two
+    // columns no longer "fit" the canvas, and everything collapsed into one
+    // very tall strip.
+    const nodes = [...sessions(6), agent("s0n1", "s0")];
+    const measured = sizes(nodes.map(n => n.id));
+    const pinned = new Map([["s0n1", { x: 1200, y: 800 }]]);
+
+    const out = autoLayout(nodes, [], {
+      measured, pinned, availableWidth: 2400, availableHeight: 400,
+    });
+    // Count the columns the packer built, not the pin sitting off to the side.
+    const flowed = out.filter(n => n.id !== "s0n1");
+    expect(new Set(flowed.map(n => Math.round(n.position.x))).size).toBe(2);
+    expect(overlaps(out, measured)).toEqual([]);
   });
 
   it("leaves room for the tool-burst lane beside each card", () => {

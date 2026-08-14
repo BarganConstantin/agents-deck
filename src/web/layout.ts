@@ -100,6 +100,15 @@ function laneHeight(id: string, lanes: Lanes | undefined): number {
   return n > 0 ? 6 + n * 36 : 0;
 }
 
+/**
+ * Where a session's dragged members sit, in CANVAS coordinates.
+ *
+ * Deliberately kept apart from the session's own width/height, which are
+ * measured from its own (0, 0) origin: the two are different frames and mixing
+ * them makes a session claim its distance from the canvas origin as size.
+ */
+interface PinnedBox { minX: number; minY: number; maxX: number; maxY: number }
+
 function layoutSession(
   ids: string[],
   edges: Edge[],
@@ -107,7 +116,12 @@ function layoutSession(
   measured: Map<string, { width: number; height: number }>,
   pinned: Map<string, { x: number; y: number }>,
   lanes?: Lanes,
-): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
+): {
+  positions: Map<string, { x: number; y: number }>;
+  width: number;
+  height: number;
+  pinnedBox: PinnedBox | null;
+} {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
@@ -169,21 +183,37 @@ function layoutSession(
   if (Number.isFinite(minX) && Number.isFinite(minY)) {
     for (const [id, p] of positions) positions.set(id, { x: p.x - minX, y: p.y - minY });
   }
-  let width = Number.isFinite(maxX) ? maxX - minX : 0;
-  let height = Number.isFinite(maxY) ? maxY - minY : 0;
+  const width = Number.isFinite(maxX) ? maxX - minX : 0;
+  const height = Number.isFinite(maxY) ? maxY - minY : 0;
 
   // The session's cluster box is drawn around every member, pinned ones
   // included, so the space it claims has to account for them too — otherwise
-  // the next session is stacked under the flowing content and straight
-  // through a node that was dragged below it.
+  // the next session is stacked under the flowing content and straight through
+  // a node that was dragged below it.
+  //
+  // A pin's coordinate is the canvas one the user dropped it at, though, while
+  // everything above is measured from the session's own origin. Folding p.x/p.y
+  // into width/height compared the two frames: a card dragged to (1200, 800)
+  // made its session report itself 1440 wide and 930 tall when its real block
+  // is one card, which wraps the columns early and stacks the next session
+  // below a band that holds nothing. The pinned box is reported separately and
+  // reconciled by the packer, which is where the session's canvas origin is
+  // finally known.
+  let pinnedBox: PinnedBox | null = null;
   for (const id of ids) {
     const p = pinned.get(id);
     if (!p) continue;
     const m = measured.get(id);
-    width  = Math.max(width,  p.x + (m?.width  ?? NODE_W));
-    height = Math.max(height, p.y + (m?.height ?? NODE_H));
+    const w = m?.width ?? NODE_W;
+    const h = m?.height ?? NODE_H;
+    pinnedBox = pinnedBox === null ? { minX: p.x, minY: p.y, maxX: p.x + w, maxY: p.y + h } : {
+      minX: Math.min(pinnedBox.minX, p.x),
+      minY: Math.min(pinnedBox.minY, p.y),
+      maxX: Math.max(pinnedBox.maxX, p.x + w),
+      maxY: Math.max(pinnedBox.maxY, p.y + h),
+    };
   }
-  return { positions, width, height };
+  return { positions, width, height, pinnedBox };
 }
 
 export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {}): Node[] {
@@ -253,12 +283,24 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   const finalPositions = new Map<string, { x: number; y: number }>();
   let offsetX = 0;
   for (const col of columns) {
+    const colW = widthOf(col);
     let cursorY = 0;
-    for (const { positions, height } of col) {
+    for (const { positions, height, pinnedBox } of col) {
       for (const [id, p] of positions) finalPositions.set(id, { x: p.x + offsetX, y: p.y + cursorY });
-      cursorY += height + SESSION_GAP;
+      let bottom = cursorY + height;
+      // Here the session's canvas origin is known, so a dragged member can
+      // finally be compared with it: the rest of the column has to clear a card
+      // the user pulled below its session. Only when the card is in this
+      // column's band, though — a pin parked off to the side is not in the way
+      // of anything stacked here, and treating it as if it were leaves a tall
+      // empty strip that the fit zoom then has to cover.
+      if (pinnedBox && pinnedBox.maxY > bottom &&
+          pinnedBox.minX < offsetX + colW && offsetX < pinnedBox.maxX) {
+        bottom = pinnedBox.maxY;
+      }
+      cursorY = bottom + SESSION_GAP;
     }
-    offsetX += widthOf(col) + gap;
+    offsetX += colW + gap;
   }
 
   return nodes.map(n => {
