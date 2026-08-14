@@ -189,34 +189,54 @@ export function looksMissing(text, name = "") {
   return true;
 }
 
+// How much of a hung child's output the deadline keeps. The full buffers belong
+// to execFile's callback, which a timed-out run never waits for, and the tail is
+// where a tool puts the line that explains itself.
+const TIMEOUT_TAIL = 8 << 10;
+
 /**
  * Run a command and collect its output. Never rejects, and never throws —
  * failures come back as `{ ok: false }`, because every caller here is a poll or
  * a UI action where a missing tool is an expected state rather than an
  * exception. execFile can throw synchronously on Windows, so the call itself is
  * guarded as well as its callback.
+ *
+ * A run stopped by its deadline answers `{ ok: false, code: "ETIMEDOUT",
+ * killed: true, timedOut: true }` — never ok, whatever the child said on its
+ * way out.
  */
 export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
   const tries = candidates(cmd);
   return new Promise((resolve) => {
     const attempt = (i) => {
       if (i >= tries.length) {
-        return resolve({ ok: false, code: "ENOENT", killed: false, stdout: "", stderr: "" });
+        return resolve({ ok: false, code: "ENOENT", killed: false, timedOut: false, stdout: "", stderr: "" });
       }
       const raw = tries[i];
       const { file, args: argv, opts } = isBatch(raw)
         ? viaCmd(raw, args)
         : { file: raw, args, opts: {} };
 
-      // execFile's own `timeout` ends with one signal to the process it
-      // started, which for a batch candidate is the cmd.exe wrapper: the
-      // deadline was reported as enforced while the tool underneath went on
-      // running. A batch candidate is timed here instead, on the whole tree.
       const tree = isBatch(raw);
       let timer = null, timedOut = false;
+      // A tail of what the child managed to say. The deadline below answers
+      // before execFile's callback does, and the callback owns the full
+      // buffers, so without this copy a timed-out run reports nothing at all —
+      // and the last line a hung tool printed is usually the only clue why it
+      // hung.
+      let sawOut = "", sawErr = "";
 
       const done = (err, stdout, stderr) => {
         clearTimeout(timer);
+        // The deadline already gave this attempt its verdict, and killed the
+        // child to make it stop. What the corpse reports is not news, and
+        // believing it is what put "cswap export exited 0" in front of the
+        // user: execFile calls a signalled exit `code: null`, which `?? 0`
+        // turns into a success code, and a tool that handles SIGTERM by
+        // exiting 0 — the well-behaved kind — arrives here with no error at
+        // all, so the run we cut short came back `ok: true` and got its
+        // spelling remembered as one that works.
+        if (timedOut) return;
         // cmd.exe's "is not recognized" counts as "not this spelling" too, and
         // it arrives as a normal non-zero exit rather than a spawn error. Only
         // a batch candidate goes through a shell, so only there can the output
@@ -231,9 +251,8 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
           // A tool cmd.exe could not find is missing, not "exited 1" — callers
           // key their message off this.
           code: missing ? "ENOENT" : (err?.code ?? 0),
-          // Our own tree kill is not `killed` as far as execFile can tell, so
-          // a timeout reports the same either way.
-          killed: Boolean(err?.killed) || timedOut,
+          killed: Boolean(err?.killed),
+          timedOut: false,
           stdout: String(stdout ?? ""),
           stderr: String(stderr ?? ""),
         });
@@ -241,11 +260,27 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
 
       try {
         const cp = execFile(file, argv,
-          { timeout: tree ? 0 : timeout, shell: false, windowsHide: true, maxBuffer, ...opts }, done);
-        if (tree) {
-          timer = setTimeout(() => { timedOut = true; killTree(cp); }, timeout);
-          timer.unref?.();
-        }
+          { timeout: 0, shell: false, windowsHide: true, maxBuffer, ...opts }, done);
+        cp.stdout?.on("data", (d) => { sawOut = (sawOut + d).slice(-TIMEOUT_TAIL); });
+        cp.stderr?.on("data", (d) => { sawErr = (sawErr + d).slice(-TIMEOUT_TAIL); });
+        // The deadline states the outcome itself and only then kills, which is
+        // the order startUpgrade needs for the same reason: the answer must not
+        // depend on the killed child cooperating.
+        //
+        // execFile's own `timeout` is not used at all. It ends with one signal
+        // to the process it started, which for a batch candidate is the cmd.exe
+        // wrapper — the deadline was reported as enforced while the tool
+        // underneath went on running — and it reports through the callback,
+        // which waits for the stdio pipes. On Windows those are held by the
+        // grandchild under the wrapper, so when the tree kill could not reach
+        // it the callback never came and the run never settled at all: the
+        // accounts panel sat on a request that had already timed out.
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve({ ok: false, code: "ETIMEDOUT", killed: true, timedOut: true, stdout: sawOut, stderr: sawErr });
+          killTree(cp);
+        }, timeout);
+        timer.unref?.();
       } catch (err) {
         // Synchronous throw — the EINVAL case. Same handling as a callback
         // error; letting it propagate here is what crashed the server, because
