@@ -77,3 +77,33 @@ describe("shareExpiry", () => {
     expect(withLeft(-30)).toEqual({ text: "expired", tone: "gone" });
   });
 });
+
+// Reported with a screenshot: the ACTIVE account showing a bare `invalid_grant`
+// with nothing to do about it. That string is claude-swap's, not ours, and the
+// two codes that mean "the stored login is dead" are the only failures here that
+// waiting does not fix — so they say so, and the row offers the fix.
+import { errorText } from "../components/AccountsPanel";
+
+describe("errorText", () => {
+  it("turns a dead refresh token into a sentence and an offer", () => {
+    for (const code of ["invalid_grant", "no_refresh_token"]) {
+      const e = errorText(code);
+      expect(e.text).toBe("login expired");
+      expect(e.fixable).toBe(true);
+      expect(e.hint).toMatch(/sign/i);
+    }
+  });
+
+  it("does not offer a re-login for something that clears itself", () => {
+    expect(errorText("http-429")).toMatchObject({ text: "rate limited", fixable: false });
+    expect(errorText("transient")).toMatchObject({ fixable: false });
+    expect(errorText("timeout")).toMatchObject({ text: "timed out", fixable: false });
+  });
+
+  it("still shows a code it has never seen, rather than swallowing it", () => {
+    const e = errorText("teapot");
+    expect(e.text).toBe("teapot");
+    expect(e.fixable).toBe(false);
+    expect(e.hint).toMatch(/teapot/);
+  });
+});

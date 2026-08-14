@@ -487,10 +487,19 @@ function snapshotToFlow(
   // result is worth. Only nodes without a position are laid out, and only
   // nodes that end up overlapping get moved. The relayout button (R) is the
   // way to ask for a full reflow.
+  // How much room each agent's bubbles need. ToolBursts keeps the last four
+  // tools as a permanent trail — no time-based culling — so an agent that has
+  // called a tool occupies its lane for as long as it is on the canvas, and
+  // dagre has to be told. Without it the next rank is placed 160px away and
+  // lands on top of bubbles that reach 420px out.
+  const lanes = new Map<string, number>();
+  for (const a of state.agents.values()) {
+    if (a.tools.length > 0) lanes.set(a.id, Math.min(4, a.tools.length));
+  }
   const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
   if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
-      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight });
+      const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight, lanes });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
       // Finished sessions are pruned as they complete, so the column they were
       // in has holes while new work keeps being appended underneath. Offer the

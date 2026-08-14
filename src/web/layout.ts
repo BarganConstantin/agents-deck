@@ -71,11 +71,33 @@ export interface LayoutOptions {
    * into as many columns as fit; omitted or 0 keeps the single column.
    */
   availableWidth?: number;
+  /**
+   * How many tool bubbles are drawn beside each agent right now.
+   *
+   * Bursts are an overlay rather than nodes, so dagre is blind to them; this is
+   * how it learns that an agent occupies more than its card. Omitted means "no
+   * bubbles anywhere", which is the right answer for a static layout.
+   */
+  lanes?: Lanes;
 }
 
 function sessionOfNode(n: Node): string {
   const sid = (n.data as { sessionId?: string } | undefined)?.sessionId;
   return sid ?? "_default";
+}
+
+/** Bubbles currently drawn beside an agent, by agent id. Absent = none. */
+export type Lanes = Map<string, number>;
+
+/** Horizontal room this agent's bubbles need, or 0 when it has none. */
+function laneWidth(id: string, lanes: Lanes | undefined): number {
+  return (lanes?.get(id) ?? 0) > 0 ? TOOL_LANE_W : 0;
+}
+
+/** Vertical room, from ToolBursts: 6px inset then 36px per bubble. */
+function laneHeight(id: string, lanes: Lanes | undefined): number {
+  const n = lanes?.get(id) ?? 0;
+  return n > 0 ? 6 + n * 36 : 0;
 }
 
 function layoutSession(
@@ -84,6 +106,7 @@ function layoutSession(
   direction: "LR" | "TB",
   measured: Map<string, { width: number; height: number }>,
   pinned: Map<string, { x: number; y: number }>,
+  lanes?: Lanes,
 ): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -104,7 +127,17 @@ function layoutSession(
   const idSet = new Set(free);
   for (const id of free) {
     const m = measured.get(id);
-    g.setNode(id, { width: m?.width ?? NODE_W, height: m?.height ?? NODE_H });
+    // The box handed to dagre is the card PLUS the burst lane beside it.
+    //
+    // Bursts are an overlay, not React Flow nodes, so dagre cannot see them —
+    // and ranksep (160) is far narrower than a lane (420). The next rank
+    // therefore lands on top of this agent's tool bubbles, which is exactly
+    // what a screenshot of five Chrome bubbles piled on each other showed.
+    // Reserving the lane here moves the children clear of it instead.
+    g.setNode(id, {
+      width: (m?.width ?? NODE_W) + laneWidth(id, lanes),
+      height: Math.max(m?.height ?? NODE_H, laneHeight(id, lanes)),
+    });
   }
   for (const e of edges) {
     if (idSet.has(e.source) && idSet.has(e.target)) g.setEdge(e.source, e.target);
@@ -119,8 +152,12 @@ function layoutSession(
     const m = measured.get(id);
     const w = m?.width ?? NODE_W;
     const h = m?.height ?? NODE_H;
-    const x = p.x - w / 2;
-    const y = p.y - h / 2;
+    // dagre centred the card+lane box; the CARD sits at its left edge, so the
+    // reserved space ends up where the bubbles actually are.
+    const boxW = w + laneWidth(id, lanes);
+    const boxH = Math.max(h, laneHeight(id, lanes));
+    const x = p.x - boxW / 2;
+    const y = p.y - boxH / 2;
     positions.set(id, { x, y });
     if (x < minX) minX = x;
     if (y < minY) minY = y;
@@ -153,6 +190,7 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   const direction = opts.direction ?? "LR";
   const pinned = opts.pinned ?? new Map();
   const measured = opts.measured ?? new Map();
+  const lanes = opts.lanes;
 
   const sessions = new Map<string, string[]>();
   for (const n of nodes) {
@@ -167,7 +205,7 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   const sessionOrder = Array.from(sessions.keys()).sort();
   const laid = sessionOrder.map(sid => ({
     sid,
-    ...layoutSession(sessions.get(sid)!, edges, direction, measured, pinned),
+    ...layoutSession(sessions.get(sid)!, edges, direction, measured, pinned, lanes),
   }));
 
   // One column per session-width that fits the canvas. Columns are as wide as

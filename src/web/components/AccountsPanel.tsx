@@ -98,12 +98,41 @@ function due(nextAt: number | null, nowSec: number): string {
 }
 
 /** Plain-language version of claude-swap's error codes. */
-function errorText(code: string): string {
-  if (code === "http-429") return "rate limited";
-  if (code === "http-401") return "re-login needed";
-  if (code === "timeout")  return "timed out";
-  if (code === "network")  return "unreachable";
-  return code;
+/**
+ * claude-swap's failure codes, said in the product's voice.
+ *
+ * These come straight out of its store, and the panel used to print whatever it
+ * found — which is how a user ended up looking at `invalid_grant` on their
+ * ACTIVE account with nothing to do about it. Two of these are permanent and
+ * only the user can clear them: the stored refresh token is dead, and every
+ * poll will keep failing until someone signs in again. Those get `fixable`, and
+ * the row grows a button.
+ */
+export function errorText(code: string): { text: string; hint: string; fixable: boolean } {
+  switch (code) {
+    case "invalid_grant":
+    case "no_refresh_token":
+      return {
+        text: "login expired",
+        hint: "claude-swap's stored login for this account was rejected and cannot be refreshed. "
+            + "Signing in again replaces it — the account keeps its slot, its alias and its history.",
+        fixable: true,
+      };
+    case "http-401":
+      return { text: "re-login needed", hint: "Anthropic refused this account's token.", fixable: true };
+    case "http-429":
+      return { text: "rate limited", hint: "Anthropic is throttling requests for this account. It clears on its own.", fixable: false };
+    case "transient":
+      return { text: "temporary error", hint: "A network or server hiccup while reading usage. The next collection retries.", fixable: false };
+    case "timeout":
+      return { text: "timed out", hint: "Reading this account's usage took too long. The next collection retries.", fixable: false };
+    case "network":
+      return { text: "unreachable", hint: "Could not reach Anthropic to read this account's usage.", fixable: false };
+    default:
+      // Still shown, because a code we have not met is better than silence —
+      // but labelled as one, so it does not read as a sentence.
+      return { text: code, hint: `claude-swap reported "${code}" for this account.`, fixable: false };
+  }
 }
 
 function LaneBar({ lane, nowSec }: { lane: Lane; nowSec: number }) {
@@ -370,7 +399,23 @@ export default function AccountsPanel({ onClose }: Props) {
                   good numbers, and switching to it on that basis would be a
                   decision made on old information. */}
               <div className="ap-meta">
-                {a.error && <span className="ap-err">{errorText(a.error)}</span>}
+                {a.error && (() => {
+                  const e = errorText(a.error);
+                  return (
+                    <>
+                      <span className="ap-err" title={e.hint}>{e.text}</span>
+                      {/* A dead login is the one failure here that no amount of
+                          waiting fixes, so the fix is one click away rather
+                          than a paragraph away. */}
+                      {e.fixable && (
+                        <button type="button" className="ap-fix" onClick={() => setAddOpen(true)}
+                          title="Open the sign-in dialog. Signing in as this account replaces its stored login in place.">
+                          sign in again
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                 {/* Holding an account out of rotation only matters when
                     something is rotating, so the control appears with it. */}
                 {(auto?.enabled || auto?.external) && !a.active && (
