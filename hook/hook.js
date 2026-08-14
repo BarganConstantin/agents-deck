@@ -116,6 +116,12 @@ function isAlive(pid) {
  *
  * The platform is a parameter, like cwdInWorkspace's, so the case-folding half
  * is testable from any machine.
+ *
+ * src/server/log-writer.mjs repeats this rule for the events no hook delivers —
+ * the ones the server builds itself from Codex's rollout files — because this
+ * script is copied out of the package and cannot import it. A test compares the
+ * two directly: they decide for the same decks, and a disagreement is a line
+ * written twice or not at all.
  */
 function electWriters(decks, platform = process.platform) {
   const byLog = new Map();

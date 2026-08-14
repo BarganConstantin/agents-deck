@@ -4,12 +4,13 @@ import { createServer } from "node:http";
 import { readFile, stat, mkdir, appendFile, open, truncate, readdir, unlink } from "node:fs/promises";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { extname, join, resolve, dirname as pdirname, sep } from "node:path";
+import { extname, join, resolve, dirname as pdirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { createHash, randomBytes } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
@@ -778,8 +779,9 @@ function maybeResolveCodex(payload) {
 //   turn_context / response_item.model → model snapshot (ModelObserved on change)
 // Events are emitted with source "codex" so pushEvent skips the Claude-only
 // transcript enrichment (which needs transcript_path / hook events) but still
-// persists + broadcasts them exactly like a hook event. This path is entirely
-// additive — the Claude hook flow is untouched.
+// broadcasts them exactly like a hook event, and persists them when this deck is
+// the one elected to log this rollout — see writesCodexLog. This path is
+// entirely additive — the Claude hook flow is untouched.
 const codexFileState = new Map();      // path -> { offset, sid, cwd, skip, seenAt }
 const codexSessionModel = new Map();   // sid -> last model string
 // How long a rollout's tail cursor is kept after it stops showing up in the
@@ -790,12 +792,32 @@ let codexScanRunning = false;
 let codexWatchTimer = null;
 let codexWorkspace = "";
 
-function codexCwdInWorkspace(cwd) {
-  if (!codexWorkspace) return true;
-  if (!cwd || typeof cwd !== "string") return false;
-  const a = resolve(cwd).toLowerCase();
-  const b = resolve(codexWorkspace).toLowerCase();
-  return a === b || a.startsWith(b + sep.toLowerCase());
+/**
+ * Every deck registered right now, as its own discovery record spells it.
+ *
+ * These are the files hook.js enumerates; this is the server reading them for
+ * itself, because the rollout watcher has no hook to do it and still has to know
+ * which other decks are tailing the same file into the same log. Dead pids are
+ * ignored rather than unlinked — sweepStaleDiscovery owns that, and a poll
+ * running every 1.5s is no place to be deleting other decks' registrations.
+ */
+async function readLiveDecks() {
+  const dir = join(claudeConfigDir(), "agent-dag");
+  let files;
+  try { files = await readdir(dir); } catch { return []; }
+  const decks = [];
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const d = JSON.parse(await readFile(join(dir, f), "utf8"));
+      // Without both numbers there is nothing to group or tie-break on, so the
+      // record cannot take part in an election either way.
+      if (!d || typeof d.pid !== "number" || typeof d.port !== "number") continue;
+      if (!isProcessAlive(d.pid)) continue;
+      decks.push(d);
+    } catch { /* corrupt, or gone between listing and read */ }
+  }
+  return decks;
 }
 
 // List rollout files from the newest 2 day-directories. New sessions always
@@ -912,17 +934,21 @@ function parseCodexOutput(raw) {
   }
 }
 
-function emitCodexEvent(payload) {
-  pushEvent(payload, "codex");
+// `persist` is false when another deck tailing this same rollout was elected to
+// write it to the log they share. The event is still buffered and broadcast —
+// every deck watching the session draws it — it is only the second copy on disk
+// that is dropped. See writesCodexLog in log-writer.mjs.
+function emitCodexEvent(payload, persist) {
+  pushEvent(payload, "codex", { persist });
 }
 
 // Emit the SessionStart root exactly once per file, lazily — only when the
 // session actually produces an event. This keeps long-dead sessions that were
 // merely on disk at startup from cluttering the canvas with empty roots.
-function ensureCodexRoot(state) {
+function ensureCodexRoot(state, persist) {
   if (state.rootEmitted) return;
   state.rootEmitted = true;
-  emitCodexEvent({ session_id: state.sid, cwd: state.cwd, provider: "codex", hook_event_name: "SessionStart" });
+  emitCodexEvent({ session_id: state.sid, cwd: state.cwd, provider: "codex", hook_event_name: "SessionStart" }, persist);
 }
 
 async function codexScanOnce(firstRun) {
@@ -930,6 +956,11 @@ async function codexScanOnce(firstRun) {
   codexScanRunning = true;
   try {
     const now = Date.now();
+    // Read at most once per scan, and only from the first rollout that actually
+    // has new bytes: most ticks read nothing and must not pay a directory
+    // listing for the answer to a question nothing is asking.
+    let decksRead = null;
+    const liveDecks = () => (decksRead ??= readLiveDecks());
     const files = await listRecentCodexRollouts();
     for (const path of files) {
       let st;
@@ -942,7 +973,7 @@ async function codexScanOnce(firstRun) {
         // capture it. Skip files outside our workspace.
         const header = await readCodexHeader(path);
         if (!header || !header.sid) continue; // not ready yet — retry next tick
-        if (!codexCwdInWorkspace(header.cwd)) {
+        if (!codexCwdInWorkspace(header.cwd, codexWorkspace)) {
           codexFileState.set(path, { offset: st.size, sid: header.sid, cwd: header.cwd, skip: true, rootEmitted: false, seenAt: now });
           continue;
         }
@@ -966,6 +997,13 @@ async function codexScanOnce(firstRun) {
       const consume = text.slice(0, lastNl);
       state.offset += Buffer.byteLength(consume, "utf8") + 1; // +1 for the \n
 
+      // Decided per file rather than per line: which decks are up, and which of
+      // them tail this rollout, cannot change inside one batch of appended
+      // lines, and the answer must be the same for every event in it — a root
+      // written by one deck and its tool calls by another is worse than either.
+      const persist = !persistPath
+        || writesCodexLog({ decks: await liveDecks(), pid: process.pid, cwd: state.cwd });
+
       for (const line of consume.split("\n")) {
         if (!line) continue;
         let obj;
@@ -975,12 +1013,12 @@ async function codexScanOnce(firstRun) {
         // If the model changed (turn_context/response_item), surface it.
         const nowModel = codexSessionModel.get(state.sid);
         if (nowModel && nowModel !== prevModel) {
-          ensureCodexRoot(state);
-          emitCodexEvent({ session_id: state.sid, cwd: state.cwd, provider: "codex", hook_event_name: "ModelObserved", model: nowModel });
+          ensureCodexRoot(state, persist);
+          emitCodexEvent({ session_id: state.sid, cwd: state.cwd, provider: "codex", hook_event_name: "ModelObserved", model: nowModel }, persist);
         }
         if (payload) {
-          ensureCodexRoot(state);
-          emitCodexEvent(payload);
+          ensureCodexRoot(state, persist);
+          emitCodexEvent(payload, persist);
         }
       }
     }
