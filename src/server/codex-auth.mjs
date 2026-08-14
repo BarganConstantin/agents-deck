@@ -12,10 +12,10 @@
 // immediately before it is spent, a response that does not clearly carry a
 // new access token is never treated as success, and nothing here throws —
 // a rejected promise from a background poll would take the server down.
-import { readFile, writeFile, chmod, unlink, realpath, open } from "node:fs/promises";
+import { readFile, chmod, unlink, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { renameWithRetry } from "./installer.mjs";
+import { createTemp, renameWithRetry } from "./installer.mjs";
 
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const AUTH_PATH  = join(CODEX_HOME, "auth.json");
@@ -79,6 +79,21 @@ async function readAuthFile() {
  * dotfiles repo or an encrypted volume, and renaming onto the link would
  * replace it with a regular file, quietly detaching the user's setup.
  *
+ * The temp file comes from the installer's createTemp, which numbers every
+ * write and creates it with O_EXCL, rather than from a name built out of the
+ * pid alone. A pid names a process, not a write, so that name was one file
+ * shared by every write this process makes, and the open that filled it
+ * truncated whatever it found: a second refresh in flight would fill it from
+ * offset zero underneath the first, and the loser would rename a splice of the
+ * two over auth.json — or find its temp file already renamed away and throw
+ * ENOENT. What is left at that name between runs is a live rotated refresh
+ * token in cleartext, so the leftover a crashed deck strands there is not inert
+ * either: a plain create adopts it whole, keeping its permissions, because
+ * open() applies the mode it is given only when it is the call that creates the
+ * file. O_EXCL turns a taken name into an error the caller handles instead,
+ * which is also what makes the 0600 binding from the very first byte rather
+ * than whatever the file it inherited happened to allow.
+ *
  * The rename is the installer's retrying one because Windows fails it outright
  * with EPERM/EBUSY while another process holds auth.json open, and a virus
  * scanner, the search indexer or the Codex CLI itself does exactly that for a
@@ -91,15 +106,22 @@ async function readAuthFile() {
  */
 async function persistAuth(auth) {
   const target = await realpath(AUTH_PATH).catch(() => AUTH_PATH);
-  const tmp    = `${target}.agents-deck-${process.pid}.tmp`;
+  const { tmp, handle } = await createTemp(target, { mode: 0o600 });
 
   let ok = false;
   try {
-    await writeFile(tmp, JSON.stringify(auth, null, 2), { mode: 0o600 });
-    // writeFile ignores `mode` when the file already exists, so pin it again.
+    try {
+      await handle.writeFile(JSON.stringify(auth, null, 2), "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // The umask only ever clears bits off the creation mode, so the token is
+    // never wider than 0600 — but it can land narrower, and an auth.json at
+    // 0400 is one the Codex CLI's own writer cannot open the next time it
+    // rotates. On Windows chmod's only effect is the read-only bit, and a
+    // read-only target is one no rename can replace. Pin it either way.
     await chmod(tmp, 0o600);
-    const fd = await open(tmp, "r+");
-    try { await fd.sync(); } finally { await fd.close(); }
     await renameWithRetry(tmp, target);
     ok = true;
   } finally {

@@ -38,6 +38,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   const patched = {
     ...actual,
+    // persistAuth stages the token through the installer's createTemp, so the
+    // handle it writes through is opened here rather than at writeFile — guard
+    // both, or the day it switches back this file races the developer's own
+    // credentials with nothing watching.
+    open: ((path: never, ...rest: never[]) => {
+      guard(path, "open");
+      return actual.open(path, ...rest);
+    }) as typeof actual.open,
     writeFile: ((path: never, ...rest: never[]) => {
       guard(path, "write");
       return actual.writeFile(path, ...rest);
