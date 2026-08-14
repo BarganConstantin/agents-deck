@@ -119,6 +119,30 @@ function challengeProof(token, nonce) {
   return crypto.createHash("sha256").update(`${token}:${nonce}`).digest("hex");
 }
 
+/**
+ * Must this target answer the challenge before it is handed a payload?
+ *
+ * Only a deck that advertises a token can be asked to prove it holds one. And
+ * hook.js is a single shared file — <claude config dir>/agent-dag/hook.js,
+ * installed by whichever deck booted most recently — while running several
+ * decks at once is ordinary use. So a hook that knows about the handshake
+ * routinely reads discovery files written by decks that predate it, which serve
+ * no /api/hook-challenge route at all. Refusing those outright leaves every one
+ * of them listening and permanently empty, with its banner still saying it is
+ * receiving events.
+ *
+ * A tokenless file therefore falls back to what shipped before the handshake:
+ * pid liveness and nothing else. That is not a weakening of anything — it is
+ * the exact risk every release up to 1.33.70 already carried, unchanged — and
+ * it costs the hardening nothing, because a file that does carry a token still
+ * gets no payload until the port answers correctly. Drop this fallback, and
+ * refuse tokenless files again, once no deck older than 1.33.71 is plausibly
+ * still running.
+ */
+function requiresProof(d) {
+  return typeof d.token === "string" && d.token !== "";
+}
+
 // Constant-time compare, purely so a hostile listener cannot walk the expected
 // proof out of us one byte at a time by timing how long we take to hang up. The
 // lengths are public (64 hex chars) and a mismatched one is rejected outright,
@@ -142,10 +166,14 @@ const POST_TIMEOUT_MS = 1000;
  * only once it has. `done` runs exactly once, whatever the outcome — a refused
  * connection, a silent port, a wrong answer and a delivered event all just mean
  * this target is finished.
+ *
+ * A deck that advertised no token is posted to directly: see requiresProof.
  */
 function deliver(d, body, done) {
   let settled = false;
   const finish = () => { if (settled) return; settled = true; done(); };
+
+  if (!requiresProof(d)) return post(d, body, finish);
 
   const nonce = crypto.randomBytes(16).toString("hex");
   const want = challengeProof(d.token, nonce);
@@ -236,12 +264,9 @@ function main() {
       let d;
       try { d = JSON.parse(fs.readFileSync(path.join(DIR, file), "utf8")); } catch { continue; }
       if (typeof d.workspace !== "string" || !d.pid || !d.port) continue;
-      // No token, no payload. A file this old was written by a deck from before
-      // the handshake existed; that deck rewrites its file with a token the
-      // moment it restarts, so the cost of refusing is a blind deck until the
-      // next start, against the cost of trusting an unauthenticated port with
-      // every prompt the user types.
-      if (typeof d.token !== "string" || d.token === "") continue;
+      // A missing token is not a reason to drop the file here — deliver()
+      // decides what a target has to prove, and a deck older than the handshake
+      // can prove nothing. See requiresProof.
 
       if (!isAlive(d.pid)) {
         try { fs.unlinkSync(path.join(DIR, file)); } catch {}
@@ -275,5 +300,5 @@ function main() {
 // the installer writes is `"<node>" "<...>/hook.js" --provider <name>`. Under a
 // require() it exports the matching rule and starts nothing, which is what lets
 // the rule be tested without a 1.5s exit timer in the test runner.
-module.exports = { cwdInWorkspace, foldsCase, challengeProof };
+module.exports = { cwdInWorkspace, foldsCase, challengeProof, requiresProof };
 if (require.main === module) main();

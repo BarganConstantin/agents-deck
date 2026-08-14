@@ -35,6 +35,7 @@ copyFileSync(HOOK, COPY);
 
 const hook = createRequire(import.meta.url)(COPY) as {
   challengeProof: (token: string, nonce: string) => string;
+  requiresProof: (d: { token?: unknown }) => boolean;
 };
 // @ts-expect-error — .mjs server module, no types
 const { challengeProof, hookToken } = await import("../../server/index.mjs");
@@ -103,6 +104,21 @@ async function runHook(discovery: Record<string, unknown>) {
     child.on("error", fail);
     child.on("exit", () => done());
   });
+}
+
+/**
+ * A pid that is certainly not running. Picking a number and hoping is not
+ * cross-platform — pid spaces and recycling differ per OS — so we run a process
+ * that does nothing and wait for it to exit, which leaves its number free on
+ * Linux, macOS and Windows alike.
+ */
+async function deadPid() {
+  const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await new Promise<void>((done, fail) => {
+    child.on("error", fail);
+    child.on("exit", () => done());
+  });
+  return child.pid as number;
 }
 
 // A discovery file for a deck that is alive (our own pid) and machine-wide
@@ -224,10 +240,13 @@ describe("a stranger on the recorded port", () => {
 });
 
 describe("a discovery file with no token at all", () => {
-  // Written by a deck from before the handshake existed — or forged by hand.
-  // Either way the port cannot be authenticated, so it is not contacted: that
-  // deck writes a token into its file the moment it restarts.
-  it("is not contacted", async () => {
+  // Written by a deck from before the handshake existed. hook.js is one shared
+  // file installed by whichever deck booted last, and several decks at once is
+  // ordinary use, so this hook meets those files constantly. Refusing them left
+  // every older deck listening and permanently empty — the regression #173 was
+  // filed about — so a tokenless file falls back to the pre-handshake rule: pid
+  // liveness, then post. No worse than every release up to 1.33.70.
+  it("still receives the event, without a challenge", async () => {
     const token = randomBytes(32).toString("hex");
     const deck = await listener(honestDeck(token));
     try {
@@ -237,6 +256,60 @@ describe("a discovery file with no token at all", () => {
     } finally {
       await deck.close();
     }
+
+    const posts = deck.seen.filter(s => s.method === "POST");
+    expect(posts).toHaveLength(2);
+    expect(posts.every(p => p.path === "/api/event")).toBe(true);
+    expect(JSON.parse(posts[0].body)).toMatchObject({
+      hook_event_name: "UserPromptSubmit",
+      prompt: PROMPT,
+      provider: "claude",
+    });
+    // Nothing to ask a deck that cannot answer: the challenge is skipped
+    // entirely rather than sent and ignored.
+    expect(deck.seen.filter(s => s.method === "GET")).toHaveLength(0);
+  }, 10_000);
+
+  // The fallback is bounded by liveness alone, exactly as it was before the
+  // handshake — a file left behind by a deck that is gone still gets nothing,
+  // and is swept off disk on the way past.
+  it("is told apart from a tokened one by the token alone", () => {
+    expect(hook.requiresProof({ token: randomBytes(32).toString("hex") })).toBe(true);
+    expect(hook.requiresProof({})).toBe(false);
+    expect(hook.requiresProof({ token: "" })).toBe(false);
+  });
+
+  it("is refused when its pid is dead", async () => {
+    const token = randomBytes(32).toString("hex");
+    const deck = await listener(honestDeck(token));
+    try {
+      const { token: _dropped, ...untokened } = discoveryFor(deck.port, token);
+      await runHook({ ...untokened, pid: await deadPid() });
+    } finally {
+      await deck.close();
+    }
     expect(deck.seen).toHaveLength(0);
+  }, 10_000);
+});
+
+describe("a discovery file that does carry a token", () => {
+  // The fallback above must not become a way around the handshake: a file that
+  // advertises a token is still held to it, and a listener that answers wrongly
+  // is told nothing.
+  it("gets no payload when the port answers the challenge wrongly", async () => {
+    const wrong = await listener((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ proof: challengeProof(randomBytes(32).toString("hex"), "nonce") }));
+    });
+    try {
+      await runHook(discoveryFor(wrong.port, randomBytes(32).toString("hex")));
+    } finally {
+      await wrong.close();
+    }
+
+    expect(wrong.seen).toHaveLength(1);
+    expect(wrong.seen[0].method).toBe("GET");
+    expect(wrong.seen[0].path).toMatch(/^\/api\/hook-challenge\?nonce=/);
+    expect(JSON.stringify(wrong.seen)).not.toContain(PROMPT);
   }, 10_000);
 });
