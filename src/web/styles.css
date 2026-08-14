@@ -3387,6 +3387,13 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    at. Only there — the auto-switch select rests on --line and the dim edge is
    still a lift for it. */
 .ap-manage .ap-field select:hover:not(:disabled) { border-color: var(--accent); }
+/* And left, where the shared rule says right. Right-aligning a select sizes it
+   to its widest option and then pins the SELECTED one to the chevron: correct
+   for the auto-switch threshold, which is a number and reads against its own
+   arrow, and wrong here now that the options are labels. `slot 2` in a box
+   sized for `slot 3 · swap` sat 30px off its own left edge with a hole in
+   front of it. */
+.ap-manage .ap-field select { text-align: left; }
 .ap-field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ap-field select:disabled { cursor: default; opacity: 0.6; }
 .ap-field:has(select:hover:not(:disabled))::after { color: var(--accent); opacity: 1; }
@@ -3618,42 +3625,64 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-manage {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  /* 8, not the 6 three cramped rows needed: with two rows left, the name and
+     the verbs are separate groups and the gap is what says so. */
+  gap: 8px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px dashed var(--line-soft);
 }
-/* One grid, three settings. The rows were three flex lines that stopped
-   wherever their content ran out — x273, x162, x133 at the panel's 288px — so
-   the block had a left edge and no right one. Label, then whatever explains the
-   setting, then the control that changes it, hard against the same right edge
-   on every row. */
-.ap-manage-row {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-}
-/* Sentence case, because every other label in this panel is prose — `in
-   rotation`, `collected 5m ago`, `carries a live login` — and 10px uppercase
-   with letter-spacing was the one place the block spoke form-chrome. */
-.ap-manage-label { color: var(--text-dim); font-size: 10px; }
-.ap-manage-hint { color: var(--text-dim); font-size: 10px; min-width: 0; }
-/* Removing an account cannot be undone, and it used to sit 6px from `share`
-   with the loudest colour in the block. Colour is not separation; a rule and an
-   empty row are. It keeps the error hue, but it is now the last thing reached
-   rather than the first thing seen. */
-.ap-manage-foot {
+/* Two lines: what the account is called, then what can be done to it. It was
+   four — a 34px label gutter, a sentence of explanation and a control on each
+   of three rows, plus a fourth row under a rule holding one button — which
+   spent most of a 259px column introducing controls that could introduce
+   themselves. The labels are gone from the screen, not from the markup, and
+   the explanations moved onto the things they were explaining: the slot
+   picker's own options, and a button whose word is already its verb.
+
+   Measured in the panel at its real 288px: 128px of block became 64px, with
+   both rows still ending on x273. */
+.ap-manage-name, .ap-manage-acts {
   display: flex;
-  justify-content: flex-end;
-  padding-top: 7px;
-  border-top: 1px dashed var(--line-soft);
+  align-items: center;
+  gap: 8px;
 }
-/* The one thing this row ever has to announce rather than label: a move that
-   relocated a second account. Dim is right for the standing rule the hint
-   normally states and wrong for news, so the notice takes the accent the row's
-   own select hovers to. */
+.ap-manage-input { flex: 1; }
+/* Removing an account cannot be undone. It sat 6px from `share` before #325,
+   then on a row of its own 14px below it; here `margin-left: auto` puts 47px of
+   nothing between them — measured at the panel's 288px, and more than three
+   times the separation the extra row bought.
+
+   The pinned width is the safety half. `remove` is 57px of text and `confirm`
+   is 58px, so 62px holds both and the button cannot resize as it arms — one
+   that grew would move out from under the second click, the one click that has
+   to land where the user aimed it. It is also why the armed word is `confirm`
+   and not `confirm remove`: that measures 99px, which with the select and
+   `share` totals 258px in a 259px column. The row would have fit by one pixel
+   and the separation above would have been gone. */
+.ap-manage-acts .ap-manage-btn.danger { margin-left: auto; min-width: 62px; }
+.ap-manage-hint { color: var(--text-dim); font-size: 10px; min-width: 0; }
+/* The one thing the block ever has to announce rather than label: a move that
+   relocated a second account. It is a line that exists for eight seconds and
+   then does not, so it costs the resting layout nothing — and dim is right for
+   a standing rule and wrong for news, so it takes the accent the row's own
+   select hovers to. */
 .ap-manage-hint.ap-manage-swap { color: var(--accent); }
+/* Named for the reader that cannot see it. The two fields lost their visible
+   labels, not their labelling: `for`/`id` is what a screen reader follows and
+   what voice control names the field by, and 2.5.3 has nothing left to
+   contradict once no label is on screen. */
+.ap-vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 /* The one control in the block that declared no transition and no hover, while
    four siblings eased their border over 120ms. Focusing the field snapped and
    pressing a button eased, which is felt long before it is noticed. */

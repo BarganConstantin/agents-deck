@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
 import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
-import { type SwapNote, manageAfterMove } from "../account-move";
+import { type SwapNote, manageAfterMove, slotChoices } from "../account-move";
 import { aliasSave } from "../alias-save";
 import { PRODUCT } from "../brand";
 import {
@@ -172,13 +172,6 @@ function LaneBar({ lane, nowSec }: { lane: Lane; nowSec: number }) {
       <span className="ap-lane-reset">{reset ? `resets ${reset}` : ""}</span>
     </div>
   );
-}
-
-/** Every slot an account could move to: the ones in use, plus the next free. */
-function slotOptions(accounts: Account[]): number[] {
-  const used = accounts.map(a => a.num);
-  const max = used.length ? Math.max(...used) : 0;
-  return [...new Set([...used, max + 1])].sort((a, b) => a - b);
 }
 
 /**
@@ -585,14 +578,16 @@ export default function AccountsPanel({ onClose }: Props) {
                    belong to instead of walking into unattributed form fields. */
                 <div className="ap-manage" id={`ap-manage-${a.num}`}
                   role="group" aria-label={`Manage account ${a.num}`}>
-                  <div className="ap-manage-row">
-                    {/* A real <label>, not an aria-label beside a word. The
-                        field used to answer to "Alias for account 2" while the
-                        screen said NAME — 2.5.3 asks that the accessible name
-                        contain the visible one, and voice control asks for it
-                        rather harder than that. The group above carries the
-                        account number the aria-label was there to supply. */}
-                    <label className="ap-manage-label" htmlFor={`ap-alias-${a.num}`}>name</label>
+                  <div className="ap-manage-name">
+                    {/* A real <label> still, only no longer on screen. The word
+                        `name` beside a field whose placeholder already reads
+                        `e.g. work` was a 34px gutter spent restating the field,
+                        and the same gutter on the two rows below pushed every
+                        control into two thirds of a 259px column. Hidden rather
+                        than dropped for an aria-label, because the association
+                        is what a screen reader and voice control both use, and
+                        2.5.3 has nothing to disagree with once no label shows. */}
+                    <label className="ap-vh" htmlFor={`ap-alias-${a.num}`}>Alias</label>
                     <input
                       id={`ap-alias-${a.num}`}
                       className="ap-manage-input"
@@ -617,27 +612,15 @@ export default function AccountsPanel({ onClose }: Props) {
                     >{aliasSaved === a.num ? "saved" : "save"}</button>
                   </div>
 
-                  <div className="ap-manage-row">
-                    <label className="ap-manage-label" htmlFor={`ap-slot-${a.num}`}>slot</label>
-                    {/* "rotation order" said what the number is and never what
-                        changing it does — and what it does is move a second
-                        account: claude-swap trades places when the slot is
-                        taken. There is no predictive version of this to write.
-                        A <select> commits on change, so the moment a different
-                        slot is "picked" is the moment it has already happened,
-                        and the after-the-fact notice below is the honest one;
-                        this line is the rule that holds before any pick. */}
-                    {swapNote?.at === a.num ? (() => {
-                      const other = data.accounts?.find(x => x.num === swapNote.displaced);
-                      const who = other?.alias ?? other?.email ?? "the account that was there";
-                      return (
-                        <span className="ap-manage-hint ap-manage-swap"
-                          title={`Slot ${swapNote.at} was taken, so the two accounts traded places: `
-                               + `${who} now holds slot ${swapNote.displaced}.`}>
-                          swapped with slot {swapNote.displaced}
-                        </span>
-                      );
-                    })() : <span className="ap-manage-hint">swaps if the slot is taken</span>}
+                  {/* Three verbs on one line. They were three labelled rows —
+                      `slot`, `share` and a `remove` under its own rule — each
+                      one a control with a word introducing it and a sentence
+                      explaining it. None of the three needed either once the
+                      controls said what they do: the picker names the slot and
+                      the consequence per option, and a button called `share` is
+                      not clarified by being told it is the share row. */}
+                  <div className="ap-manage-acts">
+                    <label className="ap-vh" htmlFor={`ap-slot-${a.num}`}>Slot</label>
                     <span className="ap-field">
                       <select
                         id={`ap-slot-${a.num}`}
@@ -645,16 +628,16 @@ export default function AccountsPanel({ onClose }: Props) {
                         disabled={busy != null}
                         onChange={e => doMove(a.num, Number(e.target.value))}
                       >
-                        {slotOptions(data.accounts ?? []).map(n => <option key={n} value={n}>{n}</option>)}
+                        {/* `rotation order` named the number and never the
+                            effect; `swaps if the slot is taken` named the effect
+                            and left the reader to work out which slots those
+                            were — all of them but the last. On the options, the
+                            warning sits on the choice that carries it and the
+                            one harmless move is visible as the exception. */}
+                        {slotChoices((data.accounts ?? []).map(x => x.num), a.num)
+                          .map(c => <option key={c.slot} value={c.slot}>{c.label}</option>)}
                       </select>
                     </span>
-                  </div>
-
-                  <div className="ap-manage-row">
-                    <span className="ap-manage-label">share</span>
-                    {/* The ellipsis is the standard promise of a dialog and
-                        this opens none — it drops a blob into the block. */}
-                    <span className="ap-manage-hint">copies a live login</span>
                     <button type="button" className="ap-manage-btn" disabled={busy != null}
                       title={`Copy this account to another ${PRODUCT}. The share carries a live login and expires in 10 minutes.`}
                       onClick={async () => {
@@ -662,7 +645,51 @@ export default function AccountsPanel({ onClose }: Props) {
                         const out = await admin({ action: "share", account: a.num }, `share-${a.num}`);
                         if (out?.ok) setShare({ num: a.num, blob: out.blob, expiresAt: out.expiresAt });
                       }}>share</button>
+                    {/* Two clicks, and the second one expires. There is no
+                        confirmation dialog anywhere in this deck and removing an
+                        account cannot be undone, so it is pushed to the far edge
+                        of the row: 47px of empty space, measured, against the
+                        14px that separated it from `share` when it had a row of
+                        its own. `confirm` rather than `confirm remove` because
+                        the long form is 99px and would leave the row one pixel
+                        of slack and no gap at all — see the pinned width in
+                        styles.css, which is what stops the button moving out
+                        from under the second click as it arms. */}
+                    <button
+                      type="button"
+                      className={`ap-manage-btn danger${confirmRemove === a.num ? " armed" : ""}`}
+                      disabled={busy != null}
+                      title={confirmRemove === a.num
+                        ? "This deletes the stored credentials for this account"
+                        : "Remove this account from claude-swap"}
+                      onClick={() => {
+                        if (confirmRemove !== a.num) {
+                          setConfirmRemove(a.num);
+                          window.setTimeout(() => setConfirmRemove(c => (c === a.num ? null : c)), 4000);
+                          return;
+                        }
+                        setConfirmRemove(null);
+                        admin({ action: "remove", account: a.num }, `rm-${a.num}`).then(() => { setMenuFor(null); load(true); });
+                      }}
+                    >{confirmRemove === a.num ? "confirm" : "remove"}</button>
                   </div>
+
+                  {/* A move into an occupied slot relocates an account the user
+                      never picked, and this is the only place that says so. It
+                      is a row that exists for eight seconds and then does not,
+                      which is why the block can be two rows at rest and still
+                      report something that happens on one move in three. */}
+                  {swapNote?.at === a.num && (() => {
+                    const other = data.accounts?.find(x => x.num === swapNote.displaced);
+                    const who = other?.alias ?? other?.email ?? "the account that was there";
+                    return (
+                      <span className="ap-manage-hint ap-manage-swap"
+                        title={`Slot ${swapNote.at} was taken, so the two accounts traded places: `
+                             + `${who} now holds slot ${swapNote.displaced}.`}>
+                        swapped with slot {swapNote.displaced}
+                      </span>
+                    );
+                  })()}
 
                   {share?.num === a.num && (() => {
                     const exp = shareExpiry(share.expiresAt, nowSec);
@@ -696,31 +723,6 @@ export default function AccountsPanel({ onClose }: Props) {
                     );
                   })()}
 
-                  {/* Two clicks, and the second one expires. There is no
-                      confirmation dialog anywhere in this deck, and removing an
-                      account cannot be undone — so it stands alone below the
-                      block's closing rule rather than 6px from `share`, and it
-                      is the last thing reached rather than the first thing the
-                      eye finds. */}
-                  <div className="ap-manage-foot">
-                    <button
-                      type="button"
-                      className={`ap-manage-btn danger${confirmRemove === a.num ? " armed" : ""}`}
-                      disabled={busy != null}
-                      title={confirmRemove === a.num
-                        ? "This deletes the stored credentials for this account"
-                        : "Remove this account from claude-swap"}
-                      onClick={() => {
-                        if (confirmRemove !== a.num) {
-                          setConfirmRemove(a.num);
-                          window.setTimeout(() => setConfirmRemove(c => (c === a.num ? null : c)), 4000);
-                          return;
-                        }
-                        setConfirmRemove(null);
-                        admin({ action: "remove", account: a.num }, `rm-${a.num}`).then(() => { setMenuFor(null); load(true); });
-                      }}
-                    >{confirmRemove === a.num ? "confirm remove" : "remove"}</button>
-                  </div>
                 </div>
               )}
             </div>

@@ -329,9 +329,8 @@ describe("every control in the manage block has a perceivable boundary (1.4.11)"
 });
 
 describe("the buttons stopped sharing the labels' colour (#325's first finding)", () => {
-  it("writes button labels in --text and static labels in --text-dim", () => {
+  it("writes button labels in --text and the remaining prose in --text-dim", () => {
     expect(decl(".ap-manage-btn", "color")).toBe("var(--text)");
-    expect(decl(".ap-manage-label", "color")).toBe("var(--text-dim)");
     expect(decl(".ap-manage-hint", "color")).toBe("var(--text-dim)");
     // --muted was the pills' colour and is --text-dim's own value in dark.
     expect(decl(".ap-manage-btn", "color")).not.toBe("var(--muted)");
@@ -341,18 +340,18 @@ describe("the buttons stopped sharing the labels' colour (#325's first finding)"
     for (const theme of themes) {
       const panelBed = parseColor(TOK[theme]["--panel"]);
       const button = contrastRatio(resolve(decl(".ap-manage-btn", "color")!, theme), panelBed);
-      const label = contrastRatio(resolve(decl(".ap-manage-label", "color")!, theme), panelBed);
-      expect(button / label, `${theme} button vs label`).toBeGreaterThan(2);
+      const hint = contrastRatio(resolve(decl(".ap-manage-hint", "color")!, theme), panelBed);
+      expect(button / hint, `${theme} button vs hint`).toBeGreaterThan(2);
     }
   });
 
-  it("did NOT buy that step by sinking the labels below 4.5:1", () => {
+  it("did NOT buy that step by sinking the prose below 4.5:1", () => {
     // #325's second finding asked for a third, dimmer dark tier. There is no
     // room for one: --muted is itself 4.70:1 on --panel (styles.css:11), and
     // anything under it is annotation the sheet already has a token for.
     for (const theme of themes) {
       const panelBed = parseColor(TOK[theme]["--panel"]);
-      for (const sel of [".ap-manage-label", ".ap-manage-hint", ".ap-manage-hint.ap-manage-swap"]) {
+      for (const sel of [".ap-manage-hint", ".ap-manage-hint.ap-manage-swap"]) {
         expect(contrastRatio(resolve(decl(sel, "color")!, theme), panelBed), `${theme} ${sel}`)
           .toBeGreaterThanOrEqual(BODY);
       }
@@ -401,34 +400,50 @@ describe("the ⋯ that opens all of it (2.5.8, and touch)", () => {
   });
 });
 
-describe("three settings, one right edge (#325's fourth finding)", () => {
-  it("lays the rows out on a grid instead of letting each stop where it runs out", () => {
-    // x273 / x162 / x133 at the panel's 288px was three flex rows ending
-    // wherever their content did. Label, explanation, control — and the control
-    // column is `auto`, so every row ends on the same x whatever is in it.
-    expect(decl(".ap-manage-row", "display")).toBe("grid");
-    const cols = decl(".ap-manage-row", "grid-template-columns")!.split(/\s+(?![^(]*\))/);
-    expect(cols).toHaveLength(3);
-    expect(cols[2]).toBe("auto");
+describe("two rows, and the labels off the screen", () => {
+  it("keeps no label gutter and no row grid at all", () => {
+    // #325 put the three rows on a `34px minmax(0,1fr) auto` grid so they ended
+    // on one x. The gutter is what went next: 34px of every 259px row spent
+    // naming a control that names itself, on three rows, plus a fourth under a
+    // rule for one button. Two flex lines now — name, then verbs.
+    expect(bare).not.toMatch(/\.ap-manage-row\b/);
+    expect(bare).not.toMatch(/\.ap-manage-label\b/);
+    expect(bare).not.toMatch(/\.ap-manage-foot\b/);
+    expect(panelCode).not.toMatch(/ap-manage-row|ap-manage-label|ap-manage-foot/);
+    for (const row of [".ap-manage-name", ".ap-manage-acts"]) {
+      expect(decl(row, "display"), row).toBe("flex");
+    }
+    expect(decl(".ap-manage-input", "flex")).toBe("1");
   });
 
-  it("separates the irreversible action rather than only colouring it", () => {
-    // `remove` sat 6px from `share` with the loudest colour in the block. It
-    // now has a row to itself, right-aligned under a rule.
-    expect(decl(".ap-manage-foot", "justify-content")).toBe("flex-end");
-    expect(decl(".ap-manage-foot", "border-top")).toMatch(/dashed/);
-    expect(panel).toMatch(/<div className="ap-manage-foot">/);
+  it("separates the irreversible action by distance, not by a rule of its own", () => {
+    // 6px from `share` before #325, then a row of its own 14px below it. Now
+    // the far end of the verb row: 47px, measured in the panel at 288px.
+    expect(decl(".ap-manage-acts .ap-manage-btn.danger", "margin-left")).toBe("auto");
+    // `remove` renders 57px wide and `confirm` 58px, so the floor holds both
+    // and the button cannot resize as it arms — one that grew would move out
+    // from under the second click, the click that has to land where aimed.
+    expect(parseFloat(decl(".ap-manage-acts .ap-manage-btn.danger", "min-width")!))
+      .toBeGreaterThanOrEqual(62);
   });
 
   it("keeps the two-step arm and its four-second expiry", () => {
-    expect(panel).toMatch(/confirmRemove === a\.num \? "confirm remove" : "remove"/);
+    expect(panel).toMatch(/confirmRemove === a\.num \? "confirm" : "remove"/);
     expect(panel).toMatch(/setConfirmRemove\(c => \(c === a\.num \? null : c\)\), 4000\)/);
     expect(bare).toMatch(/ap-disarm 4000ms linear forwards/);
   });
 
-  it("stops shouting the labels — sentence case, like every other label here", () => {
-    expect(decl(".ap-manage-label", "text-transform")).toBeNull();
-    expect(decl(".ap-manage-label", "letter-spacing")).toBeNull();
+  it("gives the two groups more air than the three cramped rows had", () => {
+    expect(parseFloat(decl(".ap-manage", "gap")!)).toBeGreaterThan(6);
+  });
+
+  it("reads the slot picker from its left edge, not pinned to its own chevron", () => {
+    // `.ap-field select` is shared with the auto-switch threshold and aligns
+    // right, which suits a number. A <select> is sized by its WIDEST option,
+    // so once the options became labels the selected `slot 2` sat 30px off the
+    // left edge of a box built for `slot 3 · swap`.
+    expect(decl(".ap-field select", "text-align")).toBe("right");
+    expect(decl(".ap-manage .ap-field select", "text-align")).toBe("left");
   });
 });
 
@@ -450,14 +465,28 @@ describe("the disclosure and the block it opens are related (#325's seventh find
     expect(panel).toMatch(/aria-controls=\{menuFor === a\.num \? `ap-manage-\$\{a\.num\}` : undefined\}/);
   });
 
-  it("labels the two fields with the words on screen, not with different ones", () => {
-    // 2.5.3: the accessible name has to contain the visible label. `NAME` above
-    // a field called "Alias for account 2" failed that outright, and voice
-    // control asks for it harder than a screen reader does.
-    expect(panel).toMatch(/<label className="ap-manage-label" htmlFor=\{`ap-alias-\$\{a\.num\}`\}>name<\/label>/);
-    expect(panel).toMatch(/<label className="ap-manage-label" htmlFor=\{`ap-slot-\$\{a\.num\}`\}>slot<\/label>/);
+  it("keeps a real label on both fields after taking the labels off the screen", () => {
+    // 2.5.3 asks that the accessible name contain the visible label: `NAME`
+    // above a field called "Alias for account 2" failed outright, and voice
+    // control asks harder than a screen reader does. With no label rendered
+    // there is nothing left to contradict — but the association still has to
+    // exist, so these are hidden <label for>s, not aria-labels on bare inputs.
+    expect(panel).toMatch(/<label className="ap-vh" htmlFor=\{`ap-alias-\$\{a\.num\}`\}>Alias<\/label>/);
+    expect(panel).toMatch(/<label className="ap-vh" htmlFor=\{`ap-slot-\$\{a\.num\}`\}>Slot<\/label>/);
     expect(panel).not.toMatch(/aria-label=\{`Alias for account/);
     expect(panel).not.toMatch(/aria-label=\{`Slot for account/);
+  });
+
+  it("hides those labels from the eye without hiding them from anything else", () => {
+    // `display: none` and `visibility: hidden` take an element out of the
+    // accessibility tree too, which would leave both fields unnamed — the one
+    // failure this class exists to avoid.
+    expect(decl(".ap-vh", "display")).not.toBe("none");
+    expect(decl(".ap-vh", "visibility")).toBeNull();
+    expect(decl(".ap-vh", "position")).toBe("absolute");
+    expect(decl(".ap-vh", "clip-path")).toBe("inset(50%)");
+    expect(parseFloat(decl(".ap-vh", "width")!)).toBeLessThanOrEqual(1);
+    expect(parseFloat(decl(".ap-vh", "height")!)).toBeLessThanOrEqual(1);
   });
 
   it("moves the keyboard into the block rather than leaving it above everything", () => {
@@ -475,9 +504,14 @@ describe("microcopy (#325's eighth finding)", () => {
     expect(panelCode).not.toMatch(/share…/);
   });
 
-  it("says what changing the slot DOES, not what the number is", () => {
+  it("says what changing the slot DOES, on the option that does it", () => {
+    // `rotation order` named the number and never the effect. `swaps if the
+    // slot is taken` named the effect and left the reader to work out which
+    // slots those were — all of them but the last, which is the one case worth
+    // pointing at. Neither sentence survives: the options carry it now.
     expect(panelCode).not.toMatch(/rotation order/);
-    expect(panelCode).toMatch(/swaps if the slot is taken/);
+    expect(panelCode).not.toMatch(/swaps if the slot is taken/);
+    expect(panelCode).toMatch(/slotChoices\(/);
   });
 
   it("does not duplicate the notice #327 already shows after a swap", () => {

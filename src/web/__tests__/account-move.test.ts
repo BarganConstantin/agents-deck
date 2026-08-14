@@ -12,7 +12,7 @@
 // rule itself: after a move the block follows its account, everything keyed by
 // the old number is dropped, and a refused move changes nothing at all.
 import { describe, it, expect } from "vitest";
-import { manageAfterMove, type ManageState } from "../account-move";
+import { manageAfterMove, slotChoices, type ManageState } from "../account-move";
 
 /** The manage block open on slot 2, nothing armed, no share showing. */
 const open2: ManageState = { menuFor: 2, confirmRemove: null, shareFor: null, swapNote: null };
@@ -100,5 +100,53 @@ describe("manageAfterMove", () => {
   it("clears a stale swap notice when the next move displaces nobody", () => {
     const noted: ManageState = { menuFor: 3, confirmRemove: null, shareFor: null, swapNote: { at: 3, displaced: 2 } };
     expect(manageAfterMove(noted, 3, { ok: true, from: 3, to: 5, swapped: false })?.swapNote).toBeNull();
+  });
+});
+
+// The slot picker used to be bare numbers under a sentence — first `rotation
+// order`, then `swaps if the slot is taken`. The second was true of every
+// option but one, and the reader had no way to see which. The consequence
+// belongs on the choice.
+describe("what each slot in the picker would cost", () => {
+  const labels = (used: number[], current: number) => slotChoices(used, current).map(c => c.label);
+
+  it("offers every slot in use plus the one past the end, in order", () => {
+    expect(slotChoices([3, 1, 2], 1).map(c => c.slot)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("marks the account's own slot with nothing — going there is a no-op", () => {
+    // Labelling the state you are already in reads as a warning about it.
+    expect(slotChoices([1, 2, 3], 2).find(c => c.slot === 2)).toEqual({
+      slot: 2, kind: "here", label: "slot 2",
+    });
+  });
+
+  it("names the swap on every occupied slot and the free one on the exception", () => {
+    expect(labels([1, 2, 3], 2)).toEqual([
+      "slot 1 · swap",
+      "slot 2",
+      "slot 3 · swap",
+      "slot 4 · free",
+    ]);
+  });
+
+  it("offers the same set the bare-number picker did, holes and all", () => {
+    // `remove` can leave a gap, and the picker has never offered one: the list
+    // is the slots in use plus the next number, which is what `slotOptions`
+    // built before this. Labelling the options is not the change that should
+    // start offering 2 and 3 here, so it does not.
+    const kinds = Object.fromEntries(slotChoices([1, 4], 1).map(c => [c.slot, c.kind]));
+    expect(kinds).toEqual({ 1: "here", 4: "swap", 5: "free" });
+  });
+
+  it("survives a store with no accounts at all", () => {
+    expect(slotChoices([], 0)).toEqual([{ slot: 1, kind: "free", label: "slot 1 · free" }]);
+  });
+
+  it("never labels a slot as both taken and free", () => {
+    for (const c of slotChoices([2, 5, 6], 5)) {
+      expect(["here", "free", "swap"]).toContain(c.kind);
+      expect(c.label.startsWith(`slot ${c.slot}`), c.label).toBe(true);
+    }
   });
 });

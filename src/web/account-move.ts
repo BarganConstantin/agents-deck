@@ -18,6 +18,44 @@
 // with no DOM — the panel cannot be rendered, and a rule that only exists
 // inside JSX is a rule nothing can check.
 
+/** One entry in the slot picker: the number, and what picking it would do. */
+export interface SlotChoice {
+  slot: number;
+  /** `here` is the account's own slot, `free` the one empty slot at the end of
+   *  the rotation, `swap` any slot another account is standing in. */
+  kind: "here" | "free" | "swap";
+  /** What the option reads as. The consequence rides on the choice itself. */
+  label: string;
+}
+
+/**
+ * The slots this account can be sent to, each one saying what going there costs.
+ *
+ * The picker used to be bare numbers under a standing sentence — first
+ * `rotation order`, which named the number and never the effect, then `swaps if
+ * the slot is taken`, which named the effect and left the reader to work out
+ * which slots those were. Every slot in the list except the last IS taken: the
+ * rotation is contiguous and the one free number is the one past the end. So
+ * the sentence was true of almost every option and the reader had no way to see
+ * the exception, which is the case that matters — the only move that disturbs
+ * nobody else.
+ *
+ * Saying it per option removes the sentence and the guessing at once, and it
+ * puts the warning on the thing being chosen rather than above the choice.
+ */
+export function slotChoices(used: number[], current: number): SlotChoice[] {
+  const taken = new Set(used);
+  const max = used.length ? Math.max(...used) : 0;
+  return [...new Set([...used, max + 1])]
+    .sort((a, b) => a - b)
+    .map(slot => {
+      const kind = slot === current ? "here" : taken.has(slot) ? "swap" : "free";
+      // The account's own slot says nothing extra: picking it is a no-op, and
+      // labelling the state you are already in reads as a warning about it.
+      return { slot, kind, label: kind === "here" ? `slot ${slot}` : `slot ${slot} · ${kind}` };
+    });
+}
+
 /** The slot a swap pushed a second account into, and the block that should say so. */
 export interface SwapNote {
   /** Where the account the user moved ended up — the block the notice belongs in. */
