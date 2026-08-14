@@ -3,10 +3,19 @@ import { useReactFlow, useStore, useViewport, type ReactFlowState } from "reactf
 import { sessionHue } from "../reducer";
 import type { AgentNodeData } from "../types";
 
-interface Cluster {
+export interface Cluster {
   sessionId: string;
   label: string;
   x: number; y: number; w: number; h: number;
+}
+
+/** The part of a React Flow node the cluster geometry reads. */
+export interface ClusterNode {
+  type?: string;
+  position: { x: number; y: number };
+  width?: number | null;
+  height?: number | null;
+  data?: AgentNodeData;
 }
 
 // Must match GROUP_PAD / GROUP_HEADER in App.tsx so the decorative card lines
@@ -16,8 +25,26 @@ const HEADER_H = 26;
 const LABEL_LIFT = 12; // px the label tab sits above the box's top edge
 
 function selectClusters(s: ReactFlowState): Cluster[] {
+  return clusterBounds(s.nodeInternals.values());
+}
+
+/**
+ * Where each session's decorative card goes, from the agent cards on screen.
+ *
+ * Pure so the geometry can be pinned without a store: the store is where the
+ * bug came from, not the arithmetic.
+ */
+export function clusterBounds(nodes: Iterable<ClusterNode>): Cluster[] {
   const bySession = new Map<string, { minX: number; minY: number; maxX: number; maxY: number; label: string }>();
-  for (const n of s.nodeInternals.values()) {
+  for (const n of nodes) {
+    // Only agent cards define a session's bounds. The invisible per-session
+    // drag handle is a React Flow node like any other and its data carries the
+    // session's own sessionId, so walking the store by data alone counted the
+    // handle as a member — and the handle is already the cards' box plus PAD.
+    // The card then settled one PAD larger than the handle it exists to trace:
+    // an 18px rim of visible session box that no session drag responds to, and
+    // half the breathing room layout.ts budgets between two stacked sessions.
+    if (n.type !== "agent") continue;
     const d = n.data as AgentNodeData;
     if (!d?.sessionId) continue;
     // Skip retiring agents — they're fading out. Including them keeps the
