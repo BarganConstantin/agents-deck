@@ -345,10 +345,15 @@ button.btn {
   cursor: pointer;
   font: inherit;
   font-size: 12px;
-  transition: border-color 120ms, color 120ms, background 120ms;
+  transition: border-color 120ms, color 120ms, background 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 button.btn:hover { border-color: var(--accent-dim); color: var(--accent); }
-button.btn:active { transform: translateY(1px); }
+/* Scale, not a 1px drop. A press should read as the surface giving under the
+   finger; a translate reads as the label jumping, and at 1px it mostly reads as
+   nothing at all — which is what a button that does something irreversible can
+   least afford. */
+button.btn:active:not(:disabled) { transform: scale(0.97); }
 button.btn.primary { background: var(--accent-dim); color: var(--text); border-color: var(--accent-dim); }
 button.btn.warn {
   border-color: rgba(252, 211, 77, 0.5);
@@ -3428,9 +3433,11 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   font: inherit;
   font-size: 10.5px;
   cursor: pointer;
-  transition: border-color 120ms, color 120ms, background 120ms;
+  transition: border-color 120ms, color 120ms, background 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ap-manage-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.ap-manage-btn:active:not(:disabled) { transform: scale(0.97); }
 .ap-manage-btn:disabled { opacity: 0.45; cursor: default; }
 .ap-manage-btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
 /* Armed is a different button, not a hover state: it is one click from
@@ -3658,4 +3665,75 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .cat-filter-bar.occluded:focus-within { opacity: 1; }
 @media (hover: hover) and (pointer: fine) {
   .cat-filter-bar.occluded:hover { opacity: 1; }
+}
+
+/* ── accounts panel: the details that decide whether it feels built ────────── */
+
+/* The manage drawer is a rare, deliberate action — it opens when you press ⋯ —
+   so it can afford to arrive rather than appear. 180ms, ease-out, from 4px up:
+   the direction says "this belongs to the row above it". */
+.ap-manage {
+  animation: ap-manage-in 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+@keyframes ap-manage-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.ap-more { transition: opacity 140ms ease, color 120ms, border-color 120ms,
+                       transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
+.ap-more:active { transform: scale(0.94); }
+
+/* Armed remove: the four-second window is real, so it is visible. A bar drains
+   left to right, linear, for exactly as long as the button stays armed —
+   nothing about a countdown should ease. */
+.ap-manage-btn.danger.armed {
+  position: relative;
+  overflow: hidden;
+}
+.ap-manage-btn.danger.armed::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  transform-origin: left center;
+  animation: ap-disarm 4000ms linear forwards;
+}
+@keyframes ap-disarm { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+/* The share block: one click selects the whole thing, because the next move is
+   always "copy this somewhere else" and a partial selection is a broken share.
+   And it is ONE line — nobody reads a base64 payload, but four lines of it in a
+   288px panel shouts over the account it belongs to. The ellipsis says "there
+   is more", the copy button takes all of it, and select-all still gets the lot
+   for anyone who wants to see it. */
+.ap-share { animation: ap-manage-in 180ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+.ap-share-blob {
+  user-select: all;
+  max-height: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-dim);
+}
+/* Copy is the point of the whole block, so it looks like it. */
+.ap-share-foot .ap-manage-btn {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.ap-share-foot .ap-manage-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* Past its expiry the blob is inert — not hidden, because the countdown next to
+   it has to stay legible enough to explain why. */
+.ap-share.expired .ap-share-blob { opacity: 0.45; }
+.ap-share-expiry.soon { color: var(--warn); }
+.ap-share-expiry.gone { color: var(--err); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-manage, .ap-share { animation: none; }
+  .ap-manage-btn.danger.armed::after { animation: none; transform: scaleX(0); }
+  button.btn:active:not(:disabled), .ap-manage-btn:active:not(:disabled), .ap-more:active { transform: none; }
 }

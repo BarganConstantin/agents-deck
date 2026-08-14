@@ -54,3 +54,26 @@ describe("anyTouches", () => {
     expect(anyTouches(null, [box(0, 0, 999, 999)])).toBe(false);
   });
 });
+
+// A share is a live credential with a ten-minute life. The countdown is the
+// only thing on screen that says so, which makes its wording and its colour
+// part of the security story rather than decoration.
+import { shareExpiry } from "../components/AccountsPanel";
+
+describe("shareExpiry", () => {
+  /** `left` is how many seconds remain, so the sign reads the way it is said. */
+  const withLeft = (left: number) => shareExpiry(1_800_000_000_000, 1_800_000_000 - left);
+
+  it("counts minutes while there is time", () => {
+    expect(withLeft(600)).toEqual({ text: "expires in 10m", tone: "ok" });
+  });
+
+  it("switches to seconds, and to a warning colour, in the last minute", () => {
+    expect(withLeft(45)).toEqual({ text: "expires in 45s", tone: "soon" });
+  });
+
+  it("says expired rather than counting into the negative", () => {
+    expect(withLeft(0)).toEqual({ text: "expired", tone: "gone" });
+    expect(withLeft(-30)).toEqual({ text: "expired", tone: "gone" });
+  });
+});
