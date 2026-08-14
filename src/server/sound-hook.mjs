@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { readSettingsForWrite, writeFileAtomic } from "./installer.mjs";
 
 const PKG_ROOT      = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLAUDE_DIR    = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
@@ -32,13 +33,30 @@ const PARKED_PATH = join(homedir(), ".agents-deck", "parked-sound-hooks.json");
 // what is already there — never to modify or remove it.
 const SOUND_HINTS = [/\bafplay\b/i, /Media\.SoundPlayer/i, /\bpaplay\b/i, /\baplay\b/i, /canberra-gtk-play/i];
 
+/**
+ * Read settings.json, refusing to guess at a file that will not parse.
+ *
+ * Shared with the hook installer, because the danger is the same: this module
+ * rewrites the whole file, so treating a damaged one as `{}` replaces every
+ * permission, env var and hook the user has with nothing but the sound entry.
+ * Only a missing file is an empty one — a stray comma, a BOM, a half-written
+ * save from another process all throw SETTINGS_UNREADABLE instead.
+ */
 async function readSettings() {
-  try {
-    const parsed = JSON.parse(await readFile(SETTINGS_PATH, "utf8"));
-    return (parsed && typeof parsed === "object") ? parsed : {};
-  } catch {
-    return {};
-  }
+  const { settings } = await readSettingsForWrite(SETTINGS_PATH);
+  return settings;
+}
+
+const isUnreadable = (err) => err?.code === "SETTINGS_UNREADABLE";
+
+/** What every entry point here answers with when it will not touch the file. */
+function refusal(err) {
+  return {
+    ok: false,
+    reason: "settings_unreadable",
+    settingsPath: SETTINGS_PATH,
+    message: err?.message ?? String(err),
+  };
 }
 
 /**
@@ -46,11 +64,7 @@ async function readSettings() {
  * has, and a torn write costs them all of them.
  */
 async function writeSettings(settings) {
-  const tmp = `${SETTINGS_PATH}.agent-dag-${process.pid}.tmp`;
-  await writeFile(tmp, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  const { rename, unlink } = await import("node:fs/promises");
-  try { await rename(tmp, SETTINGS_PATH); }
-  catch (err) { await unlink(tmp).catch(() => {}); throw err; }
+  await writeFileAtomic(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
 }
 
 const isOurs = (g) => g?.[MARK] === true;
@@ -105,7 +119,16 @@ function isSoundHook(entry) {
 }
 
 export async function soundHookStatus() {
-  const settings = await readSettings();
+  let settings;
+  try {
+    settings = await readSettings();
+  } catch (err) {
+    if (!isUnreadable(err)) throw err;
+    // Reporting a healthy "off" here would be a lie the user acts on: the
+    // toggle cannot do anything until they repair the file, so say which file
+    // and why rather than offering a switch that will refuse.
+    return { ...refusal(err), enabled: false, platform: process.platform, foreign: [], parked: (await readParked()).length };
+  }
   const group = settings?.hooks?.[EVENT];
   const parked = await readParked();
   return {
@@ -126,7 +149,15 @@ export async function soundHookStatus() {
 export async function restoreParkedSoundHooks() {
   const parked = await readParked();
   if (parked.length === 0) return { ok: true, restored: 0 };
-  const settings = await readSettings();
+  let settings;
+  try {
+    settings = await readSettings();
+  } catch (err) {
+    if (!isUnreadable(err)) throw err;
+    // The parked file is left as it is, so the restore works once the user has
+    // fixed settings.json. Nothing is lost by waiting.
+    return refusal(err);
+  }
   settings.hooks ??= {};
   const group = Array.isArray(settings.hooks[EVENT]) ? settings.hooks[EVENT] : [];
   settings.hooks[EVENT] = [...parked, ...group];
@@ -136,7 +167,15 @@ export async function restoreParkedSoundHooks() {
 }
 
 export async function setSoundHook(enabled) {
-  const settings = await readSettings();
+  // Read before anything else. A file we cannot parse stops the toggle here,
+  // with nothing parked, nothing copied and settings.json untouched.
+  let settings;
+  try {
+    settings = await readSettings();
+  } catch (err) {
+    if (!isUnreadable(err)) throw err;
+    return refusal(err);
+  }
   settings.hooks ??= {};
   const group = Array.isArray(settings.hooks[EVENT]) ? settings.hooks[EVENT] : [];
 
@@ -173,3 +212,7 @@ export async function setSoundHook(enabled) {
   await writeSettings(settings);
   return { ok: true, enabled };
 }
+
+// Both paths are exported so a test can prove it is pointed at a sandbox
+// before it writes anything — the real ones are the user's own settings.
+export { SETTINGS_PATH, PARKED_PATH };
