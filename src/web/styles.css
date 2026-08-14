@@ -6,6 +6,24 @@
   --line: #1f2229;
   --line-soft: #1a1c22;
   --text: #d8dae0;
+  /* The control surface — a fill and an edge for anything the user can operate.
+     #325 measured a pill filled from --bg-soft and edged with --line and found
+     it had neither: 1.04:1 and 1.14:1 on this canvas, 1.00:1 and 1.60:1 on the
+     white one, under the 3:1 that 1.4.11 asks of a control its boundary is the
+     only identification for. It fixed five controls with these two values
+     scoped to .ap-account; #332 swept the other sixty-five and found the same
+     defect on twenty-two, in BOTH themes — so the values move to where every
+     control can read them, and the row's private copy goes.
+     Mixed from --text rather than borrowed from another surface, which is the
+     property that made #325's fix work: a tier derived from the foreground
+     exists in both themes by construction and cannot collapse into the paper
+     the way --bg-soft does on white. Both blocks declare them identically for
+     exactly that reason — the theme is already inside var(--text).
+     This is deliberately NOT --line. Lifting --line would redraw every panel
+     edge, table rule, card and separator in the app to solve a problem that
+     belongs to controls; #325 declined to do that and #332 keeps declining. */
+  --ctl-fill: color-mix(in srgb, var(--text) 7%, transparent);
+  --ctl-edge: color-mix(in srgb, var(--text) 50%, transparent);
   --muted: #7e828c;
   --muted-dim: #50535b;
   /* Annotation text. --muted-dim is a decorative tint — 2.35:1 on --panel — and
@@ -50,6 +68,22 @@
 
 :root[data-theme="light"] {
   --bg: #eef1f6;
+  /* Byte-identical to --panel, and staying that way. #332 asked whether this
+     ramp should gain the recessed tier it has in dark, and the answer white
+     gives is no: --panel is #ffffff, the ceiling, so anything between it and
+     the #eef1f6 canvas is at most 1.09:1 from either neighbour — not a tier,
+     noise — and buying even that costs the foregrounds that land on it. At
+     #f6f8fb the two status hues drop from 5.02:1 to 4.71:1 and #330's cluster
+     label falls from 4.68:1 to 4.41:1 under its own brightness(0.85) drag,
+     which is AA gone to buy a step nobody can see. So the light sheet has two
+     surface tiers, on purpose, and stops asking for a third. What follows from
+     that is where the fix went: a control cannot be identified by a fill that
+     does not exist, so it is identified by its EDGE, and --ctl-edge is derived
+     from the foreground and therefore does exist here. The rules still reading
+     --bg-soft are the ones a no-op costs nothing — surfaces (the node and
+     topbar gradients, code and kbd, the share blob) and the few controls whose
+     own words are --muted, which cannot afford a foreground-mixed fill in dark
+     either. Same shape of argument as --text-dim's, one theme over. */
   --bg-soft: #ffffff;
   --panel: #ffffff;
   --line: #c8cdd6;
@@ -58,10 +92,18 @@
   --muted: #4a5260;
   --muted-dim: #7c8493;
   --text-dim: #5f6673;
+  /* Identical to the dark block by construction — see the note there. */
+  --ctl-fill: color-mix(in srgb, var(--text) 7%, transparent);
+  --ctl-edge: color-mix(in srgb, var(--text) 50%, transparent);
   --accent: #0369a1;
   --accent-dim: rgba(3,105,161,0.22);
-  --ok: #15803d;
-  --warn: #b45309;
+  /* Both were a tenth under AA on the canvas — 4.43:1 and 4.44:1 against
+     --bg — while clearing it on every panel, so they failed only where they
+     are read most: a tool burst's ✓ and the cost line on a node. Two steps
+     darker each, same hue, and they clear 4.5:1 on every surface in the sheet
+     including the one they are painted over on white. */
+  --ok: #157a3a;
+  --warn: #ad4e08;
   --err: #b91c1c;
   --inflight: #7e22ce;
   --shadow-1: 0 4px 14px rgba(15,23,42,0.10);
@@ -213,12 +255,16 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
 .topbar .brand button.v:not(.stale) {
   color: var(--muted);
   font-weight: 400;
-  border-color: var(--line);
+  border-color: var(--ctl-edge);
 }
+/* --muted-dim was 2.35:1 here, below the 4.10:1 the chip now rests at, so the
+   pointer LOWERED the only line that said "control". The edge goes to the whole
+   foreground the way the label does — half of --text at rest, all of it under
+   the pointer, one gesture in two channels. */
 .topbar .brand button.v:not(.stale):hover {
   color: var(--text);
-  border-color: var(--muted-dim);
-  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-color: var(--text);
+  background: var(--ctl-fill);
 }
 /* A forced check is a request to npm, which on a slow line is seconds. Without
    this the click looks like it did nothing at all. */
@@ -226,13 +272,19 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   cursor: progress;
   opacity: 0.6;
 }
+/* 85%, not 34%: a third of --warn is 3.05:1 on this canvas and 1.81:1 on white,
+   the amber equivalent of the --line edge above it. #325 found 65% enough for
+   an --err boundary and it is not enough for a --warn one — light --warn is
+   #ad4e08 against an #eef1f6 canvas, which leaves 4.79:1 of headroom to spend
+   where --err has 6.47:1, so 65% of it lands at 2.83:1. Every --warn boundary
+   in the sheet is 85% for that reason, and every --err boundary stays 65%. */
 .topbar .brand button.v.stale {
   color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 34%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 85%, transparent);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 .topbar .brand button.v.stale:hover {
-  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  border-color: var(--warn);
   background: color-mix(in srgb, var(--warn) 18%, transparent);
 }
 .topbar .brand button.v .v-dot {
@@ -255,8 +307,13 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   gap: 8px;
   padding: 4px 6px 4px 10px;
   margin: 0 12px 0 4px;
+  /* Not --ctl-fill, which is mixed from the foreground and therefore drags the
+     bed toward it: --muted on 7% of --text is 4.05:1 in dark, and the rate and
+     the cost inside this chip are --muted and --ok. A control whose own words
+     already sit near the floor of the readable ramp cannot take the control
+     fill; the boundary is what carries it, and that is what changed. */
   background: var(--bg-soft);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 999px;
   color: var(--text);
   font: inherit;
@@ -266,7 +323,7 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   min-width: 0;
   transition: border-color 120ms, background 120ms;
 }
-.selected-ribbon:hover { border-color: var(--accent-dim); background: var(--bg); }
+.selected-ribbon:hover { border-color: var(--accent); background: var(--bg); }
 .selected-ribbon:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .selected-ribbon .selected-label {
   font-weight: 600;
@@ -416,7 +473,7 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
 button.btn {
   background: transparent;
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   padding: 6px 12px;
   border-radius: 6px;
   cursor: pointer;
@@ -425,15 +482,26 @@ button.btn {
   transition: border-color 120ms, color 120ms, background 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-button.btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+/* The accent itself, never --accent-dim. The dim value is 1.91:1 in dark and
+   1.37:1 on white — under the resting edge in both — so every rule that reached
+   for it on hover was handing the pointer a control whose outline got FAINTER
+   the moment it was aimed at. Eleven rules did that; none does now. */
+button.btn:hover { border-color: var(--accent); color: var(--accent); }
 /* Scale, not a 1px drop. A press should read as the surface giving under the
    finger; a translate reads as the label jumping, and at 1px it mostly reads as
    nothing at all — which is what a button that does something irreversible can
    least afford. */
 button.btn:active:not(:disabled) { transform: scale(0.97); }
-button.btn.primary { background: var(--accent-dim); color: var(--text); border-color: var(--accent-dim); }
+/* The wash stays --accent-dim — it is a fill on an opaque bed and reads as one.
+   The EDGE cannot: 1.79:1 on white made the app's only filled button the one
+   with the least perceivable outline of the three .btn variants. */
+button.btn.primary { background: var(--accent-dim); color: var(--text); border-color: var(--accent); }
+/* Was rgba(252,211,77,0.5) with a light override at rgba(180,83,9,0.55) — two
+   hand-mixed alphas for one idea, and the light one measured 2.18:1 at the
+   bottom of the topbar gradient. One token-derived value at the 85% every
+   --warn boundary in this sheet uses, and the override goes with it. */
 button.btn.warn {
-  border-color: rgba(252, 211, 77, 0.5);
+  border-color: color-mix(in srgb, var(--warn) 85%, transparent);
   color: var(--warn);
 }
 button.btn.warn:hover { border-color: var(--warn); color: var(--warn); }
@@ -441,7 +509,7 @@ button.btn.warn:hover { border-color: var(--warn); color: var(--warn); }
    error colour, so the answer that truncates the event log can never be
    mistaken for the one that walks away — the same signal .ap-manage-btn.danger
    gives the account-removal button. */
-button.btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+button.btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 65%, transparent); }
 button.btn.danger:hover {
   border-color: var(--err);
   color: var(--err);
@@ -473,10 +541,12 @@ button.btn.icon-btn {
   font-size: 14px;
   pointer-events: none;
 }
+/* Keeps --bg-soft for the reason .selected-ribbon does: the placeholder is
+   --muted, and the control fill would take it to 4.05:1 in dark. */
 .search input {
   background: var(--bg-soft);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   padding: 6px 26px 6px 24px;
   border-radius: 6px;
   font: inherit;
@@ -625,15 +695,15 @@ button.btn.icon-btn {
   align-items: center;
   gap: 8px;
   padding: 3px 5px 3px 9px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 999px;
-  background: var(--bg-soft);
+  background: var(--ctl-fill);
   color: var(--text);
   cursor: pointer;
   transition: border-color 130ms, background 130ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.ver-banner .ver-cmd:hover { border-color: var(--accent-dim); background: var(--panel); }
+.ver-banner .ver-cmd:hover { border-color: var(--accent); background: var(--panel); }
 .ver-banner .ver-cmd:active { transform: scale(0.97); }
 .ver-banner .ver-cmd code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -668,7 +738,7 @@ button.btn.icon-btn {
 /* The one action in the row. Filled, because everything else here is text. */
 .ver-banner .ver-act {
   padding: 3px 11px;
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 85%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--warn) 16%, transparent);
   color: var(--warn);
@@ -680,7 +750,7 @@ button.btn.icon-btn {
 }
 .ver-banner .ver-act:hover:not(:disabled) {
   background: color-mix(in srgb, var(--warn) 26%, transparent);
-  border-color: color-mix(in srgb, var(--warn) 70%, transparent);
+  border-color: var(--warn);
 }
 .ver-banner .ver-act:disabled { opacity: 0.6; cursor: default; }
 /* A failed install is not a warning, it is a failure, and the command beside it
@@ -704,7 +774,7 @@ button.btn.icon-btn {
   transition: color 130ms, border-color 130ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.ver-banner .ver-auto:hover { color: var(--text); border-color: var(--line); }
+.ver-banner .ver-auto:hover { color: var(--text); border-color: var(--ctl-edge); }
 .ver-banner .ver-auto:active { transform: scale(0.97); }
 .ver-banner .ver-auto i {
   width: 6px; height: 6px; border-radius: 50%;
@@ -829,7 +899,12 @@ button.btn.icon-btn {
 }
 .cat-filter .cat-emoji { font-size: 13px; line-height: 1; }
 .cat-filter .cat-name { text-transform: lowercase; }
-.cat-filter:hover { background: var(--bg-soft); }
+/* --bg-soft was this hover's whole feedback and it is --panel's own value on
+   white, so on the light canvas hovering a category chip did nothing at all.
+   --ctl-fill is 7% of the foreground, which exists in both themes. The resting
+   border stays transparent: the chip is named by its emoji and its word, which
+   is the identification 1.4.11 accepts in place of a boundary. */
+.cat-filter:hover { background: var(--ctl-fill); }
 .cat-filter:active { transform: scale(0.97); }
 .cat-filter:focus-visible {
   outline: 2px solid var(--accent);
@@ -876,8 +951,8 @@ button.btn.icon-btn {
 }
 .detail-close:hover {
   color: var(--text);
-  background: var(--bg-soft, rgba(127,127,127,0.12));
-  border-color: var(--line);
+  background: var(--ctl-fill);
+  border-color: var(--ctl-edge);
 }
 /* Deeper than the 0.97 a full-size button gets: on a 24px square, three
    percent is under a pixel of travel and reads as nothing happening. */
@@ -900,7 +975,7 @@ button.btn.icon-btn {
   line-height: 1;
   color: var(--muted);
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-right: none;
   border-radius: 8px 0 0 8px;
   cursor: pointer;
@@ -1050,7 +1125,12 @@ button.btn.icon-btn {
   border-bottom: 1px solid var(--line);
   fill: var(--text);
 }
-.react-flow__controls-button:hover { background: var(--bg-soft); }
+/* The stack's own outline and the rules between its buttons stay --line: they
+   are the frame around a group, not the identification of one control. Each
+   button inside is named by its glyph, which is what 1.4.11 asks for when a
+   boundary is absent — so only the hover fill moves, because --bg-soft gave it
+   nothing to show on white. */
+.react-flow__controls-button:hover { background: var(--ctl-fill); }
 
 /* ---------------- agent node ---------------- */
 
@@ -1148,7 +1228,7 @@ button.btn.icon-btn {
 .ctx-modal-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
 .ctx-modal-close {
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   color: var(--text);
   border-radius: 6px;
   width: 28px; height: 28px;
@@ -1157,7 +1237,7 @@ button.btn.icon-btn {
   transition: background 120ms, border-color 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.ctx-modal-close:hover { background: var(--bg-soft); }
+.ctx-modal-close:hover { background: var(--ctl-fill); }
 .ctx-modal-close:active { transform: scale(0.94); }
 .ctx-window-row { margin-bottom: 16px; }
 .ctx-window-bar {
@@ -1910,10 +1990,18 @@ button.btn.icon-btn {
   transition: background 120ms, border-color 120ms;
   min-width: 0;
 }
-.session-list .sl-row:hover { background: var(--bg-soft); }
+/* Both states were carried by a --bg-soft wash, which on white is --panel — so
+   hovering a session row and selecting one looked exactly like doing neither.
+   The fill cannot become --ctl-fill here: the row's meta line is --muted, and a
+   fill mixed from the foreground would take it to 4.05:1 in dark. So the wash
+   stays what it is and the boundary does the work, which is the right channel
+   for a state anyway — the row already declares a transparent border for
+   exactly this. Selection takes the accent outright; --accent-dim, which it
+   had, measured 1.39:1 on white. */
+.session-list .sl-row:hover { background: var(--bg-soft); border-color: var(--ctl-edge); }
 .session-list .sl-row.selected {
   background: var(--bg-soft);
-  border-color: var(--accent-dim);
+  border-color: var(--accent);
 }
 .session-list .sl-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -2181,7 +2269,7 @@ button.tool.clickable {
   transition: background 120ms;
 }
 button.tool.clickable { padding-left: 6px; padding-right: 6px; }
-button.tool.clickable:hover { background: var(--bg-soft); }
+button.tool.clickable:hover { background: var(--ctl-fill); }
 button.tool.clickable:last-child { border-bottom: none; }
 
 /* ---------------- shortcuts grid ---------------- */
@@ -2587,17 +2675,24 @@ button.tool.clickable:last-child { border-bottom: none; }
    Hardcoded rgba() tints elsewhere in this file were picked for dark
    surfaces; on white they vanish. Re-tint with deeper, more saturated
    versions only when the light theme is active. */
+/* Opaque tints, for the reason the node rings below are opaque: a 10% wash is
+   whatever it is painted over, and these three sit on the topbar GRADIENT,
+   which runs from #ffffff to #eef1f6 across the 52px they are centred in. The
+   pill's own word therefore had a different ratio at the top of the bar than
+   at the bottom — 4.39:1 and 3.90:1 for `live`, so the state of the connection
+   was under AA at the darker end. Composited against white once, here, the
+   number is the same wherever the pill lands. */
 :root[data-theme="light"] .topbar .status .pill.live {
   border-color: rgba(21,128,61,0.45);
-  background: rgba(21,128,61,0.10);
+  background: #e8f2eb;
 }
 :root[data-theme="light"] .topbar .status .pill.paused {
   border-color: rgba(180,83,9,0.50);
-  background: rgba(180,83,9,0.10);
+  background: #f8eee6;
 }
 :root[data-theme="light"] .topbar .status .pill.dead {
   border-color: rgba(185,28,28,0.50);
-  background: rgba(185,28,28,0.10);
+  background: #f8e8e8;
 }
 :root[data-theme="light"] .agent-node.state-active {
   border-color: rgba(126,34,206,0.65);
@@ -2645,11 +2740,6 @@ button.tool.clickable:last-child { border-bottom: none; }
 :root[data-theme="light"] .conn-banner {
   background: linear-gradient(90deg, rgba(185,28,28,0.14), transparent);
   border-bottom-color: rgba(185,28,28,0.45);
-}
-
-:root[data-theme="light"] button.btn.warn {
-  border-color: rgba(180,83,9,0.55);
-  color: var(--warn);
 }
 
 /* search clear button is muted-gray on white — bump it */
@@ -3029,7 +3119,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   transition: background 120ms, color 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.uh-close:hover { color: var(--text); background: var(--bg-soft); }
+.uh-close:hover { color: var(--text); background: var(--ctl-fill); }
 .uh-close:active { transform: scale(0.94); }
 
 .uh-status { padding: 40px 0; text-align: center; color: var(--muted); font-size: 12px; }
@@ -3328,7 +3418,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   align-items: center;
   gap: 5px;
   padding: 2px 8px 2px 7px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 999px;
   background: transparent;
   font: inherit;
@@ -3345,11 +3435,11 @@ button.tool.clickable:last-child { border-bottom: none; }
   flex-shrink: 0;
 }
 button.ap-auto-state { cursor: pointer; transition: border-color 120ms, color 120ms; }
-button.ap-auto-state:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+button.ap-auto-state:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 button.ap-auto-state:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-auto-state.live {
-  border-color: var(--accent-dim);
+  border-color: var(--accent);
   color: var(--accent);
 }
 
@@ -3448,16 +3538,16 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   opacity: 0.5;
   pointer-events: none;
 }
-/* Both selects share this rule and only one of them sits in the manage block,
-   so the lifted fill and edge arrive through the var() fallback: inside
-   .ap-account the row's own tokens answer, and the auto-switch threshold below
-   keeps exactly the values it had. */
+/* Both selects share this rule; under #325 only the one inside .ap-account got
+   the lifted fill and edge and the auto-switch threshold below kept the values
+   the report failed. With the tokens at :root there is one control surface and
+   both read it. */
 .ap-field select {
   appearance: none;
   -webkit-appearance: none;
-  background: var(--ap-ctl-fill, var(--bg-soft));
+  background: var(--ctl-fill);
   color: var(--text);
-  border: 1px solid var(--ap-ctl-edge, var(--line));
+  border: 1px solid var(--ctl-edge);
   border-radius: 5px;
   padding: 2px 19px 2px 7px;
   font: inherit;
@@ -3467,13 +3557,12 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   cursor: pointer;
   transition: border-color 120ms, color 120ms;
 }
-.ap-field select:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
-/* --accent-dim is 1.91:1 dark / 1.39:1 light, which inside the manage block
-   would make hovering the slot select DIM its boundary from the 3.55:1 it rests
-   at. Only there — the auto-switch select rests on --line and the dim edge is
-   still a lift for it. */
-.ap-manage .ap-field select:hover:not(:disabled) { border-color: var(--accent); }
-/* And left, where the shared rule says right. Right-aligning a select sizes it
+/* --accent, not --accent-dim: #325 already had to override the dim edge inside
+   the manage block, where it dropped the slot select from 3.98:1 to 1.58:1 on
+   hover. The auto-switch select rests on the same edge now, so the override is
+   the rule and the local copy is gone. */
+.ap-field select:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* Left, where the shared rule says right. Right-aligning a select sizes it
    to its widest option and then pins the SELECTED one to the chevron: correct
    for the auto-switch threshold, which is a number and reads against its own
    arrow, and wrong here now that the options are labels. `slot 2` in a box
@@ -3656,28 +3745,14 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    controls stay inside the existing `ap-` vocabulary rather than starting a
    new one: same 9–11.5px sizes, same tokens, same 120ms transitions. */
 
+/* No hover rule of its own: `button.btn:hover` outranks `.ap-add:hover` on
+   specificity anyway, and now that the shared rule draws the accent rather than
+   --accent-dim, the local one only restated a line it could never win. */
 .ap-add {
   font-size: 16px;
   line-height: 1;
   padding: 2px 8px 4px;
   color: var(--accent);
-}
-.ap-add:hover { border-color: var(--accent-dim); }
-
-/* The controls this row owns, in values mixed from the FOREGROUND rather than
-   borrowed from another surface. --bg-soft is 1.04:1 against --panel in dark
-   and byte-identical to it in light, so a pill painted with it had no fill at
-   all, and a --line border left its only boundary at 1.14:1 dark / 1.60:1
-   light — under the 3:1 that 1.4.11 asks of a control nothing else identifies.
-   Mixed from --text the edge lands at 4.10:1 dark / 3.55:1 light on --panel,
-   and still clears 3:1 over the 6% accent wash the active row paints beneath
-   it. Scoped to the row rather than promoted to :root because lifting --line
-   globally would redraw every border in the app to fix a defect that is this
-   block's; the readers all fall back to the old value, so the same declarations
-   are unchanged wherever these do not reach. */
-.ap-account {
-  --ap-ctl-fill: color-mix(in srgb, var(--text) 7%, transparent);
-  --ap-ctl-edge: color-mix(in srgb, var(--text) 50%, transparent);
 }
 
 /* The row's own disclosure, and the only door to share, rename, move and
@@ -3706,7 +3781,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-account:hover .ap-more, .ap-more:hover, .ap-more:focus-visible, .ap-more.on {
   color: var(--text);
 }
-.ap-more:hover, .ap-more.on { border-color: var(--ap-ctl-edge, var(--line)); }
+.ap-more:hover, .ap-more.on { border-color: var(--ctl-edge); }
 
 .ap-manage {
   display: flex;
@@ -3775,9 +3850,9 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-manage-input {
   min-width: 0;
   padding: 3px 7px;
-  border: 1px solid var(--ap-ctl-edge, var(--line));
+  border: 1px solid var(--ctl-edge);
   border-radius: 6px;
-  background: var(--ap-ctl-fill, var(--bg-soft));
+  background: var(--ctl-fill);
   color: var(--text);
   font: inherit;
   font-size: 11px;
@@ -3793,9 +3868,9 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    another. */
 .ap-manage-btn {
   padding: 3px 9px;
-  border: 1px solid var(--ap-ctl-edge, var(--line));
+  border: 1px solid var(--ctl-edge);
   border-radius: 999px;
-  background: var(--ap-ctl-fill, var(--bg-soft));
+  background: var(--ctl-fill);
   color: var(--text);
   font: inherit;
   font-size: 10.5px;
@@ -3855,7 +3930,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .aa-tabs { display: inline-flex; gap: 4px; }
 .aa-tab {
   padding: 4px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 999px;
   background: none;
   color: var(--muted);
@@ -3867,7 +3942,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .aa-tab:hover { color: var(--text); }
 .aa-tab.on {
   color: var(--text);
-  border-color: var(--accent-dim);
+  border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
@@ -3887,9 +3962,9 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .aa-link {
   overflow-wrap: anywhere;
   padding: 8px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 8px;
-  background: var(--bg-soft);
+  background: var(--ctl-fill);
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -3897,15 +3972,16 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   text-decoration: none;
   user-select: all;
 }
-.aa-link:hover { border-color: var(--accent-dim); text-decoration: underline; }
+.aa-link:hover { border-color: var(--accent); text-decoration: underline; }
 
 .aa-field { display: flex; align-items: center; gap: 8px; }
 .aa-field input {
   flex: 1;
   min-width: 0;
   padding: 7px 11px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 8px;
+  /* --bg-soft, not --ctl-fill: the placeholder here is --text-dim. */
   background: var(--bg-soft);
   color: var(--text);
   font: inherit;
@@ -4134,7 +4210,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-fix {
   margin-left: 6px;
   padding: 1px 8px;
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 85%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--warn) 12%, transparent);
   color: var(--warn);
