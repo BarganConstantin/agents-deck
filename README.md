@@ -151,13 +151,18 @@ One canvas. No tabs. No kanban.
 
 ## Names
 
-One package, three commands — use whichever you can remember.
+The repository is **ccdeck**, because that is what people type. On npm the same
+build is published under three names, and all three ship all three commands —
+use whichever you can remember.
 
 ```bash
-npx ccdeck        # short
-npx agents-deck   # canonical
+npx ccdeck        # short, and the name of this repo
+npx agents-deck   # the canonical package name
 npx agent-dag     # the original name; existing installs and scripts keep working
 ```
+
+The old repository URL redirects here, so existing clones, links and bookmarks
+keep working.
 
 ## Requirements
 

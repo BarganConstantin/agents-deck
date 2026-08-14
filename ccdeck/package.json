@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BarganConstantin/agents-deck.git"
+    "url": "git+https://github.com/BarganConstantin/ccdeck.git"
   },
-  "homepage": "https://github.com/BarganConstantin/agents-deck#readme"
+  "homepage": "https://github.com/BarganConstantin/ccdeck#readme"
 }
