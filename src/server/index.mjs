@@ -1492,6 +1492,20 @@ async function handleClaudeAccountSwitch(req, res) {
   // The active account just moved; the next poll should see it immediately
   // rather than serving the pre-switch roster for another few seconds.
   invalidateClaudeAccountsCache();
+  // The 5h/7d percentages moved with it — they are read for whichever account is
+  // active — and only this side knows: /api/quota is polled by the usage panel,
+  // which has no idea the accounts panel just switched and so never sends
+  // ?refresh=1. Without this the two panels sit on one screen disagreeing about
+  // the same account for a full poll cycle, and the stale one is the one the
+  // user just acted on. Only on a switch that took: a refused one left the
+  // account where it was, and throwing away a reading we paid for costs a real
+  // answer to fix nothing.
+  if (result.ok) {
+    const { invalidateQuotaCache } = await import(
+      pathToFileURL(join(PKG_ROOT, "src/server/quota.mjs")).href
+    );
+    invalidateQuotaCache();
+  }
   send(res, result.ok ? 200 : 400, result);
 }
 
