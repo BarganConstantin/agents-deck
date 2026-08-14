@@ -1,6 +1,6 @@
-// Pure cache-eviction rule shared by the position cache and the pin cache.
-// Kept out of App.tsx so it can be unit-tested without pulling in React Flow
-// or the DOM.
+// Pure cache-eviction rules shared by the position cache, the pin cache and
+// the node-size cache. Kept out of App.tsx so they can be unit-tested without
+// pulling in React Flow or the DOM.
 
 /** Anything that can answer "how many agents do I know about, and is this one
  *  of them" — a Map of agents keyed by id, or a plain Set of ids. */
@@ -20,4 +20,24 @@ export function pruneStaleEntries<T>(cache: Map<string, T>, live: LiveIds): void
   for (const id of Array.from(cache.keys())) {
     if (!live.has(id)) cache.delete(id);
   }
+}
+
+/**
+ * The node ids a live agent map can legitimately produce on the canvas.
+ *
+ * The size cache is keyed by React Flow node id, and this canvas renders two
+ * kinds of node: one card per agent, plus one invisible per-session drag
+ * handle with the id `group:<sessionId>`. Pruning that cache against the agent
+ * map alone would therefore evict every session handle on one frame and
+ * re-measure it on the next, so the handle ids are named here explicitly.
+ */
+export function measuredNodeIds(
+  agents: Iterable<{ id: string; sessionId: string }>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const a of agents) {
+    ids.add(a.id);
+    ids.add(`group:${a.sessionId}`);
+  }
+  return ids;
 }
