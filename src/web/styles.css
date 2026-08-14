@@ -271,9 +271,11 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  transition: background 120ms, color 120ms;
+  transition: background 120ms, color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .selected-ribbon .selected-close:hover { background: var(--line); color: var(--text); }
+.selected-ribbon .selected-close:active { transform: scale(0.94); }
 .topbar .status {
   color: var(--muted);
   font-size: 12px;
@@ -536,9 +538,11 @@ button.btn.icon-btn {
   background: var(--bg-soft);
   color: var(--text);
   cursor: pointer;
-  transition: border-color 130ms, background 130ms;
+  transition: border-color 130ms, background 130ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ver-banner .ver-cmd:hover { border-color: var(--accent-dim); background: var(--panel); }
+.ver-banner .ver-cmd:active { transform: scale(0.97); }
 .ver-banner .ver-cmd code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
@@ -605,9 +609,11 @@ button.btn.icon-btn {
   font: inherit;
   font-size: 11.5px;
   cursor: pointer;
-  transition: color 130ms, border-color 130ms;
+  transition: color 130ms, border-color 130ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ver-banner .ver-auto:hover { color: var(--text); border-color: var(--line); }
+.ver-banner .ver-auto:active { transform: scale(0.97); }
 .ver-banner .ver-auto i {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--muted-dim);
@@ -637,9 +643,11 @@ button.btn.icon-btn {
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  transition: background 120ms, color 120ms;
+  transition: background 120ms, color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ver-banner .ver-close:hover { background: var(--line); color: var(--text); }
+.ver-banner .ver-close:active { transform: scale(0.94); }
 
 /* dim nodes that don't match search */
 .react-flow__node.rf-dim { opacity: 0.22; filter: saturate(0.4); }
@@ -724,11 +732,13 @@ button.btn.icon-btn {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.02em;
   cursor: pointer;
-  transition: background 120ms, color 120ms, opacity 120ms;
+  transition: background 120ms, color 120ms, opacity 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .cat-filter .cat-emoji { font-size: 13px; line-height: 1; }
 .cat-filter .cat-name { text-transform: lowercase; }
 .cat-filter:hover { background: var(--bg-soft); }
+.cat-filter:active { transform: scale(0.97); }
 .cat-filter:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -769,13 +779,17 @@ button.btn.icon-btn {
   border-radius: 6px;
   cursor: pointer;
   z-index: 2;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .detail-close:hover {
   color: var(--text);
   background: var(--bg-soft, rgba(127,127,127,0.12));
   border-color: var(--line);
 }
+/* Deeper than the 0.97 a full-size button gets: on a 24px square, three
+   percent is under a pixel of travel and reads as nothing happening. */
+.detail-close:active { transform: scale(0.94); }
 /* When the detail panel is closed, drop its 360px column so the canvas
    reclaims the space. Keyed off the reopen tab, which only renders when closed. */
 .app:has(.detail-reopen) { grid-template-columns: 1fr; }
@@ -1012,8 +1026,11 @@ button.btn.icon-btn {
   width: 28px; height: 28px;
   font-size: 18px; line-height: 1;
   cursor: pointer;
+  transition: background 120ms, border-color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ctx-modal-close:hover { background: var(--bg-soft); }
+.ctx-modal-close:active { transform: scale(0.94); }
 .ctx-window-row { margin-bottom: 16px; }
 .ctx-window-bar {
   position: relative;
@@ -1419,10 +1436,16 @@ button.btn.icon-btn {
   /* Wrap stays non-interactive — the bubble itself opts in to pointer events
      so the canvas can still be panned where the wrap extends beyond the pill. */
   pointer-events: none;
-  will-change: transform, left, top;
-  /* When a sibling fades and the index shifts, bubbles slide up smoothly.
-     Short enough not to lag agent drags noticeably. */
-  transition: top 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* Position snaps, on both axes. `left` and `top` are rewritten together from
+     the viewport on every pan and zoom frame, and the leader line to this
+     bubble is an SVG path redrawn from the same coordinates with no easing of
+     its own — so easing either axis here detaches the pill from its own
+     connector for the length of the transition. That held for the sibling
+     index shift the easing was added for as much as for a camera move: the
+     bubble slid up while its line jumped. Both ends move on the same frame or
+     neither does. Only `transform` is still written per frame, so only it is
+     worth promoting. */
+  will-change: transform;
 }
 .tool-burst {
   display: inline-flex;
@@ -1560,13 +1583,25 @@ button.btn.icon-btn {
   animation: bubble-fade 600ms ease-in forwards;
 }
 
-/* Clickable bubble — pointer-events on, hover lift */
+/* Clickable bubble — pointer-events on, hover lift.
+   The lift is `translate`, not `transform`, and that is not a style choice.
+   bubble-spawn runs with `both`, so it keeps filling its 100% keyframe —
+   `transform: translate(0,0) scale(1)` — for the rest of the bubble's life, and
+   an animation's declarations outrank author rules for as long as they fill.
+   A hover `transform` here was unreachable at every point a pointer could
+   reach it. The independent `translate` property is composed with the animated
+   transform rather than overridden by it, so it lands. */
 .tool-burst.clickable {
   pointer-events: auto;
   cursor: pointer;
+  /* The dim pair is restated, not inherited: .tool-burst.dim ties this rule on
+     specificity and loses on source order, so a search-dimmed bubble would
+     snap its fade the moment this transition existed. */
+  transition: translate 120ms ease, box-shadow 120ms ease,
+              opacity 180ms ease, filter 180ms ease;
 }
 .tool-burst.clickable:hover {
-  transform: translateY(-1px);
+  translate: 0 -1px;
   box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px var(--cat-accent, rgba(255,255,255,0.15));
 }
 .tool-burst.clickable:focus-visible {
@@ -2812,17 +2847,22 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   padding: 2px 9px; border: none; border-radius: 999px;
   color: var(--muted); background: transparent; cursor: pointer;
-  transition: background 120ms, color 120ms;
+  transition: background 120ms, color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .uh-range-btn:hover { color: var(--text); }
+.uh-range-btn:active { transform: scale(0.97); }
 .uh-range-btn.on { background: var(--accent-dim); color: var(--text); }
 .uh-reload { width: 24px; height: 24px; font-size: 13px; padding: 0; }
 .uh-close {
   width: 24px; height: 24px; font-size: 16px; line-height: 1;
   border: none; background: transparent; color: var(--muted);
   cursor: pointer; border-radius: 6px;
+  transition: background 120ms, color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .uh-close:hover { color: var(--text); background: var(--bg-soft); }
+.uh-close:active { transform: scale(0.94); }
 
 .uh-status { padding: 40px 0; text-align: center; color: var(--muted); font-size: 12px; }
 .uh-status.uh-err { color: var(--err); }
@@ -3339,6 +3379,82 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   transition: none;
 }
 
+/* ── reduced motion, on the canvas itself ─────────────────────────────────── */
+/*
+ * The blocks above cover the relayout easing and nothing else, so a user who
+ * asked the OS for less motion still got three spinning orbits, marching dashes
+ * down every live edge, a wobbling emoji per in-flight tool and a bubble flying
+ * out of an agent for every tool call. The canvas is the whole product, so the
+ * answer is not to switch animation off across it — a bubble that materialises
+ * with no change at all reads as a rendering fault, and the deck loses the cue
+ * that says something arrived.
+ *
+ * What goes is travel: rotation, scaling, dashes marching down a line, wobble,
+ * shake, and anything that carries a node or a session box across the viewport.
+ * What stays is opacity, which is not motion, plus every static colour, border
+ * and shadow the status classes already set — in flight still reads pink with a
+ * dot, done still reads green with a ✓.
+ *
+ * Entrances collapse to a 140ms fade. Exits keep their 600ms, because
+ * ToolBursts and the reducer both drop the element on a wall-clock timer of
+ * exactly that length; a bubble that vanished at 140ms would sit invisible
+ * while its connector was still drawn, which is the desync .tool-burst-wrap
+ * was just fixed for.
+ */
+@media (prefers-reduced-motion: reduce) {
+  /* A node appears and leaves. It never slides: the base transition is the
+     easing every non-drag layout move goes through. */
+  .react-flow__node {
+    transition: none;
+    animation: fadeIn 140ms ease both;
+  }
+  .react-flow__node.rf-exiting .agent-node,
+  .react-flow__edge.rf-edge-exiting .react-flow__edge-path {
+    animation: canvas-fade-out 600ms linear forwards;
+  }
+
+  /* Dashflow is a loop of pure travel down the full length of an edge, and on a
+     busy canvas there are a dozen of them at once. The dash pattern and the
+     in-flight stroke stay, so a live connection still looks different. */
+  .react-flow__edge.animated .react-flow__edge-path,
+  .react-flow__edge.rf-edge-selected .react-flow__edge-path,
+  .tool-conn.status-inflight { animation: none; }
+
+  /* The session box tracks nodes that no longer travel, so neither does it. */
+  .cluster-card { transition: opacity 200ms ease; }
+
+  /* Small, but still a scale under the pointer. */
+  .ctx-donut { transition: filter 120ms ease; }
+  .ctx-donut:hover { transform: none; }
+
+  /* Bubbles: the spawn arc, the done flash and the error shake all become the
+     fade. Their status classes keep the colour that carried the meaning. */
+  .tool-burst,
+  .tool-burst.sub,
+  .tool-burst.status-done,
+  .tool-burst.status-err,
+  .tool-burst.sub.status-done,
+  .tool-burst.sub.status-err { animation: fadeIn 140ms ease both; }
+  .tool-burst.fading,
+  .tool-burst.sub.fading { animation: canvas-fade-out 600ms linear forwards; }
+  .tool-burst .tb-spin,
+  .tool-burst .tb-mark,
+  .tool-burst.status-inflight .tb-emoji,
+  .state-pill.state-active::before { animation: none; }
+  .tool-burst.clickable { transition: box-shadow 120ms ease, opacity 180ms ease, filter 180ms ease; }
+  .tool-burst.clickable:hover { translate: none; }
+
+  /* Three rings turning under a pulsing core is the largest continuous motion
+     in the app and the only one with no state to report. Same diagram, still. */
+  .empty-hero .orbit.r1,
+  .empty-hero .orbit.r2,
+  .empty-hero .orbit.r3,
+  .empty-hero .core,
+  .empty-hero .core::after { animation: none; }
+
+  @keyframes canvas-fade-out { to { opacity: 0; } }
+}
+
 /* ---------------- accounts: add, manage, share ---------------- */
 /* The panel gained the ability to change the store, not just read it. These
    controls stay inside the existing `ap-` vocabulary rather than starting a
@@ -3711,7 +3827,15 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 @media (prefers-reduced-motion: reduce) {
   .ap-manage, .ap-share { animation: none; }
   .ap-manage-btn.danger.armed::after { animation: none; transform: scaleX(0); }
-  button.btn:active:not(:disabled), .ap-manage-btn:active:not(:disabled), .ap-more:active { transform: none; }
+  /* Every press in the app lands here, not just this panel's — the scale is one
+     convention and it has to switch off in one place, or the next control to
+     adopt it quietly reintroduces the motion. */
+  button.btn:active:not(:disabled), .ap-manage-btn:active:not(:disabled), .ap-more:active,
+  .cat-filter:active, .detail-close:active, .ctx-modal-close:active,
+  .uh-close:active, .uh-range-btn:active,
+  .selected-ribbon .selected-close:active,
+  .ver-banner .ver-cmd:active, .ver-banner .ver-auto:active,
+  .ver-banner .ver-close:active { transform: none; }
 }
 
 /* The one failure in this panel that waiting cannot fix. Sized like the other
