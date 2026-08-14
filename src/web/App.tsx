@@ -24,6 +24,7 @@ import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, shouldReloadBundle } from "./restart";
 import { isBrowserChord } from "./shortcuts";
 import { pruneStaleEntries } from "./prune";
+import { createRenderCoalescer } from "./coalesce";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -970,23 +971,31 @@ function Inner() {
   //      collided with the wall-clock visibility gate and made prior-turn
   //      subagents flash visible then vanish);
   //   2) the SSE handler coalesces renders during replay — one render at
-  //      replay-end, then live events render synchronously as before.
+  //      replay-end.
+  //
+  // Live traffic is coalesced too, but leading-edge (see coalesce.ts): the
+  // first event of a quiet stream still renders in its own task, while a tool
+  // storm — eight subagents each firing PreToolUse/PostToolUse arrives as
+  // dozens of separate macrotasks that React cannot batch — collapses into one
+  // render per window instead of one full canvas rebuild per event. Every
+  // envelope is still applied to the reducer the instant it lands, in order,
+  // so coalescing costs redraws and never state.
   //
   // Fallback heuristic (`Date.now() - receivedAt > 30s`) covers older
   // servers without the replay flag.
   const replayActiveRef = useRef<boolean>(true);
-  const replayRenderTimerRef = useRef<number | null>(null);
   useEffect(() => {
     const es = new EventSource("/events");
+    const coalescer = createRenderCoalescer(rerender, {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimeout: (id) => window.clearTimeout(id),
+    });
     es.addEventListener("open", () => { setLive(true); setEverConnected(true); });
     es.addEventListener("error", () => setLive(false));
     es.addEventListener("replay-end", () => {
       replayActiveRef.current = false;
-      if (replayRenderTimerRef.current != null) {
-        window.clearTimeout(replayRenderTimerRef.current);
-        replayRenderTimerRef.current = null;
-      }
-      rerender();
+      coalescer.flush();
     });
     es.addEventListener("hook", (e) => {
       try {
@@ -996,29 +1005,13 @@ function Inner() {
         const isReplay = env.replay === true
           || replayActiveRef.current
           || Date.now() - env.receivedAt > 30_000;
-        if (isReplay) {
-          if (replayRenderTimerRef.current != null) {
-            window.clearTimeout(replayRenderTimerRef.current);
-          }
-          replayRenderTimerRef.current = window.setTimeout(() => {
-            replayRenderTimerRef.current = null;
-            rerender();
-          }, 120);
-        } else {
-          if (replayRenderTimerRef.current != null) {
-            window.clearTimeout(replayRenderTimerRef.current);
-            replayRenderTimerRef.current = null;
-          }
-          rerender();
-        }
+        if (isReplay) coalescer.replay();
+        else coalescer.live();
       } catch { /* ignore */ }
     });
     return () => {
       es.close();
-      if (replayRenderTimerRef.current != null) {
-        window.clearTimeout(replayRenderTimerRef.current);
-        replayRenderTimerRef.current = null;
-      }
+      coalescer.cancel();
     };
   }, [paused, rerender]);
 
