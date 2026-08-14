@@ -22,14 +22,23 @@ export interface ModelRates {
 // Sonnet 5 launched with introductory pricing that ends 2026-08-31. Computed
 // rather than hardcoded so the number is right on both sides of that date —
 // a pinned intro rate silently under-reports every session from September on.
+//
+// Stored as a function, not as a value: the table below is built once per page
+// load, and the deck is meant to run in tabs that stay open for days (see
+// restart.ts), so a rate resolved at module evaluation would keep quoting the
+// intro price long after the cutover — the exact pinning this comment warns
+// about. Resolving per call keeps it honest, and lets tests pass an explicit
+// clock instead of depending on the day they run.
 const SONNET_5_INTRO_ENDS = Date.UTC(2026, 8, 1);  // 2026-09-01
-function sonnet5Rates(): ModelRates {
-  return Date.now() < SONNET_5_INTRO_ENDS
+function sonnet5Rates(now: number): ModelRates {
+  return now < SONNET_5_INTRO_ENDS
     ? { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
     : { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 }
 
-const RATES: Array<{ match: RegExp; rates: ModelRates }> = [
+// `rates` is either a fixed table entry or a function of the current time, for
+// the handful of models whose published price changes on a known date.
+const RATES: Array<{ match: RegExp; rates: ModelRates | ((now: number) => ModelRates) }> = [
   // Fable 5 / Mythos 5 — $10 / $50
   { match: /^claude[-_](fable|mythos)[-_]5\b/i,
     rates: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
@@ -41,7 +50,7 @@ const RATES: Array<{ match: RegExp; rates: ModelRates }> = [
     rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
 
   // Sonnet 5 — $3 / $15, or $2 / $10 until 2026-08-31 (see above)
-  { match: /^claude[-_]sonnet[-_]5\b/i, rates: sonnet5Rates() },
+  { match: /^claude[-_]sonnet[-_]5\b/i, rates: sonnet5Rates },
 
   // Opus 4.5 - 4.8 — $5 / $25 (the "new" Opus tier introduced with 4.5)
   { match: /^claude[-_]opus[-_]4[-_.](?:5|6|7|8)\b/i,
@@ -166,10 +175,15 @@ export function isCodexModel(modelId: string | undefined): boolean {
   return /^(?:gpt[-_]|codex[-_]|o\d)/i.test(modelId);
 }
 
-export function ratesForModel(modelId: string | undefined): ModelRates | null {
+/** `now` is injectable so a dated rate can be exercised on both sides of its
+ *  cutover; callers in the app leave it alone and get the wall clock. */
+export function ratesForModel(
+  modelId: string | undefined,
+  now: number = Date.now(),
+): ModelRates | null {
   if (!modelId) return null;
   for (const r of RATES) {
-    if (r.match.test(modelId)) return r.rates;
+    if (r.match.test(modelId)) return typeof r.rates === "function" ? r.rates(now) : r.rates;
   }
   return null;
 }
@@ -195,8 +209,12 @@ export interface CostBreakdown {
 // makes the tier effectively unreachable. Restoring it would need per-request
 // input (the rollout's `last_token_usage`) accumulated request by request.
 
-export function costForUsage(usage: TokenUsage, modelId: string | undefined): CostBreakdown {
-  const rates = ratesForModel(modelId);
+export function costForUsage(
+  usage: TokenUsage,
+  modelId: string | undefined,
+  now: number = Date.now(),
+): CostBreakdown {
+  const rates = ratesForModel(modelId, now);
   if (!rates) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   // OpenAI/Codex: input_tokens INCLUDES cached tokens, so bill only the
   // non-cached portion at the full input rate to avoid double-charging.
@@ -273,7 +291,13 @@ export function effectiveContextWindow(
 export function fmtCost(usd: number): string {
   if (usd <= 0) return "—";
   if (usd < 0.005) return "<1¢";
-  if (usd < 1) return `${(usd * 100).toFixed(usd < 0.1 ? 1 : 0)}¢`;
+  if (usd < 1) {
+    // Rounding can carry the cents past a full dollar ($0.996 → "100¢"), so
+    // check the rounded string rather than the raw value and fall through to
+    // the dollar branch when it does.
+    const cents = (usd * 100).toFixed(usd < 0.1 ? 1 : 0);
+    if (Number(cents) < 100) return `${cents}¢`;
+  }
   if (usd < 100) return `$${usd.toFixed(2)}`;
   if (usd < 10_000) return `$${usd.toFixed(0)}`;
   return `$${(usd / 1000).toFixed(1)}k`;
