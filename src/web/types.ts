@@ -105,6 +105,10 @@ export interface HookEnvelope {
    *  (e.g. retiring prior-turn subagents on UserPromptSubmit) so refreshing
    *  the page doesn't make every past subagent vanish. */
   replay?: boolean;
+  /** Identifies the server process that assigned `seq`. The counter restarts
+   *  at 1 on every boot, so a changed epoch means "the numbering restarted,
+   *  don't compare this seq with the previous one". Absent on older servers. */
+  epoch?: string;
 }
 
 /** Loose shape — different hook events deliver different keys. Claude Code

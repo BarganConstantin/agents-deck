@@ -71,6 +71,9 @@ export interface GraphState {
    *  carry agent_id themselves. */
   activeSubagentStack: Map<string, string[]>;
   lastSeq: number;
+  /** Which server process the `lastSeq` counter belongs to — the `epoch` the
+   *  envelopes carry. Stays null while talking to a server too old to stamp it. */
+  seqEpoch: string | null;
   totalEvents: number;
 }
 
@@ -81,6 +84,7 @@ export function initialState(): GraphState {
     toolOwner: new Map(),
     activeSubagentStack: new Map(),
     lastSeq: 0,
+    seqEpoch: null,
     totalEvents: 0,
   };
 }
@@ -357,14 +361,30 @@ export function sweepStaleTools(state: GraphState, now: number, maxMs: number): 
 }
 
 export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
-  if (env.seq <= state.lastSeq) return state;
+  // `seq` is only monotonic *within one server process*. A restart re-derives
+  // the counter by replaying events.jsonl, so after a log rotation or an
+  // /api/clear the fresh counter can start far below the seq this tab already
+  // saw — and the tab keeps its state (and the browser its Last-Event-ID)
+  // across EventSource reconnects. A bare `seq <= lastSeq` guard therefore
+  // dropped every live event from the new process and froze the canvas until
+  // the counter organically climbed past the old value, which can take days.
+  // The server stamps a per-boot `epoch`; a new one rebases the guard instead
+  // of silencing the stream. Servers too old to stamp it send no epoch, and
+  // those keep the plain monotonic behaviour.
+  const epoch = env.epoch ?? null;
+  if (epoch !== null && epoch !== state.seqEpoch) {
+    state.seqEpoch = epoch;
+    state.lastSeq = 0;
+  } else if (env.seq <= state.lastSeq) {
+    return state;
+  }
 
   const p = env.payload ?? {};
   const now = env.receivedAt;
   const name = p.hook_event_name ?? "Unknown";
 
   if (name === "__clear") {
-    return { ...initialState(), lastSeq: env.seq };
+    return { ...initialState(), lastSeq: env.seq, seqEpoch: state.seqEpoch };
   }
 
   state.totalEvents += 1;
