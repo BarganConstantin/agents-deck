@@ -6,6 +6,10 @@
  *  of them" — a Map of agents keyed by id, or a plain Set of ids. */
 type LiveIds = { readonly size: number; has(id: string): boolean };
 
+/** Anything keyed by node id that can drop an entry — the position, pin and
+ *  size Maps, and the Set of ids whose position is still a placeholder. */
+type IdCache = { keys(): Iterable<string>; delete(id: string): unknown };
+
 /**
  * Drop cached entries whose agent no longer exists — unless the graph is empty.
  *
@@ -15,7 +19,7 @@ type LiveIds = { readonly size: number; has(id: string): boolean };
  * had arranged and hand the whole canvas back to dagre on each reload. An empty
  * graph carries no information about what is stale, so it evicts nothing.
  */
-export function pruneStaleEntries<T>(cache: Map<string, T>, live: LiveIds): void {
+export function pruneStaleEntries(cache: IdCache, live: LiveIds): void {
   if (live.size === 0) return;
   for (const id of Array.from(cache.keys())) {
     if (!live.has(id)) cache.delete(id);
