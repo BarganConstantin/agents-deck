@@ -28,11 +28,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSpec } from "../src/server/exec.mjs";
 import { installedVersion, npxRestartSpec } from "../src/server/self-update.mjs";
+import { workerExitAction } from "../src/server/supervisor.mjs";
 
-// Chosen because they mean nothing else here: the worker exits 0 normally and
-// non-zero on failure, both of which must pass straight through.
-const RESTART_CODE = 75; // come back running the files on disk
-const UPGRADE_CODE = 76; // come back through npx, which fetches newer files
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
 const PKG_ROOT = dirname(BIN_DIR);
@@ -49,9 +46,10 @@ const VERSION = installedVersion(PKG_ROOT) ?? "?";
 let boundPort = null;
 let restarts = 0;
 let child = null;
-// Set by the signal handlers. Without it, Ctrl+C during an npx fetch looks
-// exactly like a failed fetch, and the fallback below would resurrect the deck
-// the user just stopped.
+// Set by the signal handlers, and the first thing every exit path asks. Without
+// it, Ctrl+C during an npx fetch looks exactly like a failed fetch, and a
+// worker that was already exiting 75 or 76 when the signal landed reads as a
+// restart request — both resurrect the deck the user just stopped.
 let stopping = false;
 
 function launch(respawn) {
@@ -81,12 +79,16 @@ function launch(respawn) {
 
   child.on("exit", (code, signal) => {
     child = null;
-    if (code === RESTART_CODE) {
+    // `stopping` outranks the exit code — see supervisor.mjs. A restart and a
+    // Ctrl+C can land together, and honouring the code first is how the deck
+    // came back to life after the user stopped it.
+    const next = workerExitAction(code, stopping);
+    if (next.relaunch === "disk") {
       restarts++;
       launch(true);
       return;
     }
-    if (code === UPGRADE_CODE) {
+    if (next.relaunch === "npx") {
       restarts++;
       launchNpx();
       return;
@@ -94,7 +96,7 @@ function launch(respawn) {
     // Anything else is the worker's own verdict and belongs to whoever started
     // us — including the ccdeck wrapper, which exits with our code in turn.
     if (signal) process.kill(process.pid, signal);
-    else process.exit(code ?? 0);
+    else process.exit(next.code);
   });
 
   child.on("error", (err) => {
