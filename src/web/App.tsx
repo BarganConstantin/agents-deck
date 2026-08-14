@@ -31,6 +31,7 @@ import { isUnplaced, needsLayout, recordPlacement, stampPlaceholder, type Provis
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
 import { readStored } from "./storage";
+import { THEME_KEY, storedTheme, type Theme } from "./theme";
 import { PRODUCT } from "./brand";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
@@ -1087,16 +1088,23 @@ function Inner() {
    *  category is in this set don't render. Reset only by toggling them
    *  back on (R / clear don't touch it — filters are user intent). */
   const [hiddenCats, setHiddenCats] = useState<Set<DetailCategory>>(() => new Set());
-  // Guarded the same way as the panel loaders: an initialiser is the one place
-  // a store the browser won't hand over blanks the deck instead of a preference.
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () => (readStored("agent-dag.theme") as "dark" | "light" | null) ?? "dark",
-  );
+  // The same call index.html's bootstrap already made before the first paint,
+  // so React starts out agreeing with what is on screen. Guarded the way the
+  // panel loaders are: an initialiser is the one place a store the browser
+  // won't hand over blanks the deck instead of costing a preference.
+  const [theme, setTheme] = useState<Theme>(storedTheme);
   const [everConnected, setEverConnected] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // On the FIRST run this is redundant and known to be: the bootstrap wrote the
+  // same attribute from the same stored value before anything painted, and the
+  // write-back stores the value it just read. It is left unguarded anyway,
+  // because the only way to skip it is a "have we mounted yet" ref — a second
+  // answer to a question the DOM already holds, and one that goes wrong the day
+  // someone reorders the effects. Re-asserting an identical attribute is free.
+  // Every later run is the T toggle, which is the reason the effect exists.
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    try { window.localStorage.setItem("agent-dag.theme", theme); } catch {}
+    try { window.localStorage.setItem(THEME_KEY, theme); } catch { /* private mode */ }
   }, [theme]);
 
   // Apply restored viewport once ReactFlow's instance is ready. We skip
