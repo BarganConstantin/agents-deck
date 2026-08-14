@@ -55,9 +55,13 @@ const workspace = flags.workspace != null
   ? flags.workspace
   : (flags.scope ? process.cwd() : "");
 const openBrowser = flags.noOpen !== true;
+// The events log lives beside the discovery files, so it follows the Claude
+// config dir rather than assuming ~/.claude — see src/server/claude-dir.mjs.
+const { claudeConfigDir } =
+  await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-dir.mjs")).href);
 const persist = flags.noPersist
   ? null
-  : (flags.history ?? join(homedir(), ".claude", "agent-dag", "events.jsonl"));
+  : (flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
 
 const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);

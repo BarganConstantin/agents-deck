@@ -53,7 +53,7 @@ No config file. No account. No telemetry. Nothing leaves your machine except one
 
 Two capture paths feed one SSE stream, which feeds one canvas.
 
-**Claude Code** — on first run, ccdeck adds a hook entry to `~/.claude/settings.json` for every relevant event:
+**Claude Code** — on first run, ccdeck adds a hook entry to `~/.claude/settings.json` for every relevant event (or to `$CLAUDE_CONFIG_DIR/settings.json`, and every other path below moves with it, when you have that variable set):
 
 ```
 SessionStart · UserPromptSubmit · PreToolUse · PostToolUse · PostToolUseFailure

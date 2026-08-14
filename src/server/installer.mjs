@@ -1,27 +1,32 @@
 // Idempotent hook installer. Supports two providers:
-//  - "claude"  → ~/.claude/settings.json (Claude Code)
-//  - "codex"   → ~/.codex/hooks.json     (OpenAI Codex CLI)
-// Both providers share the discovery dir at ~/.claude/agent-dag/ so a single
-// running server can receive events from either CLI. Re-runs are safe; entries
-// are tagged with __agent-dag and de-duped.
+//  - "claude"  → $CLAUDE_CONFIG_DIR/settings.json (Claude Code, ~/.claude by default)
+//  - "codex"   → $CODEX_HOME/hooks.json           (OpenAI Codex CLI, ~/.codex by default)
+// Both providers share the discovery dir at <claude config dir>/agent-dag/ so a
+// single running server can receive events from either CLI. Re-runs are safe;
+// entries are tagged with __agent-dag and de-duped.
 import { readFile, writeFile, mkdir, copyFile, unlink, rename, open, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { claudeConfigDir } from "./claude-dir.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
 
 const HOME = homedir();
-const CLAUDE_DIR = join(HOME, ".claude");
+// Honours CLAUDE_CONFIG_DIR, exactly as CODEX_DIR honours CODEX_HOME below.
+// Without it the hooks land in a settings.json Claude Code never opens.
+const CLAUDE_DIR = claudeConfigDir();
 const CODEX_DIR = process.env.CODEX_HOME
   ? resolve(process.env.CODEX_HOME)
   : join(HOME, ".codex");
 
 // Single shared discovery dir — both providers' hook scripts post here so one
-// running agent-dag server can match either ecosystem's events.
+// running agent-dag server can match either ecosystem's events. It follows the
+// Claude config dir, so hook/hook.js has to resolve that dir the same way: it
+// reads what this writes, and a disagreement means the hooks find no server.
 const AGENT_DAG_DIR = join(CLAUDE_DIR, "agent-dag");
 
 const CLAUDE_EVENTS = [

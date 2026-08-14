@@ -8,6 +8,7 @@ import { extname, join, resolve, dirname as pdirname, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
+import { claudeConfigDir } from "./claude-dir.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
@@ -1283,7 +1284,8 @@ function isProcessAlive(pid) {
 }
 
 async function sweepStaleDiscovery() {
-  const dir = join(homedir(), ".claude", "agent-dag");
+  // Same directory the installer writes and the hooks read — see claude-dir.mjs.
+  const dir = join(claudeConfigDir(), "agent-dag");
   let files;
   try { files = await readdir(dir); } catch { return 0; }
   let removed = 0;
