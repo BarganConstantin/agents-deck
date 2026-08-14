@@ -249,6 +249,24 @@ export function cacheWriteBreakdown(usage: TokenUsage, rates: ModelRates): Cache
   };
 }
 
+/** The token count the input rate is actually applied to.
+ *
+ *  OpenAI/Codex: `input_tokens` INCLUDES the cached prefix, so only the
+ *  non-cached remainder is billed at the full input rate — the cached part is
+ *  charged again, cheaper, on the cache-read line. Claude reports the two
+ *  disjoint, so its count stands as-is.
+ *
+ *  Exported so the cost tooltip prints THIS number beside the input dollars.
+ *  It used to print `usage.inputTokens`, which on a cache-heavy Codex session
+ *  is close to an order of magnitude larger — the one place a user goes to
+ *  check the pricing showed a multiplication that missed its own printed
+ *  result, reading exactly like the deck overcharging by 10x. */
+export function billedInputTokens(usage: TokenUsage, modelId: string | undefined): number {
+  return isCodexModel(modelId)
+    ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
+    : usage.inputTokens;
+}
+
 export function costForUsage(
   usage: TokenUsage,
   modelId: string | undefined,
@@ -256,15 +274,8 @@ export function costForUsage(
 ): CostBreakdown {
   const rates = ratesForModel(modelId, now);
   if (!rates) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  // OpenAI/Codex: input_tokens INCLUDES cached tokens, so bill only the
-  // non-cached portion at the full input rate to avoid double-charging.
-  // Claude: inputTokens EXCLUDES cache tokens — use it as-is.
-  const isCodex = isCodexModel(modelId);
-  const fullInputTokens = isCodex
-    ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
-    : usage.inputTokens;
 
-  const input      = fullInputTokens         * rates.input      / 1_000_000;
+  const input      = billedInputTokens(usage, modelId) * rates.input / 1_000_000;
   const output     = usage.outputTokens      * rates.output     / 1_000_000;
   const cacheRead  = usage.cacheReadTokens   * rates.cacheRead  / 1_000_000;
   const cw = cacheWriteBreakdown(usage, rates);
