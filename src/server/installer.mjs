@@ -300,5 +300,7 @@ export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS, CODEX_EVENTS };
 // Exported for the other modules that rewrite settings.json — the sound toggle
 // today. Every one of them needs the same two guarantees: a file we cannot
 // parse is never treated as an empty one, and the replacement is a single
-// rename rather than a truncate a reader can land inside.
-export { readSettingsForWrite, writeFileAtomic };
+// rename rather than a truncate a reader can land inside. renameWithRetry goes
+// out on its own for the files writeFileAtomic cannot write — the fetched uv
+// binary in uv-bootstrap.mjs — which still need the Windows retry.
+export { readSettingsForWrite, writeFileAtomic, renameWithRetry };

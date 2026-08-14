@@ -14,11 +14,17 @@
 // is no other way: uv, pipx, and python -m pipx have all already been ruled out
 // by the caller. AGENTS_DECK_NO_INSTALL=1 disables it along with everything else.
 import { createHash } from "node:crypto";
-import { mkdir, writeFile, rm, chmod, readdir } from "node:fs/promises";
+import { mkdir, writeFile, rm, chmod, readdir, copyFile, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { run } from "./exec.mjs";
+// The same rename used to replace settings.json, for the same reason: on
+// Windows a rename over an existing file fails outright while any other process
+// holds the target open, and a virus scanner or the search indexer opens a
+// freshly written executable the instant it appears. Sharing one implementation
+// keeps the retryable-error list from drifting apart between the two callers.
+import { renameWithRetry } from "./installer.mjs";
 
 const TOOL_DIR = join(homedir(), ".agents-deck", "tools");
 const UV_DIR   = join(TOOL_DIR, "uv");
@@ -127,8 +133,22 @@ async function findUv(dir, depth = 0) {
  * every caller treats a missing uv as an expected state.
  */
 export async function bootstrapUv() {
+  // A uv from an earlier run is reused, but only once it has proved it still
+  // runs. Existing-and-therefore-good was a one-way door: the caller has no
+  // other installer left by the time it gets here, and nothing anywhere ever
+  // deletes or re-checks this path, so a uv that had been damaged — by an
+  // interrupted copy from a deck older than this fix, a half-finished disk
+  // restore, a truncating backup tool — made every boot from then on fail with
+  // `install_failed` until the user found and deleted the directory by hand.
+  // One `--version` costs milliseconds and turns that into a re-download.
   const already = existingBootstrappedUv();
-  if (already) return { ok: true, bin: already, version: "existing" };
+  if (already && (await run(already, ["--version"], { timeout: 15_000 })).ok) {
+    return { ok: true, bin: already, version: "existing" };
+  }
+  // A broken one is deliberately left where it is rather than deleted: the
+  // download below renames its replacement over it, and if the download cannot
+  // happen the file is harmless — every caller probes `--version` before using
+  // it, so a uv that does not answer is already treated as absent.
 
   // Downloading an executable is a bigger step than installing a package with a
   // tool the user already chose, so it gets its own off switch as well as the
@@ -142,6 +162,9 @@ export async function bootstrapUv() {
   const base = `${DOWNLOAD_BASE}/${version}/${asset}`;
 
   const staging = join(tmpdir(), `agents-deck-uv-${process.pid}`);
+  // Set while a half-finished binary exists under a name of its own, cleared the
+  // moment it is renamed into place; the finally below removes whatever is left.
+  let partial = null;
   try {
     const [archive, sumText] = await Promise.all([
       download(base),
@@ -168,19 +191,41 @@ export async function bootstrapUv() {
 
     await mkdir(UV_DIR, { recursive: true });
     const dest = join(UV_DIR, process.platform === "win32" ? "uv.exe" : "uv");
-    // Copy rather than rename: the staging dir is in the system temp directory,
-    // which is often a different filesystem, and rename across one fails.
-    const { copyFile } = await import("node:fs/promises");
-    await copyFile(found, dest);
-    if (process.platform !== "win32") await chmod(dest, 0o755);
 
-    const check = await run(dest, ["--version"], { timeout: 15_000 });
+    // Copy rather than rename out of staging: the staging dir is in the system
+    // temp directory, which is often a different filesystem, and rename across
+    // one fails. But the copy goes to a name of its own INSIDE UV_DIR — same
+    // filesystem as the destination, so THAT rename is the atomic kind — and
+    // only becomes `uv` once it is whole, flushed, executable and has answered
+    // `--version`. Copying 40MB straight to the final name is many writes long,
+    // and a Ctrl-C in the middle of them (the boot install runs before the
+    // signal handlers are up) left a truncated file under the name every later
+    // run trusts. Interrupt this instead and all that is left is an inert temp
+    // file: `uv` either does not exist or is a binary that ran once already.
+    // The pid keeps two decks starting at once off each other's copy, and the
+    // .exe keeps the file executable on Windows, where the version check below
+    // would otherwise have nothing to spawn.
+    const suffix = process.platform === "win32" ? ".exe" : "";
+    partial = join(UV_DIR, `.uv-${process.pid}-${Date.now().toString(36)}${suffix}`);
+    await copyFile(found, partial);
+    // Flushed before the rename, so a crash or power cut just after a
+    // successful bootstrap cannot leave the name pointing at blocks that were
+    // never written — the same guarantee writeFileAtomic gives settings.json.
+    const handle = await open(partial, "r+");
+    try { await handle.sync(); } finally { await handle.close(); }
+    if (process.platform !== "win32") await chmod(partial, 0o755);
+
+    const check = await run(partial, ["--version"], { timeout: 15_000 });
     if (!check.ok) return { ok: false, reason: "does_not_run" };
+
+    await renameWithRetry(partial, dest);
+    partial = null;
 
     return { ok: true, bin: dest, version };
   } catch (err) {
     return { ok: false, reason: "error", detail: String(err?.message ?? err).slice(0, 200) };
   } finally {
     await rm(staging, { recursive: true, force: true }).catch(() => {});
+    if (partial) await rm(partial, { force: true }).catch(() => {});
   }
 }
