@@ -2,11 +2,12 @@
 // hook) and shows a recap: total cost + breakdown bar, duration, model,
 // agent / tool / prompt counts, top tools used. User-dismissed sessions
 // don't re-open on refresh (the dismissed list is in localStorage).
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { AgentNodeData } from "../types";
 import { shortModel } from "./AgentNode";
+import { useModalDismiss } from "./use-modal-dismiss";
 
 interface Props {
   state: GraphState;
@@ -16,6 +17,12 @@ interface Props {
 
 export default function SessionSummary({ state, sessionId, onClose }: Props) {
   const summary = useMemo(() => buildSummary(state, sessionId), [state, sessionId]);
+  // Registered before the early return, so the hook order holds on the render
+  // where the session has already been pruned. This is the modal nobody asked
+  // for — it opens on a Stop hook — which makes Escape the first thing a user
+  // reaches for and made its absence here the worst of the two.
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useModalDismiss(onClose, { focusRef: closeRef });
   if (!summary) return null;
 
   return (
@@ -29,7 +36,7 @@ export default function SessionSummary({ state, sessionId, onClose }: Props) {
           </div>
           <div className="modal-actions">
             <span className="modal-dur" title="Total wall time">{summary.durationLabel}</span>
-            <button className="btn" onClick={onClose} aria-label="Close">×</button>
+            <button type="button" ref={closeRef} className="btn" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
           </div>
         </div>
 

@@ -25,6 +25,7 @@ import { autoRestartStep, restartEndedInFailure, restartLandingStep, upgradeFail
 import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from "./shortcuts";
 import ClearConfirm from "./components/ClearConfirm";
 import { clearActionFor, type ClearSource } from "./clear-confirm";
+import { escapeOutcome, modalStack } from "./modal-dismiss";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
@@ -1828,7 +1829,14 @@ function Inner() {
         type: el?.type,
       };
       if (e.key === "Escape") {
-        if (isTypingTarget(target)) el?.blur();
+        // One press, one owner. This branch used to clear the canvas selection
+        // while whichever modal was on screen closed itself on the same event
+        // — every modal listened on window too, so the tool modal shut and the
+        // selection behind it vanished with it. The modals queue in
+        // modal-dismiss.ts now and only the topmost answers.
+        const outcome = escapeOutcome({ overlayOpen: modalStack.depth() > 0, typing: isTypingTarget(target) });
+        if (outcome === "dismiss") modalStack.dismissTop();
+        else if (outcome === "blur") el?.blur();
         else clearSelection();
         return;
       }
@@ -2225,10 +2233,12 @@ function Inner() {
               </button>
             </>
           )}
-          <span role="button" tabIndex={0} aria-label="Dismiss" className="ver-close"
-            onClick={toggleNotice}
-            onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleNotice(); } }}
-          >×</span>
+          {/* A real button, like the five controls beside it. As a
+              role="button" span this re-implemented Enter and Space by hand —
+              and its Space branch existed only to undo the global preventDefault
+              this handler now never reaches, since ownsKeystroke() leaves a
+              focused <button> alone. */}
+          <button type="button" aria-label="Dismiss" className="ver-close" onClick={toggleNotice}>×</button>
         </div>
       )}
 

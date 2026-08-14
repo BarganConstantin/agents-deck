@@ -46,10 +46,10 @@ export function clearActionFor(source: ClearSource, ctx: ClearContext): ClearAct
     // refilled.
     return ctx.confirmOpen ? "clear" : "ignore";
   }
-  // Every modal in the deck closes on a window-level Escape without stopping
-  // propagation, so a clear dialog stacked on top of one would take the modal
-  // underneath down with it the moment the user backed out — and the user who
-  // typed "c" into an open tool modal never meant to reach Clear at all.
+  // A clear dialog stacked on top of another modal is a second thing on screen
+  // competing for the same keys — before modal-dismiss.ts a single Escape took
+  // both down together — and the user who typed "c" into an open tool modal
+  // never meant to reach Clear at all.
   if (ctx.modalOpen) return "ignore";
   // Holding "c" repeats the keydown and the button is still under the pointer
   // for a double click: neither may answer the prompt it has just raised.

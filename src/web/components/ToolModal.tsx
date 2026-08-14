@@ -1,5 +1,6 @@
-import React, { useEffect } from "react";
+import React from "react";
 import type { ToolCall } from "../types";
+import { useModalDismiss } from "./use-modal-dismiss";
 
 function safeJson(v: unknown): string {
   if (v == null) return "(none)";
@@ -20,13 +21,7 @@ export default function ToolModal({
   tool: ToolCall;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useModalDismiss(onClose);
 
   const status =
     tool.endedAt == null ? "inflight"
@@ -34,12 +29,17 @@ export default function ToolModal({
     :                       "done";
 
   return (
-    <div className="modal-backdrop" onClick={onClose} role="dialog" aria-modal="true">
-      <div className="modal" onClick={e => e.stopPropagation()}>
+    // The scrim is the dismiss gesture, not the dialog: with role="dialog" on
+    // it, a screen reader drew the boundary around the click-to-close backdrop
+    // and announced an unnamed "dialog", because neither element carried a
+    // name. The name is the tool, which is the only thing that tells one of
+    // these apart from the next.
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="tool-modal-title">
         <header className="modal-head">
           <div className="modal-title">
             <span className={`status-dot ${status}`} />
-            <span className="modal-tool-name">{tool.name}</span>
+            <span id="tool-modal-title" className="modal-tool-name">{tool.name}</span>
             <span className="modal-tool-id" title={tool.id}>{tool.id.slice(0, 12)}…</span>
           </div>
           <div className="modal-actions">

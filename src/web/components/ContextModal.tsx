@@ -3,9 +3,10 @@
 // and the token totals split by Anthropic billing bucket. This is an
 // approximation: CC's real `/context` view isn't exposed via hooks, so
 // counts come from a regex scan of the transcript JSONL on the server.
-import React from "react";
+import React, { useRef } from "react";
 import type { AgentNodeData } from "../types";
 import { fmtCost, costForUsage, effectiveContextWindow } from "../pricing";
+import { useModalDismiss } from "./use-modal-dismiss";
 
 function fmtN(n: number): string { return n.toLocaleString(); }
 function fmtKB(bytes: number): string {
@@ -40,6 +41,12 @@ interface Props {
 }
 
 export default function ContextModal({ agent, onClose }: Props) {
+  // Opened from the .ctx-donut on a node header, which is where a keyboard
+  // user has to end up again — this modal used to answer neither Escape nor
+  // the question of where focus went when it closed.
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useModalDismiss(onClose, { focusRef: closeRef });
+
   const ctx = agent.context;
   const usage = agent.usage;
   const current = ctx?.currentContextTokens ?? 0;
@@ -56,7 +63,7 @@ export default function ContextModal({ agent, onClose }: Props) {
             <div className="ctx-modal-title">Context · {agent.label}</div>
             <div className="ctx-modal-sub">approximation — CC's /context isn't hook-exposed</div>
           </div>
-          <button className="ctx-modal-close" onClick={onClose} aria-label="Close">×</button>
+          <button type="button" ref={closeRef} className="ctx-modal-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
         </header>
 
         <section className="ctx-window-row">

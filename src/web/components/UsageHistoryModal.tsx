@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { fmtCost } from "../pricing";
 import { createLatestGuard } from "../latest";
 import { presetSince } from "../usage-range";
+import { useModalDismiss } from "./use-modal-dismiss";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
 interface ModelBreakdown {
@@ -108,12 +109,7 @@ export default function UsageHistoryModal({ onClose }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const { data, loading, reload } = useCcusage(rangeDays);
 
-  // Esc to close.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useModalDismiss(onClose);
 
   const days = data?.ok ? (data.days ?? []) : [];
   const maxCost = useMemo(() => days.reduce((m, d) => Math.max(m, d.totalCost), 0), [days]);

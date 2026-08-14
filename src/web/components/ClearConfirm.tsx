@@ -4,11 +4,16 @@
 // wording says so, because "Clear canvas" reads like something a refresh
 // would undo and nothing here does.
 //
-// Escape and a backdrop click cancel, the same way ToolModal, AddAccountDialog
-// and UsageHistoryModal do. Cancel takes focus on mount so a stray Enter or
-// Space — and the "c" that opened this, since ownsKeystroke() leaves the keys
-// of a focused button alone — lands on the harmless answer.
-import React, { useEffect, useRef } from "react";
+// Escape and a backdrop click cancel, through the same useModalDismiss every
+// other modal uses. Cancel takes focus on mount so a stray Enter or Space —
+// and the "c" that opened this, since ownsKeystroke() leaves the keys of a
+// focused button alone — lands on the harmless answer. CONFIRM_LAYER is what
+// keeps that Escape here: this is rendered last so it paints over a session
+// summary that pops in from a Stop hook while the user is still deciding, and
+// the prompt on top must be the one the key closes.
+import React, { useRef } from "react";
+import { CONFIRM_LAYER } from "../modal-dismiss";
+import { useModalDismiss } from "./use-modal-dismiss";
 
 interface Props {
   /** Agents on the canvas right now: the visible half of what goes away. */
@@ -19,13 +24,7 @@ interface Props {
 
 export default function ClearConfirm({ agentCount, onConfirm, onCancel }: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { cancelRef.current?.focus(); }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  useModalDismiss(onCancel, { focusRef: cancelRef, layer: CONFIRM_LAYER });
 
   const removes = agentCount === 0
     ? "This deletes the server's event log"

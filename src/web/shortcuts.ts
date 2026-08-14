@@ -34,12 +34,12 @@ export function isBrowserChord(e: ChordModifiers): boolean {
 // the app defenceless: with a toolbar button focused, Space ran preventDefault
 // and toggled pause, and a canceled Space keydown also suppresses the button's
 // own activation, so a keyboard user pressing the button they had just tabbed
-// to paused the stream instead. The version banner's dismiss span and the
-// clickable tool bursts are role="button" with their own Space handler, so one
-// keypress did two unrelated things. Worst of all, with one of the accounts
-// panel's <select>s focused — a panel that opens by default — a bare "c"
-// reached Clear, which empties the server's ring buffer and truncates
-// events.jsonl with no confirmation and no undo.
+// to paused the stream instead. The clickable tool bursts are role="button"
+// with their own Space handler, as was the version banner's dismiss control
+// before it became a real <button>, so one keypress did two unrelated things.
+// Worst of all, with one of the accounts panel's <select>s focused — a panel
+// that opens by default — a bare "c" reached Clear, which empties the server's
+// ring buffer and truncates events.jsonl with no confirmation and no undo.
 //
 // A focused control owns its own keys and the deck only gets what is left:
 // <select> matches bare letters as type-ahead, a checkbox and a <button> and
@@ -67,8 +67,8 @@ const KEY_OWNING_TAGS = new Set([
   "INPUT", "TEXTAREA", "SELECT", "OPTION", "BUTTON", "SUMMARY", "A",
 ]);
 
-// The same controls rebuilt out of <div>/<span> with tabIndex, which is how the
-// dismiss button and the tool bursts are written.
+// The same controls rebuilt out of <div>/<span> with tabIndex, which is how
+// the tool bursts are written.
 const KEY_OWNING_ROLES = new Set([
   "button", "checkbox", "combobox", "link", "listbox", "menu", "menubar",
   "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio",
