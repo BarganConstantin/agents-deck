@@ -227,9 +227,15 @@ export async function startLogin({ email } = {}) {
   }
   const flow = await _starting;
 
-  // The URL arrives on the child's first write, typically within a second.
-  const url = await waitFor(() => flow.url, 15_000);
-  if (!url) {
+  // The URL arrives on the child's first write, typically within a second — and
+  // the child's death ends the wait just as conclusively, which is why the state
+  // is polled beside it. A `claude` that cannot be run at all is gone in
+  // milliseconds and the done handler below has already written down why, but
+  // waiting only for a url meant this POST sat open for the whole fifteen
+  // seconds afterwards: a spinner in front of a user whose answer was ready
+  // almost immediately.
+  await waitFor(() => flow.url || flow.state === "failed", 15_000);
+  if (!flow.url) {
     flow.child.kill();
     // Same identity check as the done handler below, and for a sharper reason:
     // a second startLogin cancels this one's child (the yield path above), so
@@ -238,10 +244,21 @@ export async function startLogin({ email } = {}) {
     // would flip to "failed" while the newer child is still waiting for a code
     // that can no longer be delivered, and with its handle gone not even
     // cancelLogin could reach it.
-    if (flow === _login) {
+    //
+    // A flow the child's own death already explained keeps that explanation:
+    // failureText turns an unrunnable CLI into "not on PATH. Set
+    // AGENTS_DECK_CLAUDE to its full path.", the only sentence in the whole flow
+    // that names a fix, and publishing a guess about the missing link over it
+    // destroyed it on the server.
+    const died = flow === _login && flow.state === "failed" ? flow.error : null;
+    if (flow === _login && !died) {
       _login = { state: "failed", error: "the claude CLI did not print a sign-in link" };
     }
-    return { ok: false, reason: "no_url", ...loginState() };
+    // Carried as `detail` because that is the only field that outranks the
+    // reason in the dialog's say(): REASONS["no_url"] asks "is it installed?",
+    // which is exactly the question the sentence above has already answered, and
+    // it would win over `error`.
+    return { ok: false, reason: "no_url", ...(died ? { detail: died } : {}), ...loginState() };
   }
   return { ok: true, ...loginState() };
 }
