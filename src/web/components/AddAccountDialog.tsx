@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Confetti from "./Confetti";
 import { isLoginOver, loginEndNotice, shouldPollLogin, type LoginServerState } from "../login-flow";
 import { createLoginAnnouncer } from "../login-announce";
+import { explainFailure } from "../admin-failure";
 
 /** Server-side login progress, polled while the dialog is open. */
 type LoginState = {
@@ -44,33 +45,6 @@ async function admin(body: Record<string, unknown>) {
   });
   return res.json().catch(() => null);
 }
-
-// Said in the product's voice. Each is a decision the server made on purpose,
-// so each gets a sentence rather than a code.
-const REASONS: Record<string, string> = {
-  already_running: "a sign-in is already in progress",
-  no_url: "the claude CLI did not offer a sign-in link — is it installed?",
-  not_waiting: "that sign-in is no longer waiting for a code",
-  not_prompted: "the CLI has not asked for a code yet",
-  code_rejected: "that code was not accepted — copy it again from the browser",
-  no_verdict: "the claude CLI has not answered — try the code again",
-  empty_code: "paste the code from the browser first",
-  login_failed: "the code was not accepted",
-  no_identity: "signed in, but the CLI still reports nobody logged in",
-  add_failed: "signed in, but claude-swap could not record the account",
-  not_a_share: "that does not look like a shared account — it should start with ccdeck1:",
-  corrupt: "that share is incomplete — copy the whole thing",
-  wrong_version: "that share was made by a newer agents-deck",
-  expired: "that share has expired — make a new one",
-  import_failed: "claude-swap refused the import",
-};
-
-// `error` is what the route sends when the server threw: without it, a crash in
-// the handler reaches the user as the generic fallback — indistinguishable from
-// a refusal, and that is how a broken import spent a release looking like a
-// rejected one.
-const say = (out: { reason?: string; detail?: string; error?: string } | null, fallback: string) =>
-  out?.detail || (out?.reason ? REASONS[out.reason] ?? out.reason : null) || out?.error || fallback;
 
 /** The check mark, drawn rather than shown. 340ms, ease-out, once. */
 const SuccessMark = React.forwardRef<SVGSVGElement>((_props, ref) => {
@@ -120,7 +94,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     startedRef.current = true;
     const out = await admin({ action: "login" }).catch(() => null);
     setBusy(false);
-    if (!out?.ok) { setError(say(out, "could not start the sign-in")); return; }
+    if (!out?.ok) { setError(explainFailure(out, "could not start the sign-in")); return; }
     setLogin(out as LoginState);
   }, []);
 
@@ -162,7 +136,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     const out = await admin({ action: "login-code", code }).catch(() => null);
     setBusy(false);
     if (!out?.ok) {
-      setError(say(out, "the code was not accepted"));
+      setError(explainFailure(out, "the code was not accepted"));
       // A rejected code does not end the sign-in — the CLI is still asking, so
       // the field stays open with the bad value selected for retyping.
       if (out?.state) setLogin(out as LoginState);
@@ -178,7 +152,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     setError(null);
     const out = await admin({ action: "import", blob }).catch(() => null);
     setBusy(false);
-    if (!out?.ok) { setError(say(out, "the import failed")); return; }
+    if (!out?.ok) { setError(explainFailure(out, "the import failed")); return; }
     setBlob("");
     setImported({ added: out.added === true, num: out.num ?? null, email: out.email ?? null });
     onChanged();
