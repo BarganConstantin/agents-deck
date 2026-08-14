@@ -259,6 +259,17 @@ export function contextWindowForModel(modelId: string | undefined): number {
   return CONTEXT_WINDOW_DEFAULT;
 }
 
+/** The window to render for an agent. A live `model_context_window` observed
+ *  from the CLI always wins; the static table above only covers first paint
+ *  and providers that never report one. */
+export function effectiveContextWindow(
+  live: number | undefined,
+  modelId: string | undefined,
+): number {
+  if (typeof live === "number" && live > 0) return live;
+  return contextWindowForModel(modelId);
+}
+
 export function fmtCost(usd: number): string {
   if (usd <= 0) return "—";
   if (usd < 0.005) return "<1¢";

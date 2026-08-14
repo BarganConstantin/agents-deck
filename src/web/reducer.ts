@@ -453,6 +453,17 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
 
   const sessionId = p.session_id ?? "unknown";
 
+  // Codex reports the session's real context window on `task_started`, and the
+  // server relays it on a ModelObserved payload — the only event that carries
+  // it. This has to run *before* the enrichment branches below, all of which
+  // return early, otherwise the value never lands anywhere. It is a property
+  // of the session, so it goes on the root; the UI prefers it over the static
+  // table in pricing.ts.
+  if (typeof p.model_context_window === "number" && p.model_context_window > 0) {
+    const root = state.agents.get(sessionId);
+    if (root) root.contextWindow = p.model_context_window;
+  }
+
   // ModelObserved is a synthetic enrichment event emitted by the server
   // after it scans the root session's transcript file. Apply to the ROOT
   // agent only — subagents may run under a different model (Sonnet child
@@ -532,12 +543,6 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   // events recorded before multi-provider support.
   if (!owner.provider) {
     owner.provider = p.provider === "codex" ? "codex" : "claude";
-  }
-
-  // Codex passes the actual context window in session_meta-derived payloads;
-  // when present, prefer it over pricing.ts's static table.
-  if (typeof p.model_context_window === "number" && p.model_context_window > 0) {
-    owner.contextWindow = p.model_context_window;
   }
 
   // Snapshot model whenever it shows up in the payload — we want the most
