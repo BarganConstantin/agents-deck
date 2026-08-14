@@ -170,7 +170,8 @@ function buildSummary(state: GraphState, sessionId: string): Summary | null {
     promptCount += a.prompts.length;
     if (!firstPrompt && a.prompts.length > 0) firstPrompt = a.prompts[0].text;
     tokensSum += a.usage.inputTokens + a.usage.outputTokens;
-    toolCount += a.tools.length;
+    // Every call ever made, not just the bounded window the reducer retains.
+    toolCount += a.toolCount;
     earliestStart = Math.min(earliestStart, a.startedAt);
     latestEnd = Math.max(latestEnd, a.endedAt ?? Date.now());
     for (const t of a.tools) {

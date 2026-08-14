@@ -18,6 +18,10 @@ export interface ToolCall {
   /** Owning agent id, so callers (modal) can navigate back to source. */
   agentId?: string;
   usage?: TokenUsage;
+  /** Set once this call fell out of the reducer's blob window and its `input`
+   *  / `response` were released to keep the tab's heap bounded. The previews
+   *  survive; the modal tells the user the full payload is gone. */
+  trimmed?: boolean;
 }
 
 export interface TokenUsage {

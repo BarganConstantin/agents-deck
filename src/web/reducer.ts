@@ -267,6 +267,52 @@ function refreshInFlight(a: AgentNodeData): void {
   a.inFlightTool = latest;
 }
 
+/** How many ToolCalls we keep per agent. A root session left open all day
+ *  makes thousands of calls and nothing used to drop any of them — the agent
+ *  caps below only evict whole finished agents/sessions, so one long-lived
+ *  session grew forever. The canvas only draws the last handful of bubbles and
+ *  the detail panel renders one DOM row per entry, so a bounded window is all
+ *  the UI can show anyway; `toolCount` keeps counting every call ever made, so
+ *  the totals on the cards stay honest. */
+export const MAX_TOOLS_PER_AGENT = 200;
+
+/** How many of those retained calls keep their full `tool_input` /
+ *  `tool_response` blobs. Those two fields are the only heavy ones — the
+ *  server ingests payloads up to 5MB, so a few big Reads or a chatty Bash run
+ *  are megabytes each — and the tool modal is the only reader. Everything else
+ *  on a ToolCall (name, the 80-char previews, timing, ok, usage) is tiny and
+ *  is kept for the whole window, so the bubbles, the activity strip, the
+ *  sparkline, the recap and the search index are unaffected. */
+export const TOOL_BLOB_WINDOW = 25;
+
+/** Bound one agent's tool history in place. Drops the oldest entries once the
+ *  list passes `MAX_TOOLS_PER_AGENT`, and releases the heavy input/response
+ *  blobs of every entry older than `TOOL_BLOB_WINDOW`, flagging them so the
+ *  modal can say the payload was dropped rather than render an empty box. */
+function trimTools(state: GraphState, a: AgentNodeData): void {
+  const tools = a.tools;
+  if (tools.length > MAX_TOOLS_PER_AGENT) {
+    const dropped = tools.splice(0, tools.length - MAX_TOOLS_PER_AGENT);
+    let hadInFlight = false;
+    for (const t of dropped) {
+      // An evicted call can still be in-flight; leaving it in the live index
+      // would strand an entry no PostToolUse or stale sweep can ever reach.
+      if (state.toolIndex.delete(t.id)) hadInFlight = true;
+      state.toolOwner.delete(t.id);
+    }
+    if (hadInFlight) refreshInFlight(a);
+  }
+  // Entries below the blob window are always trimmed already, so this walks
+  // back only over the ones that just crossed it (normally exactly one).
+  for (let i = tools.length - TOOL_BLOB_WINDOW - 1; i >= 0; i--) {
+    const t = tools[i];
+    if (t.trimmed) break;
+    t.input = undefined;
+    t.response = undefined;
+    t.trimmed = true;
+  }
+}
+
 /** Evict the oldest "done" agents when the agents map exceeds `cap`. Only
  *  considers agents whose endedAt is older than `graceMs` so freshly-done
  *  agents (still in fade-out) aren't yanked from under the user. Mutates
@@ -545,6 +591,7 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       state.toolIndex.set(id, tc);
       state.toolOwner.set(id, owner.id);
       refreshInFlight(owner);
+      trimTools(state, owner);
       break;
     }
     case "PostToolUse":
@@ -567,7 +614,9 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       if (!tc) break;
       tc.endedAt = now;
       tc.ok = name === "PostToolUse";
-      tc.response = p.tool_response;
+      // A response arriving for an already-trimmed call must not re-attach the
+      // blob we just released — nothing would ever drop it again.
+      if (!tc.trimmed) tc.response = p.tool_response;
       if (name === "PostToolUseFailure") {
         tc.errorPreview = shortPreview(p.tool_response);
       } else if (resurrected) {
