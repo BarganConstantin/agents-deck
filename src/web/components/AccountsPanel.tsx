@@ -9,6 +9,7 @@
 // display rather than a caveat to hide.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
+import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
 
 interface Lane {
   id: string;
@@ -47,6 +48,19 @@ interface AutoTick {
   reason?: string | null;
   detail?: string | null;
   to?: number | null;
+}
+
+/**
+ * What went wrong, and the words the tool used.
+ *
+ * `text` is the only half that is shown. `raw` is cswap's own stderr, which
+ * this panel used to print instead — a traceback or a shell's "is not
+ * recognized" in a 288px box at 10px — and it survives only as the title, close
+ * enough to copy into an issue and far enough not to be the message.
+ */
+interface Failure {
+  text: string;
+  raw?: string;
 }
 
 interface AutoStatus {
@@ -204,7 +218,7 @@ export default function AccountsPanel({ onClose }: Props) {
   const [auto, setAuto] = useState<AutoStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const timerRef = useRef<number | null>(null);
   // Which account's row is expanded into its edit controls. One at a time —
@@ -241,10 +255,12 @@ export default function AccountsPanel({ onClose }: Props) {
         body: JSON.stringify(body),
       });
       const out = await res.json().catch(() => null);
-      if (!out?.ok) setFailure(out?.detail || out?.reason || "command failed");
+      // This route's `detail` is cswap's stderr verbatim, not a sentence
+      // anybody wrote — same as the switch below, and unlike the admin route.
+      if (!out?.ok) setFailure({ text: explainCommandFailure(out, "command failed"), raw: commandOutput(out) });
       return out;
     } catch {
-      setFailure("server unreachable");
+      setFailure({ text: "server unreachable" });
       return null;
     } finally {
       setBusy(null);
@@ -262,10 +278,12 @@ export default function AccountsPanel({ onClose }: Props) {
         body: JSON.stringify(body),
       });
       const out = await res.json().catch(() => null);
-      if (!out?.ok) setFailure(out?.detail || out?.reason || "command failed");
+      // The admin route composes its `detail` with failureText(), so here the
+      // server's own words are the message and explainFailure ranks them first.
+      if (!out?.ok) setFailure({ text: explainFailure(out, "command failed") });
       return out;
     } catch {
-      setFailure("server unreachable");
+      setFailure({ text: "server unreachable" });
       return null;
     } finally {
       setBusy(null);
@@ -305,10 +323,10 @@ export default function AccountsPanel({ onClose }: Props) {
         body: JSON.stringify({ account: num }),
       });
       const body = await res.json().catch(() => null);
-      if (!body?.ok) setFailure(body?.output || body?.reason || "switch failed");
+      if (!body?.ok) setFailure({ text: explainCommandFailure(body, "the switch failed"), raw: commandOutput(body) });
       await load(true);
     } catch {
-      setFailure("server unreachable");
+      setFailure({ text: "server unreachable" });
     } finally {
       setSwitching(null);
     }
@@ -622,7 +640,18 @@ export default function AccountsPanel({ onClose }: Props) {
             </div>
           )}
 
-          {failure && <div className="ap-failure">{failure}</div>}
+          {/* Announced, because a switch that failed is the answer to a click
+              that happened somewhere else in the panel, and dismissible,
+              because nothing else here clears it: the next action does, and
+              until then a stale refusal sits under a roster that has since
+              moved on. */}
+          {failure && (
+            <div className="ap-failure" role="alert">
+              <span className="ap-failure-text" title={failure.raw || undefined}>{failure.text}</span>
+              <button type="button" className="ap-failure-x" onClick={() => setFailure(null)}
+                aria-label="Dismiss this message" title="Dismiss">×</button>
+            </div>
+          )}
 
           <p className="ap-footnote" title="Anthropic's usage endpoint allows roughly 28–30 requests per hour per account, shared by every tool on this machine — polling it from here would rate-limit your account. So the deck never fetches: it asks claude-swap to collect while this panel is open, at most once every three minutes, and claude-swap decides whether that touches the network at all.">
             Collected by claude-swap while this panel is open.
