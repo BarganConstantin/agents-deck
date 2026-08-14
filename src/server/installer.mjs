@@ -170,6 +170,43 @@ async function renameWithRetry(from, to, attempts = 5) {
   }
 }
 
+// Counts writes, not processes. The pid alone gave every call in one deck the
+// same temp path, and there is more than one writer in a deck now: the sound
+// toggle rewrites settings.json from a request handler, so two clients toggling
+// within the same few milliseconds both opened that one path with O_TRUNC and
+// both wrote their own JSON at offset zero. What got renamed over settings.json
+// was the shorter payload with the tail of the longer one still behind it —
+// unparseable, and readSettingsForWrite turns unparseable into a permanent
+// SETTINGS_UNREADABLE refusal for every later toggle and install. The loser then
+// found its temp file already renamed away and threw ENOENT on top of it.
+let tmpSeq = 0;
+
+/**
+ * Create the temp file for one write, never sharing it with another writer.
+ *
+ * "wx" is the point of it: a name that already exists is an error here rather
+ * than a silently truncated file two writers are both filling in. The only way
+ * to meet a taken name is a deck killed between the write and the rename whose
+ * pid the OS has since handed out again — that writer is gone by definition, so
+ * the leftover is deleted and the next counter tried. Which is also the whole
+ * story on litter: the names come from a small space, this pid crossed with the
+ * first few counters, because a deck writes these files a handful of times per
+ * run. Later runs walk the same names and sweep what they find instead of
+ * piling fresh ones beside it. Digits and hyphens only — a legal filename
+ * everywhere, Windows included.
+ */
+async function createTemp(target, attempts = 5) {
+  for (let attempt = 1; ; attempt++) {
+    const tmp = `${target}.agent-dag-${process.pid}-${tmpSeq++}.tmp`;
+    try {
+      return { tmp, handle: await open(tmp, "wx") };
+    } catch (err) {
+      if (attempt >= attempts || err?.code !== "EEXIST") throw err;
+      await unlink(tmp).catch(() => {});
+    }
+  }
+}
+
 /**
  * Replace a file in a single step readers cannot land inside.
  *
@@ -177,20 +214,17 @@ async function renameWithRetry(from, to, attempts = 5) {
  * rename is only atomic within one filesystem and the two are routinely on
  * different ones. It is fsync'd before the rename so that a crash or power loss
  * just after a successful install cannot leave the new directory entry pointing
- * at blocks that were never flushed — the classic file-of-zero-bytes. The pid in
- * the name keeps two decks starting at once off each other's temp file.
+ * at blocks that were never flushed — the classic file-of-zero-bytes.
  */
 async function writeFileAtomic(target, text) {
-  const tmp = `${target}.agent-dag-${process.pid}.tmp`;
-  let handle;
+  const { tmp, handle } = await createTemp(target);
   try {
-    handle = await open(tmp, "w");
-    await handle.writeFile(text, "utf8");
-    await handle.sync();
-  } finally {
-    await handle?.close();
-  }
-  try {
+    try {
+      await handle.writeFile(text, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     // A rename creates a fresh directory entry, so the old file's mode does not
     // come with it. Carry it over — a settings.json the user chmod'ed to 600 has
     // to stay 600. No-op on Windows, where chmod only toggles the read-only bit.
@@ -198,6 +232,8 @@ async function writeFileAtomic(target, text) {
     if (mode !== null) await chmod(tmp, mode).catch(() => {});
     await renameWithRetry(tmp, target);
   } catch (err) {
+    // Cleanup covers the write and the fsync as well as the rename: a full disk
+    // used to leave the half-written temp file sitting beside the target.
     await unlink(tmp).catch(() => {});
     throw err;
   }
