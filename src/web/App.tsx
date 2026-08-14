@@ -21,7 +21,7 @@ import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
-import { autoRestartStep, shouldReloadBundle } from "./restart";
+import { autoRestartStep, restartEndedInFailure, shouldReloadBundle, upgradeFailureId } from "./restart";
 import { isBrowserChord } from "./shortcuts";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
@@ -114,7 +114,10 @@ type VersionInfo = {
   /** How this copy can update itself: install in place, come back through npx,
    *  or not at all — in which case the command is the whole answer. */
   upgradeMode?: "install" | "npx" | null;
-  upgrade?: { state: "idle" | "running" | "done" | "failed"; command: string | null; error: string | null };
+  /** `at` is when the failure was recorded — the only thing that tells one
+   *  failed npx relaunch from the one before it, since a retry that breaks the
+   *  same way reports the same command and the same error. */
+  upgrade?: { state: "idle" | "running" | "done" | "failed"; command: string | null; error: string | null; at?: number | null };
 };
 
 // Said in the UI's voice, not npm's. Each of these is a decision we made on
@@ -792,6 +795,9 @@ function Inner() {
   // only thing the click owns is starting it and polling a little faster while
   // it runs — an npm install is a minute, not five.
   const upgradeState = version?.upgrade?.state ?? "idle";
+  // A string, not the object, so an effect can key off it: /api/version answers
+  // with a fresh object every poll, and only its identity would ever change.
+  const upgradeFailure = upgradeFailureId(version?.upgrade);
   const startUpgrade = useCallback(async () => {
     try { await fetch("/api/upgrade", { method: "POST" }); } catch { /* reported via /api/version */ }
     loadVersion();
@@ -913,10 +919,22 @@ function Inner() {
   const [restartMode, setRestartMode] = useState<"restart" | "npx">("restart");
   const [restartedTo, setRestartedTo] = useState<string | null>(null);
   const restartAskedRef = useRef(false);
+  // The failure the server was already reporting when this attempt started, so
+  // the one it reports afterwards can be told apart from it. Without that, the
+  // note left by the previous failed npx relaunch — still on disk until the
+  // supervisor clears it at the top of the next one — would read as this
+  // attempt's own outcome the moment the retry was clicked.
+  const askedFailureRef = useRef<string | null>(null);
+  // Counts asks, so a timeout only ever hands back the state of the attempt
+  // that armed it. Now that a failure ends an attempt early, a retry can be
+  // running while its predecessor's three minutes are still on the clock.
+  const restartAttemptRef = useRef(0);
   const askRestart = useCallback(async (opts?: { upgrade?: boolean }) => {
     if (restartAskedRef.current) return;
     const upgrade = opts?.upgrade === true;
     restartAskedRef.current = true;
+    askedFailureRef.current = upgradeFailure;
+    const attempt = ++restartAttemptRef.current;
     setRestartMode(upgrade ? "npx" : "restart");
     setRestarting(true);
     // Remembered across the reconnect so the deck can confirm what it landed
@@ -935,12 +953,13 @@ function Inner() {
     // frozen mid-sentence, hand the control back so it can be tried again —
     // after long enough that an npx fetch on a slow line is not cut short.
     window.setTimeout(() => {
+      if (restartAttemptRef.current !== attempt) return; // a later ask owns the state now
       if (!restartAskedRef.current) return;
       restartAskedRef.current = false;
       setRestarting(false);
       try { window.sessionStorage.removeItem("agent-dag.restartPending"); } catch {}
     }, upgrade ? 180_000 : 30_000);
-  }, [notice?.to]);
+  }, [notice?.to, upgradeFailure]);
 
   // Nothing running for a sustained stretch is the only safe moment: a restart
   // mid-turn silently drops the hook events fired during the gap, leaving tools
@@ -991,6 +1010,20 @@ function Inner() {
     const t = window.setTimeout(() => setRestartedTo(null), 6000);
     return () => window.clearTimeout(t);
   }, [version?.running]);
+
+  // Didn't land. A failed `npx -y <spec>@latest` comes back on the OLD version
+  // and the same port, so `running` never moves and the check above waits for a
+  // version that is not coming — leaving the retry button disabled and reading
+  // "fetching…" for the full three minutes, beside a banner already spelling
+  // out why the update failed. The supervisor's note is the end of the attempt,
+  // and this is the tab hearing it. The rule lives in restart.ts.
+  useEffect(() => {
+    if (!restarting) return;
+    if (!restartEndedInFailure({ asked: askedFailureRef.current, reported: upgradeFailure })) return;
+    try { window.sessionStorage.removeItem("agent-dag.restartPending"); } catch {}
+    restartAskedRef.current = false;
+    setRestarting(false);
+  }, [restarting, upgradeFailure]);
 
   // Restore pinned positions synchronously on first render so they're
   // applied before snapshotToFlow runs autoLayout. Sessions outlast a
