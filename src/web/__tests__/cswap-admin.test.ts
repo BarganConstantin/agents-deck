@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error — plain JS module, no types
-import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, countCodePrompts, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, submitLoginCode, withStoreLock, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+import { stripTerminalEscapes, extractLoginUrl, newSlot, moveOutcome, wrapShare, unwrapShare, removePromptMatches, countCodePrompts, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, submitLoginCode, withStoreLock, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
 // @ts-expect-error — plain JS module, no types
 import { looksMissing } from "../../server/exec.mjs";
 // @ts-expect-error — plain JS module, no types
@@ -154,6 +154,61 @@ describe("newSlot", () => {
 
   it("is null rather than a guess when several slots appeared at once", () => {
     expect(newSlot(store(["2"]), store(["2", "3", "4"]))).toBeNull();
+  });
+});
+
+describe("moveOutcome", () => {
+  // `cswap move` into an occupied slot is a swap: two accounts change places,
+  // and the panel's manage block — keyed by slot number — has to be told, or
+  // it stays open on whoever inherited the number. The CLI does say which of
+  // its three cases happened, but not in a line this code can take: a swap
+  // prints its verdict as a HEADLINE followed by one roster line per account,
+  // and firstUseful() takes the last line. So the store answers instead.
+  const store = (emails: Record<string, string>) =>
+    ({ slots: Object.keys(emails), emails, activeNum: null });
+
+  it("reads a swap out of the two accounts having changed places", () => {
+    const before = store({ "2": "a@x.com", "3": "b@x.com" });
+    const after  = store({ "2": "b@x.com", "3": "a@x.com" });
+    expect(moveOutcome(before, after, 2, 3)).toEqual({ from: 2, to: 3, swapped: true });
+  });
+
+  it("calls a move into a free slot what it is, with nobody displaced", () => {
+    // `remove` leaves gaps, so this is reachable from the panel's slot list.
+    const before = store({ "2": "a@x.com", "3": "b@x.com" });
+    const after  = store({ "3": "b@x.com", "5": "a@x.com" });
+    expect(moveOutcome(before, after, 2, 5)).toEqual({ from: 2, to: 5, swapped: false });
+  });
+
+  it("does not call a no-op a swap", () => {
+    // claude-swap's own first case: the account is already in that slot.
+    const same = store({ "2": "a@x.com", "3": "b@x.com" });
+    expect(moveOutcome(same, same, 2, 2)).toEqual({ from: 2, to: 2, swapped: false });
+  });
+
+  it("refuses to name a landing slot the store does not agree with", () => {
+    // Nothing settled where it was sent. `to: null` is what makes the panel
+    // close its manage block instead of following a number into the dark.
+    const before = store({ "2": "a@x.com", "3": "b@x.com" });
+    expect(moveOutcome(before, before, 2, 3).to).toBeNull();
+    expect(moveOutcome(before, store({ "3": "b@x.com" }), 2, 3).to).toBeNull();
+  });
+
+  it("falls back to occupancy when the store has no email to identify anyone by", () => {
+    // A blank email cannot tell two accounts apart, and refusing to answer on
+    // that account would leave the panel closing its block over a missing
+    // field rather than over anything that happened.
+    const before = store({ "2": "", "3": "" });
+    const after  = store({ "2": "", "3": "" });
+    expect(moveOutcome(before, after, 2, 3)).toEqual({ from: 2, to: 3, swapped: true });
+  });
+
+  it("is not fooled by an account that merely stayed put", () => {
+    // Slot 3 was free, so 2 relocated into it — the slot it left is empty, and
+    // an unrelated account still sitting in slot 4 is not a displacement.
+    const before = store({ "2": "a@x.com", "4": "c@x.com" });
+    const after  = store({ "3": "a@x.com", "4": "c@x.com" });
+    expect(moveOutcome(before, after, 2, 3).swapped).toBe(false);
   });
 });
 

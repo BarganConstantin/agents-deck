@@ -560,16 +560,51 @@ export async function setAlias(num, alias) {
   });
 }
 
+/**
+ * What a `cswap move` actually did, read out of the store rather than its words.
+ *
+ * The panel needs two facts to keep its manage block pointed at the account
+ * the user opened it on: which slot that account ended up in, and whether a
+ * second account was displaced to make room. `cswap move` does carry both, but
+ * not in a line this code can take: a swap prints "Swapped Account 2 and
+ * Account 3:" and then one indented roster line per account, and `firstUseful`
+ * takes the LAST line of a command's output — right for every other cswap
+ * command, and here it hands back "3: someone@example.com" instead of the
+ * verdict. The store is the fact, for the same reason `newSlot` reads it after
+ * an add rather than parsing what add printed.
+ *
+ * Claude-swap has three cases — the account is already there, the target slot
+ * is free and it relocates, the target is occupied and the two trade places —
+ * and all three are legible in what settled: the mover holds the target, and
+ * on a swap the occupant holds the slot the mover left. `to` is null when the
+ * account is not where it was sent, which is not a case that should happen and
+ * is exactly why it is reported rather than assumed.
+ */
+export function moveOutcome(before, after, num, slot) {
+  const from = String(num), to = String(slot);
+  const mover = before.emails[from] || "";
+  const occupant = before.slots.includes(to) ? (before.emails[to] || "") : null;
+  // Identity by email wherever the store has one, occupancy alone where it
+  // does not: a blank email cannot tell two accounts apart, and refusing to
+  // answer on that account would be worse than answering from the slot.
+  const landed = after.slots.includes(to) && (!mover || after.emails[to] === mover);
+  const swapped = landed && from !== to && occupant !== null
+    && after.slots.includes(from) && (!occupant || after.emails[from] === occupant);
+  return { from: Number(num), to: landed ? Number(slot) : null, swapped };
+}
+
 export async function moveAccount(num, slot) {
   const n = Number(num), s = Number(slot);
   if (!Number.isInteger(n) || n < 1 || n > 999) return { ok: false, reason: "bad_account" };
   if (!Number.isInteger(s) || s < 1 || s > 999) return { ok: false, reason: "bad_slot" };
   return withStoreLock(async () => {
+    // Read first: which slots were taken before the move is the only way to
+    // know afterwards whether anyone was standing in the destination.
+    const before = await readStore();
     const r = await run(await cswapBin(), ["move", String(n), String(s)], { timeout: CSWAP_TIMEOUT_MS });
     invalidateClaudeAccountsCache();
-    return r.ok
-      ? { ok: true, output: firstUseful(r.stdout) }
-      : { ok: false, reason: "move_failed", detail: failureText(r, "cswap move") };
+    if (!r.ok) return { ok: false, reason: "move_failed", detail: failureText(r, "cswap move") };
+    return { ok: true, output: firstUseful(r.stdout), ...moveOutcome(before, await readStore(), n, s) };
   });
 }
 

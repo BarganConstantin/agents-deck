@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
 import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
+import { type SwapNote, manageAfterMove } from "../account-move";
 import { PRODUCT } from "../brand";
 import {
   type Failure,
@@ -67,6 +68,11 @@ interface AutoStatus {
 }
 
 const POLL_MS = 15_000;
+// How long the "a second account moved too" line stands. Long enough to read a
+// sentence the user did not ask for, short enough that a manage block left open
+// does not keep reporting a move from ten minutes ago. Same shape as the
+// panel's other transient states — `copied` at 1.8s, an armed remove at 4s.
+const SWAP_NOTE_MS = 8_000;
 // Past this, a reload is called dead rather than slow. Both routes can spawn
 // cswap, and the server kills those at 20 seconds, so anything shorter would
 // abort answers that were still coming.
@@ -232,6 +238,10 @@ export default function AccountsPanel({ onClose }: Props) {
   const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
   const [share, setShare] = useState<{ num: number; blob: string; expiresAt: number } | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  // A move into an occupied slot relocates an account the user never picked.
+  // Nothing else on screen says so — both accounts simply appear where they
+  // were not — so the slot row says it, in the block that did it.
+  const [swapNote, setSwapNote] = useState<SwapNote | null>(null);
 
   // A reload the user asked for, and the same one on a timer. Only the forced
   // half touches `reloading`: a poll blinking the ↻ every 15 seconds would read
@@ -349,6 +359,39 @@ export default function AccountsPanel({ onClose }: Props) {
     }
   };
 
+  /**
+   * Send an account to another slot, then put the manage block back where its
+   * account went.
+   *
+   * The reload alone is not enough: `cswap move` into an occupied slot is a
+   * swap, so the slot numbers this block is keyed by change hands underneath
+   * it. manageAfterMove decides what survives that; a refused move returns
+   * null and nothing here is touched, leaving the block open and armed exactly
+   * as the user left it with the failure box below to say why.
+   */
+  const doMove = async (from: number, to: number) => {
+    const out = await admin({ action: "move", account: from, slot: to }, `move-${from}`);
+    const next = manageAfterMove(
+      { menuFor, confirmRemove, shareFor: share?.num ?? null, swapNote },
+      from,
+      out,
+    );
+    // The roster first, then the block, and never the other way round: the two
+    // disagree about who holds a slot for exactly as long as one has moved on
+    // and the other has not, and that disagreement IS the bug — the block
+    // rendered over a row belonging to somebody else. Both updates land in the
+    // same tick here, so no render is ever caught between them.
+    await load(true);
+    if (next) {
+      setMenuFor(next.menuFor);
+      setConfirmRemove(next.confirmRemove);
+      if (next.shareFor == null) { setShare(null); setShareCopied(false); }
+      setSwapNote(next.swapNote);
+      const note = next.swapNote;
+      if (note) window.setTimeout(() => setSwapNote(n => (n === note ? null : n)), SWAP_NOTE_MS);
+    }
+  };
+
   return (
     <div className="accounts-panel" aria-label="Claude accounts">
       <div className="ap-header">
@@ -430,6 +473,7 @@ export default function AccountsPanel({ onClose }: Props) {
                     setConfirmRemove(null);
                     setShare(null);
                     setShareCopied(false);
+                    setSwapNote(null);
                   }}>⋯</button>
                 {a.active
                   ? <span className="ap-badge-active">● active</span>
@@ -524,12 +568,27 @@ export default function AccountsPanel({ onClose }: Props) {
                         aria-label={`Slot for account ${a.num}`}
                         value={String(a.num)}
                         disabled={busy != null}
-                        onChange={e => admin({ action: "move", account: a.num, slot: Number(e.target.value) }, `move-${a.num}`).then(() => load(true))}
+                        onChange={e => doMove(a.num, Number(e.target.value))}
                       >
                         {slotOptions(data.accounts ?? []).map(n => <option key={n} value={n}>{n}</option>)}
                       </select>
                     </span>
-                    <span className="ap-manage-hint">rotation order</span>
+                    {/* Where "rotation order" normally sits. A swap moved an
+                        account the user never selected, and the roster shows
+                        the result without ever saying it happened — two rows
+                        are simply not where they were. This is the only place
+                        that can say it, so it does, for as long as it is news. */}
+                    {swapNote?.at === a.num ? (() => {
+                      const other = data.accounts?.find(x => x.num === swapNote.displaced);
+                      const who = other?.alias ?? other?.email ?? "the account that was there";
+                      return (
+                        <span className="ap-manage-hint ap-manage-swap"
+                          title={`Slot ${swapNote.at} was taken, so the two accounts traded places: `
+                               + `${who} now holds slot ${swapNote.displaced}.`}>
+                          swapped with slot {swapNote.displaced}
+                        </span>
+                      );
+                    })() : <span className="ap-manage-hint">rotation order</span>}
                   </div>
 
                   <div className="ap-manage-row">
