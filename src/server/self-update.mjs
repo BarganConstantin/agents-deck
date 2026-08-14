@@ -25,6 +25,7 @@ import { accessSync, constants as FS, existsSync, mkdirSync, readFileSync, write
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { killTree } from "./exec.mjs";
 
 // Once an hour, not once a day.
 //
@@ -395,7 +396,10 @@ export function startUpgrade({ pkgRoot, name = "agents-deck" }) {
   child.stdout.on("data", d => keepTail(String(d)));
   child.stderr.on("data", d => keepTail(String(d)));
 
-  const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, INSTALL_TIMEOUT_MS);
+  // npm is a .cmd shim on Windows and is therefore spawned through a shell, so
+  // `child` is cmd.exe and npm itself is a grandchild — a plain kill would
+  // report the install as timed out while it carried on writing to node_modules.
+  const timer = setTimeout(() => killTree(child), INSTALL_TIMEOUT_MS);
   timer.unref?.();
 
   child.on("error", (e) => {

@@ -15,7 +15,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawnSpec } from "./exec.mjs";
+import { killTree, spawnSpec } from "./exec.mjs";
 
 const CACHE_MS = 120_000; // 2 min — modal is manual-open; cheap to keep warm
 const TIMEOUT_MS = 90_000;
@@ -188,7 +188,9 @@ async function runCcusage(args) {
     });
     let out = "", err = "";
     const timer = setTimeout(() => {
-      child.kill();
+      // The npx fallback runs through a shell, so on Windows `child` is cmd.exe
+      // and npx is a grandchild that a plain kill would leave downloading.
+      killTree(child);
       reject(new Error("ccusage timed out"));
     }, TIMEOUT_MS);
     child.stdout.on("data", d => { out += d; });

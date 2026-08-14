@@ -24,10 +24,13 @@ vi.mock("node:child_process", () => ({
     calls.push({ cmd, args });
     return { status: 1, stdout: "", stderr: "test: spawnSync blocked" };
   },
-  // exec.mjs, which ccusage.mjs now uses to build its npm command line, imports
-  // this; unused here, but a mocked module must carry every export its
-  // importers name.
-  execFile: () => { throw new Error("test: execFile blocked"); },
+  // Nothing here calls it, but exec.mjs — reached through ccusage.mjs for both
+  // spawnSpec and killTree — imports it by name, and a name the mock omits is a
+  // load error.
+  execFile: (cmd: string, args: string[] = []) => {
+    calls.push({ cmd, args });
+    throw new Error("test: execFile blocked");
+  },
 }));
 
 // ccusage.mjs resolves ~/.agents-deck/ccusage at import time from os.homedir(),
