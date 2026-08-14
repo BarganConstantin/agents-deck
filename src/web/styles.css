@@ -375,6 +375,16 @@ button.btn.warn {
   color: var(--warn);
 }
 button.btn.warn:hover { border-color: var(--warn); color: var(--warn); }
+/* The confirm half of the Clear dialog. It is the only .btn that carries the
+   error colour, so the answer that truncates the event log can never be
+   mistaken for the one that walks away — the same signal .ap-manage-btn.danger
+   gives the account-removal button. */
+button.btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+button.btn.danger:hover {
+  border-color: var(--err);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
 button.btn.icon-btn {
   width: 30px;
   height: 30px;
@@ -2213,6 +2223,14 @@ button.tool.clickable:last-child { border-bottom: none; }
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes popIn  { from { opacity: 0; transform: translateY(4px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+/* ---------------- clear confirmation ---------------- */
+
+/* One sentence and two buttons, so it wants none of .modal's 820px. */
+.modal.clear-confirm { width: min(440px, 92vw); }
+/* Cancel comes first in the DOM, so it is what focus and the first Tab find;
+   the destructive answer is never the default one. */
+.clear-confirm .cc-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* ---------------- session-end summary modal ---------------- */
 

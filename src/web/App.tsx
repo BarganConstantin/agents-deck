@@ -23,6 +23,8 @@ import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, restartEndedInFailure, restartLandingStep, upgradeFailureId } from "./restart";
 import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from "./shortcuts";
+import ClearConfirm from "./components/ClearConfirm";
+import { clearActionFor, type ClearSource } from "./clear-confirm";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
@@ -657,6 +659,9 @@ function Inner() {
    *  clicking the donut on the session's root node. */
   const [contextFor, setContextFor] = useState<string | null>(null);
   const openContext = useCallback((sid: string) => setContextFor(sid), []);
+  /** Whether the Clear confirmation is up. Clear truncates the server's event
+   *  log, so nothing destructive happens until this dialog is answered. */
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const dismissedSummariesRef = useRef<Set<string>>(loadDismissedSummaries());
   /** Left sidebar (session list) visibility — persisted across refresh. */
   const [sessionListOpen, setSessionListOpen] = useState<boolean>(loadSessionListOpen);
@@ -1723,6 +1728,27 @@ function Inner() {
     rerender();
   }, [rerender, clearSelection]);
 
+  // The keydown listener below is registered once and must stay that way, so
+  // the gate reads what is on screen through refs rather than closing over it.
+  // Assigned during render, the way nodesRef is, so a keystroke in the same
+  // commit sees the dialogs that were just drawn.
+  const clearConfirmOpenRef = useRef(clearConfirmOpen);
+  clearConfirmOpenRef.current = clearConfirmOpen;
+  const modalOpenRef = useRef(false);
+  modalOpenRef.current = openedTool != null || usageHistoryOpen || contextFor != null || summaryFor != null;
+
+  /** The single door to Clear. Both the toolbar button and the "c" shortcut
+   *  come through here, so the confirmation cannot hold for one and not the
+   *  other, and only the dialog's own button reaches handleClear. */
+  const requestClear = useCallback((source: ClearSource) => {
+    const action = clearActionFor(source, {
+      confirmOpen: clearConfirmOpenRef.current,
+      modalOpen: modalOpenRef.current,
+    });
+    if (action === "confirm") setClearConfirmOpen(true);
+    else if (action === "clear") { setClearConfirmOpen(false); handleClear(); }
+  }, [handleClear]);
+
   const handleRelayout = useCallback(() => {
     pinnedRef.current.clear();
     positionsRef.current.clear();
@@ -1812,7 +1838,7 @@ function Inner() {
       if (isBrowserChord(e)) return;
       if (e.key === "/") { e.preventDefault(); searchInputRef.current?.focus(); return; }
       if (e.key === " ") { e.preventDefault(); togglePause(); }
-      if (e.key === "c" || e.key === "C") handleClear();
+      if (e.key === "c" || e.key === "C") requestClear("shortcut");
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
       if (e.key === "l" || e.key === "L") toggleSessionList();
@@ -1825,7 +1851,7 @@ function Inner() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleClear, handleRelayout, handleFit, clearSelection, stepAgent, togglePause]);
+  }, [requestClear, handleRelayout, handleFit, clearSelection, stepAgent, togglePause]);
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
@@ -2081,7 +2107,11 @@ function Inner() {
             </svg>
           </button>
           <button className="btn" onClick={handleRelayout} title="Auto-arrange — clear pins (R)">Re-layout</button>
-          <button className="btn" onClick={handleClear} title="Clear canvas (C)">Clear</button>
+          <button
+            className="btn"
+            onClick={() => requestClear("button")}
+            title="Clear the canvas and the server's event log — asks first (C)"
+          >Clear</button>
           <button
             className="btn icon-btn"
             onClick={() => setTheme(t => (t === "dark" ? "light" : "dark"))}
@@ -2479,6 +2509,16 @@ function Inner() {
             saveDismissedSummaries(dismissedSummariesRef.current);
             setSummaryFor(null);
           }}
+        />
+      )}
+      {/* Last, so it sits above a session summary that pops in from a Stop
+          hook while the user is still deciding. The gate keeps it from opening
+          over a modal, but a modal can still arrive over it. */}
+      {clearConfirmOpen && (
+        <ClearConfirm
+          agentCount={agentCount}
+          onConfirm={() => requestClear("confirmation")}
+          onCancel={() => setClearConfirmOpen(false)}
         />
       )}
     </div>
