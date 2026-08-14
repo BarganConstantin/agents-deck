@@ -30,6 +30,7 @@ import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
+import { SESSION_GROUP_TYPE, minimapNodeColor } from "./minimap";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import { versionChipLabel, versionChipTitle } from "./version-chip";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
@@ -1571,7 +1572,7 @@ function Inner() {
       const h = b.maxY - b.minY + GROUP_PAD * 2;
       out.push({
         id: `group:${sid}`,
-        type: "sessionGroup",
+        type: SESSION_GROUP_TYPE,
         position: { x: b.minX - GROUP_PAD, y: b.minY - GROUP_PAD },
         // w/h handed to the node component so it can size itself in explicit
         // pixels (a 100% child would collapse under RF's content sizing).
@@ -2414,12 +2415,7 @@ function Inner() {
           <MiniMap
             zoomable
             pannable
-            nodeColor={n => {
-              const d = n.data as AgentNodeData;
-              if (d.state === "err") return cssVar("--err");
-              if (d.state === "active") return cssVar("--inflight");
-              return cssVar("--ok");
-            }}
+            nodeColor={n => minimapNodeColor(n, cssVar)}
             nodeStrokeWidth={2}
             maskColor={cssVar("--minimap-mask")}
             style={{ background: cssVar("--panel"), border: `1px solid ${cssVar("--line")}`, borderRadius: 8 }}
