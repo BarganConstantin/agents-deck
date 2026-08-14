@@ -555,6 +555,11 @@ export function failureText(r, what = "cswap") {
       ? "the claude CLI could not be run: not on PATH. Set AGENTS_DECK_CLAUDE to its full path."
       : "cswap could not be run: not on PATH, and not in the places uv and pipx install to. Set AGENTS_DECK_CSWAP to its full path.";
   }
+  // A run its deadline stopped has no exit status worth quoting and no last
+  // line worth quoting either — whatever it had printed, it had not finished.
+  // Asked for one anyway, this said "cswap export exited 0", a success code for
+  // a command that never completed.
+  if (r?.timedOut || r?.code === "ETIMEDOUT") return `${what} took too long and was stopped`;
   return firstUseful(out) || `${what} exited ${r?.code}`;
 }
 
