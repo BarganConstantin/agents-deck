@@ -407,10 +407,12 @@ export async function importAccount(blob) {
     const slot = newSlot(before, after);
     invalidateClaudeAccountsCache();
     if (slot != null) runDetached(await cswapBin(), ["list"]);
+    // Who arrived, so the dialog can name them instead of saying "an account".
+    const email = slot != null ? (after.emails[slot] || null) : null;
     // No new slot is not an error: without --force, cswap skips an account it
     // already holds. Saying which happened is the difference between "it
     // worked" and "why is nothing different".
-    return { ok: true, added: slot != null, num: slot, output: firstUseful(r.stdout) };
+    return { ok: true, added: slot != null, num: slot, email, output: firstUseful(r.stdout) };
   });
 }
 
