@@ -368,6 +368,31 @@ function findTool(state: GraphState, owner: AgentNodeData, id: string): ToolCall
   return null;
 }
 
+/** How far apart two identical prompt submissions can land and still be one
+ *  submission arriving twice rather than the user typing the same thing again.
+ *  Every copy is stamped by the process that handled it: a log replay carries
+ *  the original writer's `receivedAt` and lands on the same millisecond, while
+ *  the hook's fan-out has each deck stamp its own arrival — milliseconds apart,
+ *  and bounded by the hook's own 1500ms hard cap on that whole fan-out. A
+ *  genuine second submission of the same text cannot land inside this window:
+ *  the turn the first one opened has to end first. */
+export const PROMPT_REDELIVERY_WINDOW_MS = 2_000;
+
+/** True when `text` is already on this agent's prompt list from a submission
+ *  close enough in time to be the same one. Walks newest-first and stops at the
+ *  first entry that predates the window — the list is in arrival order, so
+ *  everything before it is older still. Entries *newer* than the window are
+ *  skipped rather than stopped on: a boot replay re-delivers a whole log, so
+ *  the copy of an old prompt arrives after every later prompt is recorded. */
+function promptAlreadyRecorded(a: AgentNodeData, at: number, text: string): boolean {
+  for (let i = a.prompts.length - 1; i >= 0; i--) {
+    const prev = a.prompts[i];
+    if (prev.at < at - PROMPT_REDELIVERY_WINDOW_MS) return false;
+    if (prev.text === text && prev.at <= at + PROMPT_REDELIVERY_WINDOW_MS) return true;
+  }
+  return false;
+}
+
 /** Evict the oldest "done" agents when the agents map exceeds `cap`. Only
  *  considers agents whose endedAt is older than `graceMs` so freshly-done
  *  agents (still in fade-out) aren't yanked from under the user. Mutates
@@ -634,7 +659,17 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       target.exitAt = undefined;
       target.endedAt = undefined;
       const text = (typeof p.prompt === "string" ? p.prompt : typeof p.message === "string" ? p.message : "") ?? "";
-      if (text) {
+      // One submission can be delivered more than once — the hook posts it to
+      // every deck whose workspace matches, a restart replays the log region it
+      // already streamed live, and each copy carries a fresh seq so the
+      // seq/epoch guard lets it through. Appending unconditionally recorded the
+      // same turn once per copy: the detail panel counted 'Prompts 3' and listed
+      // the text three times, SessionSummary's promptCount reported three times
+      // the turns the session actually had, and nothing ever trims the list, so
+      // every surplus copy of the full prompt text was retained for the agent's
+      // lifetime. A prompt has no id of its own, so identity is its text plus
+      // the moment it arrived.
+      if (text && !promptAlreadyRecorded(target, now, text)) {
         target.prompts.push({ at: now, text });
         if (!target.firstPrompt) target.firstPrompt = shortPreview(text, 120);
       }
