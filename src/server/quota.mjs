@@ -538,10 +538,14 @@ async function _doFetch(now, force = false) {
   }
 
   // No quota lines after retries. If we've ever seen real values, keep showing
-  // them rather than regressing to 0% on a transient empty read. Short-cache so
-  // we retry the CLI again soon.
+  // them rather than regressing to 0% on a transient empty read — with the
+  // timestamp of the answer they actually are. Re-stamping them `now` put "just
+  // now" over percentages collected hours earlier for one poll in five, then let
+  // the label snap back to the true age: an age indicator that oscillates, and
+  // vouches for numbers this branch already knows are stale. Short-cache so we
+  // retry the CLI again soon.
   if (_lastGood) {
-    const result = { ..._lastGood, fetchedAt: now, stale: true };
+    const result = { ..._lastGood, stale: true };
     _cache = result;
     _cacheAt = now - (CACHE_MS - 5_000);
     return result;
