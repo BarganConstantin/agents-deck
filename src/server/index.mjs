@@ -8,6 +8,7 @@ import { extname, join, resolve, dirname as pdirname, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
+import { createHash, randomBytes } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1343,6 +1344,46 @@ function handleHealth(_req, res) {
   });
 }
 
+// A secret this process, and only this process, knows. It goes into the
+// discovery file bin/deck.js writes (mode 0600) and is never sent anywhere:
+// hook/hook.js reads it from that file and asks us to hash it against a nonce
+// before it will send us a single session payload.
+//
+// Fresh per start, deliberately. A discovery file that outlives its deck —
+// SIGKILL and power cuts both leave one behind — names a pid the OS is free to
+// hand to something else and a port that by then may belong to anything. The
+// pid probe below cannot tell that apart from a running deck, so the token is
+// what actually distinguishes us: the replacement process does not have it, and
+// neither does the next deck, so a stale file authenticates nothing.
+const HOOK_TOKEN = randomBytes(32).toString("hex");
+
+/** The token this deck expects to be challenged on. Written by writeDiscovery. */
+export function hookToken() { return HOOK_TOKEN; }
+
+/**
+ * The proof of knowing `token`, for a nonce the challenger chose.
+ *
+ * hook/hook.js spells this out a second time — it is installed outside the
+ * package and cannot import from here — and a test pins the two against each
+ * other. Changing one without the other silently blinds the deck.
+ */
+export function challengeProof(token, nonce) {
+  return createHash("sha256").update(`${token}:${nonce}`).digest("hex");
+}
+
+// GET /api/hook-challenge?nonce=… — answer a hook's challenge.
+//
+// The nonce is the caller's, so the answer proves knowledge of the token
+// without disclosing it, and proves it for this exchange only. Answering
+// freely is safe: a caller that can reach this port can already read the
+// discovery file that holds the token, being the same user on the same
+// machine, and the response is a hash the browser cannot read cross-origin.
+function handleHookChallenge(_req, res, url) {
+  const nonce = url.searchParams.get("nonce") ?? "";
+  if (!nonce || nonce.length > 256) return send(res, 400, { error: "bad nonce" });
+  send(res, 200, { proof: challengeProof(HOOK_TOKEN, nonce) });
+}
+
 function isProcessAlive(pid) {
   try { process.kill(pid, 0); return true; }
   catch (e) { return e && e.code === "EPERM"; }
@@ -1517,6 +1558,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
 
     if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
+    if (req.method === "GET"  && url.pathname === "/api/hook-challenge") return handleHookChallenge(req, res, url);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
     if (req.method === "GET"  && url.pathname === "/api/version")     return guard(handleVersion(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/upgrade")     return guard(handleUpgrade(req, res), res);
