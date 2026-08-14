@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { costForUsage, fmtCost, fmtCostRate, type CostBreakdown } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { AgentState } from "../types";
+import { fmtTokens } from "../token-format";
 import { shortModel } from "./AgentNode";
 
 // ── Quota types ────────────────────────────────────────────────────────────
@@ -40,12 +41,6 @@ function quotaSourceHint(source?: string): string {
   if (source === "api")         return "Fetched from Anthropic's usage endpoint, at most once every 5 minutes";
   if (source === "cli")         return "Parsed from `claude /usage`, at most once every 5 minutes";
   return "Last update";
-}
-
-function fmtTokens(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 interface ModelRow {
