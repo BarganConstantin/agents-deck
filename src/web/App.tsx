@@ -42,17 +42,12 @@ import { emptyScope } from "./scope";
 import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
 import { promptTime, shortAgo } from "./relative-time";
+import { fmtTokens } from "./token-format";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
   if (typeof window === "undefined") return "";
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "";
-}
-
-function fmtTokens(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 const nodeTypes = { agent: AgentNode, sessionGroup: SessionGroupNode };

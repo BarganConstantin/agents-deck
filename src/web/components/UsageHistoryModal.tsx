@@ -11,6 +11,7 @@ import { commandOutput, explainCcusageFailure } from "../admin-failure";
 import { createLatestGuard } from "../latest";
 import { presetSince } from "../usage-range";
 import { usageView } from "../usage-view";
+import { fmtTokens } from "../token-format";
 import { shortModel } from "./AgentNode";
 import { useModalDismiss } from "./use-modal-dismiss";
 
@@ -50,13 +51,6 @@ interface CcusageResp {
 interface Landed { range: number; resp: CcusageResp; }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-function fmtN(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  return `${(n / 1_000_000_000).toFixed(2)}B`;
-}
-
 // Stable per-model color. Family-based so opus/sonnet/haiku/gpt read consistently.
 function modelColor(m: string): string {
   const s = m.toLowerCase();
@@ -203,9 +197,9 @@ export default function UsageHistoryModal({ onClose }: Props) {
           <div className={view.stale ? "uh-stale" : undefined} aria-busy={view.stale || undefined}>
             <div className="uh-totals">
               <Stat label="total cost"   val={fmtCost(totalCost)} accent />
-              <Stat label="tokens"       val={fmtN(totalTok)} />
-              <Stat label="input+output" val={fmtN(inOut)} />
-              <Stat label="cache reads"  val={fmtN(cacheRead)} />
+              <Stat label="tokens"       val={fmtTokens(totalTok)} />
+              <Stat label="input+output" val={fmtTokens(inOut)} />
+              <Stat label="cache reads"  val={fmtTokens(cacheRead)} />
             </div>
 
             <div className="uh-chart" role="img" aria-label="Daily cost by model">
@@ -260,10 +254,10 @@ export default function UsageHistoryModal({ onClose }: Props) {
                   ) : null}
                 </div>
                 <div className="uh-detail-mini">
-                  <MiniStat label="input"       val={fmtN(selectedDay.inputTokens)} />
-                  <MiniStat label="output"      val={fmtN(selectedDay.outputTokens)} />
-                  <MiniStat label="cache write" val={fmtN(selectedDay.cacheCreationTokens)} />
-                  <MiniStat label="cache read"  val={fmtN(selectedDay.cacheReadTokens)} />
+                  <MiniStat label="input"       val={fmtTokens(selectedDay.inputTokens)} />
+                  <MiniStat label="output"      val={fmtTokens(selectedDay.outputTokens)} />
+                  <MiniStat label="cache write" val={fmtTokens(selectedDay.cacheCreationTokens)} />
+                  <MiniStat label="cache read"  val={fmtTokens(selectedDay.cacheReadTokens)} />
                 </div>
                 <div className="uh-detail-models">
                   {selectedDay.modelBreakdowns
