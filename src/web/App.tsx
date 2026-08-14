@@ -25,7 +25,7 @@ import { autoRestartStep, shouldReloadBundle } from "./restart";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
-import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds } from "./visibility";
+import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
@@ -785,6 +785,23 @@ function Inner() {
    *  (reads the freshly-pinned positions) rather than waiting for the 250ms
    *  tick. A plain counter — value is irrelevant, only the change matters. */
   const [dragTick, setDragTick] = useState(0);
+
+  // ── the filter bar stepping out of the way ─────────────────────────────────
+  // The bar floats over the top-left of the canvas, which is fine until you pan:
+  // then cards and tool bubbles slide underneath it and stay there, because
+  // nothing re-frames a viewport the user chose. Reported with a screenshot of a
+  // Bash bubble half-eaten by the bar, and a workaround — pressing Clear after
+  // every update — that throws away the canvas to move one toolbar.
+  //
+  // So the bar yields instead. When anything is beneath it the bar drops to a
+  // fifth of its opacity, and hovering or focusing it brings it straight back.
+  // Measured rather than derived: bubbles are positioned by the burst layer in
+  // screen space, so the DOM is the only place both live in the same
+  // coordinates. A 300ms poll of a bounded set of rects is cheaper than it
+  // sounds and stops entirely when the tab is hidden or the bar is absent.
+  const catBarRef = useRef<HTMLDivElement | null>(null);
+  const [catBarOccluded, setCatBarOccluded] = useState(false);
+
   /**
    * Live positions of whatever is being dragged, applied over the rendered
    * array. Held in a ref and paired with a counter: the values change on every
@@ -1530,6 +1547,25 @@ function Inner() {
     // Stable order: same as DETAIL_CAT_EMOJI declaration order.
     return (Object.keys(DETAIL_CAT_EMOJI) as DetailCategory[]).filter(c => set.has(c));
   }, [stateRef.current, stateRef.current.lastSeq]);
+  useEffect(() => {
+    if (presentCats.length <= 1) { setCatBarOccluded(false); return; }
+    let timer = 0;
+    const tick = () => {
+      const bar = catBarRef.current;
+      if (bar && !document.hidden) {
+        const b = bar.getBoundingClientRect();
+        // Cards and bubbles both — a bubble is what the report showed, and it
+        // lives in a different layer from the nodes.
+        const boxes = Array.from(document.querySelectorAll(".react-flow__node, .tool-burst"))
+          .map(el => el.getBoundingClientRect());
+        const hit = anyTouches(b, boxes, 8);
+        setCatBarOccluded(prev => (prev === hit ? prev : hit));
+      }
+      timer = window.setTimeout(tick, 300);
+    };
+    tick();
+    return () => window.clearTimeout(timer);
+  }, [presentCats.length]);
 
   // MCP server legend — unique servers observed across all tool calls,
   // each with a count. ToolBursts gives unknown servers a hash-based hue
@@ -2047,7 +2083,12 @@ function Inner() {
       >
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
         {presentCats.length > 1 && (
-          <div className="cat-filter-bar" role="toolbar" aria-label="Filter tools by category">
+          <div
+            ref={catBarRef}
+            className={`cat-filter-bar${catBarOccluded ? " occluded" : ""}`}
+            role="toolbar"
+            aria-label="Filter tools by category"
+          >
             {presentCats.map(c => {
               const off = hiddenCats.has(c);
               return (
