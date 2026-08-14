@@ -22,6 +22,24 @@ export const SCHEMA_KEY = "agent-dag.schema";
  *  the agent-dag.* namespace is a preference and is kept across upgrades. */
 export const SHAPE_KEYS = ["agent-dag.layout", "agent-dag.viewport"];
 
+/**
+ * One stored string, or null when it is absent OR the browser refuses the store.
+ *
+ * `window.localStorage` is a getter that THROWS — SecurityError under Safari's
+ * "Block All Cookies", Chrome with site data blocked, Firefox in strict mode —
+ * so the failing step is the property read itself and a try that only wraps
+ * `getItem` never runs. App restores preferences inside useState initialisers,
+ * and src/web has no error boundary, so one throw escaping there rejects
+ * root.render() and leaves #root empty: a blank deck with no message, on a
+ * browser profile the user cannot tell is the cause. A blocked store must cost
+ * a preference and nothing more, so both failures collapse to "not stored" and
+ * the caller falls back to its default.
+ */
+export function readStored(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+
 type Storeish = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /**

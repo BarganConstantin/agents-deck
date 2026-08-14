@@ -26,6 +26,7 @@ import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from 
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
+import { readStored } from "./storage";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -164,10 +165,12 @@ function saveDetailOpen(open: boolean): void {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(DETAIL_OPEN_KEY, open ? "1" : "0"); } catch {}
 }
+// Reads through storage.ts rather than window.localStorage directly: this runs
+// inside a useState initialiser, and the property read throws outright on a
+// browser that blocks site data, which takes App's first render with it.
 function loadUsagePanelOpen(): boolean {
-  if (typeof window === "undefined") return true;
-  const stored = window.localStorage.getItem(USAGE_PANEL_OPEN_KEY);
-  try { return stored === null ? true : stored === "1"; } catch { return true; }
+  const stored = readStored(USAGE_PANEL_OPEN_KEY);
+  return stored === null ? true : stored === "1";
 }
 function saveUsagePanelOpen(open: boolean): void {
   if (typeof window === "undefined") return;
@@ -1045,10 +1048,11 @@ function Inner() {
    *  category is in this set don't render. Reset only by toggling them
    *  back on (R / clear don't touch it — filters are user intent). */
   const [hiddenCats, setHiddenCats] = useState<Set<DetailCategory>>(() => new Set());
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    if (typeof window === "undefined") return "dark";
-    return (window.localStorage.getItem("agent-dag.theme") as "dark" | "light") ?? "dark";
-  });
+  // Guarded the same way as the panel loaders: an initialiser is the one place
+  // a store the browser won't hand over blanks the deck instead of a preference.
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (readStored("agent-dag.theme") as "dark" | "light" | null) ?? "dark",
+  );
   const [everConnected, setEverConnected] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
