@@ -313,6 +313,21 @@ function trimTools(state: GraphState, a: AgentNodeData): void {
   }
 }
 
+/** Find the ToolCall already recorded under `id`, or null if this is the first
+ *  time we see it. `toolIndex` answers for every call still in flight no matter
+ *  which agent owns it; a call that has already settled (or was swept stale) is
+ *  gone from the index, so fall back to the resolved owner's own history, newest
+ *  first. Anything older than that window was evicted by `trimTools` and is
+ *  deliberately not resurrected — it is off the board for good. */
+function findTool(state: GraphState, owner: AgentNodeData, id: string): ToolCall | null {
+  const live = state.toolIndex.get(id);
+  if (live) return live;
+  for (let i = owner.tools.length - 1; i >= 0; i--) {
+    if (owner.tools[i].id === id) return owner.tools[i];
+  }
+  return null;
+}
+
 /** Evict the oldest "done" agents when the agents map exceeds `cap`. Only
  *  considers agents whose endedAt is older than `graceMs` so freshly-done
  *  agents (still in fade-out) aren't yanked from under the user. Mutates
@@ -576,6 +591,29 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       break;
     }
     case "PreToolUse": {
+      // The same tool_use_id can be delivered more than once — several live
+      // decks appending to one events.jsonl, a hook retry, a log replay after a
+      // restart. The seq/epoch guard at the top only rejects a replay of the
+      // *same* seq, so those re-deliveries used to append a second ToolCall
+      // under an id the agent already had, and the damage was permanent:
+      // `toolIndex` kept only the newest copy, so PostToolUse could never
+      // settle the earlier ones, `sweepStaleTools` later stamped them failed
+      // (a red × on calls that actually succeeded), and both `toolCount` and
+      // the in-flight backlog counted every copy. Treat a known id as the call
+      // we already have and refresh it in place instead.
+      const known = p.tool_use_id ? findTool(state, owner, p.tool_use_id) : null;
+      if (known) {
+        if (p.tool_name && known.name === "?") known.name = p.tool_name;
+        // Never reopen a call that has already settled, and never re-attach a
+        // payload `trimTools` released — nothing would ever drop it again.
+        if (known.endedAt == null && !known.trimmed && p.tool_input !== undefined) {
+          known.input = p.tool_input;
+          known.inputPreview = shortPreview(p.tool_input);
+        }
+        break;
+      }
+      // Only a genuinely new call gets past here, so `toolCount` still advances
+      // exactly once per pushed entry and the synthesised id below stays unique.
       const id = p.tool_use_id ?? `${owner.id}:${owner.toolCount}`;
       const tc: ToolCall = {
         id,
