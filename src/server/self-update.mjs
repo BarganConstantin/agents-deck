@@ -15,7 +15,8 @@
 // So we report three distinct versions:
 //   running   — captured at boot by the caller, before an upgrade can land
 //   installed — re-read from disk per call; what a restart would run
-//   latest    — npm's dist-tag, fetched at most once a day
+//   latest    — npm's dist-tag, fetched at most once an hour (CHECK_MS below,
+//               which also explains why it is not the daily cadence it was)
 //
 // Installing is opt-in and narrow. `npm i -g` runs only when the user asks for
 // it by name and only where it can actually work: a global install, on a
@@ -778,9 +779,14 @@ export function lastMeaningfulLine(text) {
   return lines.length ? lines[lines.length - 1].slice(0, 300) : "";
 }
 
-/** Full answer for GET /api/version. Never throws, never blocks on the network
- *  for longer than FETCH_TIMEOUT_MS, and answers the local half even when the
- *  registry is unreachable. */
+/** Full answer for GET /api/version. Never throws, and answers the local half
+ *  even when the registry is unreachable.
+ *
+ *  Network worst case is 2 x FETCH_TIMEOUT_MS, not one: the dist-tag lookup,
+ *  plus — only when the tag has moved to a version this deck has not confirmed
+ *  yet — the installability probe (see runCheck), each carrying its own
+ *  AbortSignal timeout. That second request costs its timeout at most once per
+ *  release; a deck sitting on the current release stays inside one. */
 export async function versionReport({ running, pkgRoot, name = "agents-deck", now = Date.now(), force = false }) {
   const installed = installedVersion(pkgRoot);
   // Asked about the package the command installs, not about the one this build

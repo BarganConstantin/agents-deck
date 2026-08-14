@@ -554,11 +554,9 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     return state;
   }
 
-  // UsageObserved carries cumulative session usage from the transcript.
-  // Overwrite (not add) the session root's usage with the totals — the
-  // server re-reads on every event, so this is always the running total.
-  // Subagents stay at zero; the SessionList / SessionSummary roll up at
-  // the session level so the user sees correct numbers regardless.
+  // ContextObserved carries the structural breakdown of the session's context
+  // window (message counts, CLAUDE.md files, current window size) that the
+  // context donut and ContextModal read. Session root only.
   if (name === "ContextObserved") {
     const ctx = (p.context ?? null) as Record<string, unknown> | null;
     if (ctx) {
@@ -580,6 +578,11 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     return state;
   }
 
+  // UsageObserved carries cumulative session usage from the transcript.
+  // Overwrite (not add) the session root's usage with the totals — the
+  // server re-reads on every event, so this is always the running total.
+  // Subagents stay at zero; the SessionList / SessionSummary roll up at
+  // the session level so the user sees correct numbers regardless.
   if (name === "UsageObserved") {
     const u = (p.usage ?? null) as Record<string, unknown> | null;
     if (u) {

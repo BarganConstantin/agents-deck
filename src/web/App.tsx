@@ -585,7 +585,7 @@ function snapshotToFlow(
   // between columns at its width for the rest of the tab's life.
   pruneStaleEntries(measured, measuredNodeIds(state.agents.values()));
   // Never silently drop a visible node — if its position is missing, place
-  // it at {0,0} for THIS frame and force a fresh dagre pass on the next
+  // it at {0,0} for THIS frame and force a fresh layout pass on the next
   // frame by invalidating lastLayoutSigRef. The previous skip-this-frame
   // strategy caused the catastrophic "every node vanished while bursts
   // remained" symptom when, for whatever reason, positions got out of sync
@@ -603,8 +603,13 @@ function snapshotToFlow(
     finalNodes.push({ ...n, position: p });
   }
   if (missingPosition) {
-    // Force a re-layout on the next render — clearing the sig cache makes
-    // line 356 re-run dagre even if nothing else changed.
+    // Force the layout branch above to run again on the next render, even if
+    // nothing else changed. What that buys is narrower than it looks: the
+    // {0,0} written just now is a real entry in `positions`, so the node is no
+    // longer in `missing` and dagre stays skipped — only separateOverlaps
+    // touches it, which keeps it at x=0 and slides it down until it stops
+    // covering anything. Enough to un-stick it; a true dagre placement would
+    // mean leaving the position unset instead of stamping one here.
     lastLayoutSigRef.current = "";
   }
   return { nodes: finalNodes, edges };
@@ -666,7 +671,6 @@ function Inner() {
   /** Left sidebar (session list) visibility — persisted across refresh. */
   const [sessionListOpen, setSessionListOpen] = useState<boolean>(loadSessionListOpen);
   useEffect(() => { saveSessionListOpen(sessionListOpen); }, [sessionListOpen]);
-  /** Bottom spend-trend panel visibility — persisted across refresh. */
   /** Right detail panel visibility — persisted across refresh. */
   const [detailOpen, setDetailOpen] = useState<boolean>(loadDetailOpen);
   useEffect(() => { saveDetailOpen(detailOpen); }, [detailOpen]);
@@ -1757,7 +1761,6 @@ function Inner() {
     rerender();
     // After dagre runs on the next render, fit-view so the user sees the
     // result. 80ms gives React + RF one paint to settle the new positions.
-    // 80ms gives React + RF one paint to settle the new positions.
     window.setTimeout(() => fitLeft(500), 80);
   }, [rerender, rf, fitLeft]);
 

@@ -226,15 +226,6 @@ function stripAnsi(s) {
     .replace(/\x1B[()][AB012]/g, "");
 }
 
-/**
- * Parse `claude --print /usage` output.
- *
- * Observed format (Claude Code ≥ 1.x):
- *   "Current session: 84% used · resets Jun 18, 4:09pm (Europe/Chisinau)"
- *   "Current week (all models): 85% used · resets Jun 21, 8:59am (Europe/Chisinau)"
- *   "Current week (Sonnet only): 48% used · resets Jun 21, 9am (Europe/Chisinau)"
- *   "Current week (Opus only): ..."   (if present)
- */
 // Parse "Jun 18, 4:09pm" (local time, no tz) into unix seconds.
 // Claude shows times in the user's local timezone, so parsing as local is correct.
 // `now` is injectable so the year-boundary case is testable.
@@ -263,6 +254,15 @@ export function parseResetToSec(resetStr, now = Date.now()) {
   } catch { return null; }
 }
 
+/**
+ * Parse `claude --print /usage` output.
+ *
+ * Observed format (Claude Code ≥ 1.x):
+ *   "Current session: 84% used · resets Jun 18, 4:09pm (Europe/Chisinau)"
+ *   "Current week (all models): 85% used · resets Jun 21, 8:59am (Europe/Chisinau)"
+ *   "Current week (Sonnet only): 48% used · resets Jun 21, 9am (Europe/Chisinau)"
+ *   "Current week (Opus only): ..."   (if present)
+ */
 function parseUsageText(raw) {
   const text = stripAnsi(raw);
   const result = {};
