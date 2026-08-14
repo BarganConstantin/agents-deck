@@ -5,6 +5,28 @@ function emptyUsage(): TokenUsage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
 }
 
+/** The TTL split of the cache-creation tokens, in either shape it reaches us:
+ *  nested under `cache_creation` the way Anthropic writes it into a transcript
+ *  line, or flattened onto the totals our own UsageObserved carries. Returns
+ *  nothing at all when neither field is present — absent is not zero, and
+ *  pricing.ts leans on that to keep a split-less session at the dollars it
+ *  already showed. */
+function cacheTtlSplit(
+  obj: Record<string, unknown>,
+): Pick<TokenUsage, "cacheCreate1hTokens" | "cacheCreate5mTokens"> {
+  const nested = obj.cache_creation;
+  const src = nested && typeof nested === "object"
+    ? nested as Record<string, unknown>
+    : obj;
+  const h1 = src.ephemeral_1h_input_tokens;
+  const m5 = src.ephemeral_5m_input_tokens;
+  if (typeof h1 !== "number" && typeof m5 !== "number") return {};
+  return {
+    cacheCreate1hTokens: Number(h1 ?? 0),
+    cacheCreate5mTokens: Number(m5 ?? 0),
+  };
+}
+
 /** Recursively look for a `usage` object with numeric token fields in any
  *  shape Anthropic / CC might deliver (top-level, nested under message, etc.).
  */
@@ -23,6 +45,7 @@ function extractUsage(node: unknown, depth = 0): TokenUsage | null {
       outputTokens: Number(obj.output_tokens ?? 0),
       cacheReadTokens: Number(obj.cache_read_input_tokens ?? 0),
       cacheCreateTokens: Number(obj.cache_creation_input_tokens ?? 0),
+      ...cacheTtlSplit(obj),
     };
   }
   // Nested: { usage: { ... } } or { message: { usage: {...} } } etc.
@@ -38,6 +61,12 @@ function addUsage(into: TokenUsage, add: TokenUsage): void {
   into.outputTokens += add.outputTokens;
   into.cacheReadTokens += add.cacheReadTokens;
   into.cacheCreateTokens += add.cacheCreateTokens;
+  // Only start tracking the split once something actually reported one, so a
+  // provider that never does keeps it undefined rather than pinning it to 0.
+  if (add.cacheCreate1hTokens !== undefined || add.cacheCreate5mTokens !== undefined) {
+    into.cacheCreate1hTokens = (into.cacheCreate1hTokens ?? 0) + (add.cacheCreate1hTokens ?? 0);
+    into.cacheCreate5mTokens = (into.cacheCreate5mTokens ?? 0) + (add.cacheCreate5mTokens ?? 0);
+  }
 }
 
 /** Model ids we recognise. Claude family: claude-* . Codex family: gpt-*,
@@ -540,6 +569,11 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
           u.cache_read_input_tokens ?? u.cached_input_tokens ?? 0,
         );
         root.usage.cacheCreateTokens = Number(u.cache_creation_input_tokens ?? 0);
+        // Overwrite, not merge: these are cumulative totals for the whole
+        // transcript, so a pass that saw no split must clear a stale one.
+        const ttl = cacheTtlSplit(u);
+        root.usage.cacheCreate1hTokens = ttl.cacheCreate1hTokens;
+        root.usage.cacheCreate5mTokens = ttl.cacheCreate5mTokens;
         if (typeof u.reasoning_output_tokens === "number") {
           root.usage.reasoningOutputTokens = Number(u.reasoning_output_tokens);
         }

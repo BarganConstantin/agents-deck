@@ -1,29 +1,40 @@
 import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
-import { costForUsage, fmtCost, fmtCostRate, ratesForModel } from "../pricing";
+import { cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel } from "../pricing";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
  *  multiplication so the user can verify pricing is sane.
  *  e.g. "input  725 × $5/M     = $0.00"  */
-function costBreakdownTooltip(usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }, modelId: string | undefined): string {
+function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefined): string {
   const rates = ratesForModel(modelId);
   if (!rates) return "no rates for this model";
   const fmtN = (n: number) => n.toLocaleString();
   const fmtR = (r: number) => `$${r}/MTok`;
   const c = costForUsage(usage, modelId);
+  const cw = cacheWriteBreakdown(usage, rates);
+  // Cache writes are billed per TTL — 2× input for a 1-hour entry, 1.25× for a
+  // 5-minute one — so once a transcript reports both, one multiplication can't
+  // reproduce the total the chip shows. Split the row rather than print a
+  // product that doesn't check out.
+  const cacheWriteRows = cw.tokens1h > 0
+    ? [
+        `cache w5m${fmtN(cw.tokens5m).padStart(14)}  × ${fmtR(rates.cacheWrite).padEnd(11)} = ${fmtCost(cw.usd5m)}`,
+        `cache w1h${fmtN(cw.tokens1h).padStart(14)}  × ${fmtR(rates.cacheWrite1h ?? rates.cacheWrite).padEnd(11)} = ${fmtCost(cw.usd1h)}`,
+      ]
+    : [`cache w  ${fmtN(cw.tokens5m).padStart(14)}  × ${fmtR(rates.cacheWrite).padEnd(11)} = ${fmtCost(cw.usd5m)}`];
   return [
     `model: ${modelId}`,
     `input    ${fmtN(usage.inputTokens).padStart(14)}  × ${fmtR(rates.input).padEnd(11)} = ${fmtCost(c.input)}`,
     `output   ${fmtN(usage.outputTokens).padStart(14)}  × ${fmtR(rates.output).padEnd(11)} = ${fmtCost(c.output)}`,
     `cache r  ${fmtN(usage.cacheReadTokens).padStart(14)}  × ${fmtR(rates.cacheRead).padEnd(11)} = ${fmtCost(c.cacheRead)}`,
-    `cache w  ${fmtN(usage.cacheCreateTokens).padStart(14)}  × ${fmtR(rates.cacheWrite).padEnd(11)} = ${fmtCost(c.cacheWrite)}`,
+    ...cacheWriteRows,
     `─────────────────────────────────────────`,
     `total                                 = ${fmtCost(c.total)}`,
   ].join("\n");
 }
-import type { AgentNodeData, ToolCall } from "../types";
+import type { AgentNodeData, TokenUsage, ToolCall } from "../types";
 
 function elapsed(start: number, end: number | undefined, now: number): string {
   const ms = (end ?? now) - start;

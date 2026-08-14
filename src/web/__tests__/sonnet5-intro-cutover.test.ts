@@ -14,8 +14,8 @@ const BEFORE = Date.UTC(2026, 7, 30);  // 2026-08-30, intro pricing
 const AFTER = Date.UTC(2026, 8, 5);    // 2026-09-05, standard pricing
 const CUTOVER = Date.UTC(2026, 8, 1);  // 2026-09-01, first standard instant
 
-const INTRO = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
-const STANDARD = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+const INTRO = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, cacheWrite1h: 4 };
+const STANDARD = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 };
 
 const usage = (u: Partial<TokenUsage> = {}): TokenUsage => ({
   inputTokens: 0,

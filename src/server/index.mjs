@@ -154,7 +154,18 @@ const USAGE_FIELD_RE = {
   output_tokens: /"output_tokens"\s*:\s*(\d+)/,
   cache_read_input_tokens: /"cache_read_input_tokens"\s*:\s*(\d+)/,
   cache_creation_input_tokens: /"cache_creation_input_tokens"\s*:\s*(\d+)/,
+  ephemeral_1h_input_tokens: /"ephemeral_1h_input_tokens"\s*:\s*(\d+)/,
+  ephemeral_5m_input_tokens: /"ephemeral_5m_input_tokens"\s*:\s*(\d+)/,
 };
+// The flat `cache_creation_input_tokens` says how many tokens were written to
+// cache but not at which TTL, and Anthropic bills a 1-hour write at 2x input
+// against the 5-minute 1.25x — CC writes 1-hour caches for most of its prefix,
+// so pricing the whole lot at the cheaper rate under-reports the bill. The
+// split lives in a `cache_creation` sub-object that USAGE_BLOCK_RE cannot
+// reach: its `[^}]+` stops at the first `}`, which in a real transcript closes
+// `server_tool_use`, several fields earlier. Match the sub-object on the raw
+// line instead of on the extracted blob.
+const CACHE_CREATION_BLOCK_RE = /"cache_creation"\s*:\s*\{([^}]*)\}/g;
 
 function grabUsageField(blob, key) {
   const m = blob.match(USAGE_FIELD_RE[key]);
@@ -181,6 +192,7 @@ function newTranscriptState() {
     usage: {
       input_tokens: 0, output_tokens: 0,
       cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0,
     },
     ctx: newContextBreakdown(),
   };
@@ -230,6 +242,10 @@ function foldTranscriptLine(state, line) {
     state.usage.output_tokens += grabUsageField(blob, "output_tokens");
     state.usage.cache_read_input_tokens += grabUsageField(blob, "cache_read_input_tokens");
     state.usage.cache_creation_input_tokens += grabUsageField(blob, "cache_creation_input_tokens");
+  }
+  for (const m of line.matchAll(CACHE_CREATION_BLOCK_RE)) {
+    state.usage.ephemeral_1h_input_tokens += grabUsageField(m[1], "ephemeral_1h_input_tokens");
+    state.usage.ephemeral_5m_input_tokens += grabUsageField(m[1], "ephemeral_5m_input_tokens");
   }
 
   // Context counts only what follows the most recent /clear or /compact.

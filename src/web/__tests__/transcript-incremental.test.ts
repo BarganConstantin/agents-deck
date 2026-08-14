@@ -59,18 +59,21 @@ describe("incremental transcript usage", () => {
     expect(await readUsageFromTranscript(path)).toEqual({
       input_tokens: 10, output_tokens: 1,
       cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0,
     });
 
     // A second pass with nothing appended must be a no-op, not a re-count.
     expect(await readUsageFromTranscript(path)).toEqual({
       input_tokens: 10, output_tokens: 1,
       cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0,
     });
 
     appendFileSync(path, assistant(5, 2));
     expect(await readUsageFromTranscript(path)).toEqual({
       input_tokens: 15, output_tokens: 3,
       cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0,
     });
   });
 

@@ -29,6 +29,15 @@ export interface TokenUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** Claude-only: how `cacheCreateTokens` splits across cache TTLs, from
+   *  `usage.cache_creation.{ephemeral_1h,ephemeral_5m}_input_tokens`. A
+   *  1-hour write costs 2× base input against the 5-minute 1.25×, and CC
+   *  writes 1-hour caches for most of its prefix, so the two are not
+   *  interchangeable. Left undefined when the source carried no split
+   *  (Codex, transcripts written before CC emitted one) — pricing.ts bills
+   *  everything the split doesn't cover at the 5-minute rate. */
+  cacheCreate1hTokens?: number;
+  cacheCreate5mTokens?: number;
   /** Codex-only: reasoning_output_tokens from o-series / gpt-5 reasoning
    *  models. Carried separately so the UI can surface it without polluting
    *  Claude usage math (Claude doesn't emit this bucket). */
