@@ -175,7 +175,6 @@ function newContextBreakdown() {
 function newTranscriptState() {
   return {
     offset: 0,          // bytes already folded in
-    touchedAt: 0,
     rootModel: null,
     lastModel: null,    // last claude-* model on any line, sidechain included
     subagentModels: {},
@@ -259,14 +258,25 @@ function foldTranscriptLine(state, line) {
   }
 }
 
+/** Record a use of `path` and keep the map under the cap. Re-inserting on
+ *  every touch makes the Map's own insertion order the LRU order, so eviction
+ *  reads one key instead of scanning for the smallest timestamp. Scanning a
+ *  timestamp is also what broke the cache: a state is created with no stamp
+ *  yet, so the entry the scan had just inserted was the smallest of all and
+ *  the one deleted, every time. Past 256 distinct transcripts the map froze on
+ *  the first 256 paths and every later transcript re-read its whole JSONL from
+ *  byte 0 on every throttled pass — the O(n)-per-pass stall the cursor exists
+ *  to remove. */
+function touchTranscriptScan(path, state) {
+  transcriptScans.delete(path);
+  transcriptScans.set(path, state);
+  pruneTranscriptScans();
+}
+
 function pruneTranscriptScans() {
-  if (transcriptScans.size <= MAX_TRANSCRIPT_SCANS) return;
-  let oldestPath = null;
-  let oldestAt = Infinity;
-  for (const [p, st] of transcriptScans) {
-    if (st.touchedAt < oldestAt) { oldestAt = st.touchedAt; oldestPath = p; }
+  while (transcriptScans.size > MAX_TRANSCRIPT_SCANS) {
+    transcriptScans.delete(transcriptScans.keys().next().value);
   }
-  if (oldestPath !== null) transcriptScans.delete(oldestPath);
 }
 
 /** Bring a transcript's scan state up to date and return it. Concurrent
@@ -279,20 +289,17 @@ function scanTranscript(path) {
   if (inFlight) return inFlight;
   const run = (async () => {
     let state = transcriptScans.get(path);
-    if (!state) {
-      state = newTranscriptState();
-      transcriptScans.set(path, state);
-      pruneTranscriptScans();
-    }
-    state.touchedAt = Date.now();
+    if (!state) state = newTranscriptState();
+    touchTranscriptScan(path, state);
     try {
       const s = await stat(path);
       // Shorter than the cursor means the file was truncated, rotated or
       // replaced — the offset now points at unrelated bytes, so start over.
       if (s.size < state.offset) {
         state = newTranscriptState();
-        state.touchedAt = Date.now();
-        transcriptScans.set(path, state);
+        // Touch again rather than set: the await above yielded, and another
+        // path's scan may have re-ordered or evicted this entry meanwhile.
+        touchTranscriptScan(path, state);
       }
       if (s.size <= state.offset) return state;
       const text = await readByteRange(path, state.offset, s.size);
