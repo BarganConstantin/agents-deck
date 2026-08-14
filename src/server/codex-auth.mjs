@@ -16,6 +16,7 @@ import { readFile, chmod, unlink, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createTemp, renameWithRetry } from "./installer.mjs";
+import { PRODUCT } from "./brand.mjs";
 
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const AUTH_PATH  = join(CODEX_HOME, "auth.json");
@@ -207,7 +208,7 @@ async function doRefresh(auth) {
     // The rotated token exists server-side but never reached disk. Say so
     // plainly — the credential on disk is now dead and only a re-login fixes
     // it, so reporting a transient failure would just mislead.
-    console.error("agents-deck codex-auth: could not write auth.json:", err?.message ?? err);
+    console.error(`${PRODUCT} codex-auth: could not write auth.json:`, err?.message ?? err);
     return { ok: false, reason: "refresh_rejected", code: "persist_failed" };
   }
 

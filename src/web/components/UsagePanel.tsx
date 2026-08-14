@@ -3,6 +3,7 @@
 // in the topbar or the U keyboard shortcut.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { costForUsage, fmtCost, fmtCostRate, type CostBreakdown } from "../pricing";
+import { PRODUCT } from "../brand";
 import type { GraphState } from "../reducer";
 import type { AgentState } from "../types";
 import { fmtTokens } from "../token-format";
@@ -606,7 +607,7 @@ export default function UsagePanel({ state, now, onClose }: Props) {
               <div className="up-quota-sub up-credits">credits: unlimited</div>
             )}
             {codexQuota.resetCredits && codexQuota.resetCredits.availableCount > 0 && (
-              <div className="up-quota-sub up-reset-credits" title="Redeem in the Codex CLI or ChatGPT — agents-deck only reports them">
+              <div className="up-quota-sub up-reset-credits" title={`Redeem in the Codex CLI or ChatGPT — ${PRODUCT} only reports them`}>
                 {codexQuota.resetCredits.availableCount} rate-limit reset
                 {codexQuota.resetCredits.availableCount !== 1 ? "s" : ""} available
                 {codexQuota.resetCredits.nextExpiryAt &&

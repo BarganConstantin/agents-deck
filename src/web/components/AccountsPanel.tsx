@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
 import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
+import { PRODUCT } from "../brand";
 import {
   type Failure,
   RELOAD_UNREACHABLE,
@@ -533,7 +534,7 @@ export default function AccountsPanel({ onClose }: Props) {
 
                   <div className="ap-manage-row">
                     <button type="button" className="ap-manage-btn" disabled={busy != null}
-                      title="Copy this account to another agents-deck. The share carries a live login and expires in 10 minutes."
+                      title={`Copy this account to another ${PRODUCT}. The share carries a live login and expires in 10 minutes.`}
                       onClick={async () => {
                         setShareCopied(false);
                         const out = await admin({ action: "share", account: a.num }, `share-${a.num}`);

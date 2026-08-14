@@ -31,6 +31,7 @@
 // Kept out of the components so the rankings can be tested without React or a
 // DOM, the same reason login-flow.ts and login-announce.ts live out here.
 import { isLoginOver } from "./login-flow";
+import { PRODUCT } from "./brand";
 
 /** A refusal from the admin route: the login actions carry the polled login
  *  state with them, the share/import ones answer with a reason alone. */
@@ -56,7 +57,7 @@ export const REASONS: Record<string, string> = {
   add_failed: "signed in, but claude-swap could not record the account",
   not_a_share: "that does not look like a shared account — it should start with ccdeck1:",
   corrupt: "that share is incomplete — copy the whole thing",
-  wrong_version: "that share was made by a newer agents-deck",
+  wrong_version: `that share was made by a newer ${PRODUCT}`,
   expired: "that share has expired — make a new one",
   import_failed: "claude-swap refused the import",
 };
@@ -105,7 +106,7 @@ export const COMMAND_REASONS: Record<string, string> = {
 // as cswap-admin.mjs's addFailureText, and inert off macOS, where the word
 // never appears.
 const KEYCHAIN =
-  "claude-swap could not read the login keychain — start agents-deck from a Terminal window rather than a background service";
+  `claude-swap could not read the login keychain — start ${PRODUCT} from a Terminal window rather than a background service`;
 
 /**
  * The one sentence to show for a command refusal — never the raw output.

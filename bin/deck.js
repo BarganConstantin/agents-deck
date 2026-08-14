@@ -13,6 +13,7 @@ import {
   CURSOR_HIDE, CURSOR_SHOW, colorProfile, fit, glyphs, labelColumn, link, motionOK, palette,
   pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK, wordmark,
 } from "../src/server/term.mjs";
+import { PRODUCT } from "../src/server/brand.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..");
@@ -42,8 +43,8 @@ if (flags.uninstall) {
   const { uninstallHooks, hasCodexInstalled } = await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
   const claude = await uninstallHooks({ provider: "claude" });
   console.log(claude.changed
-    ? `agents-deck: hooks removed from ${claude.settingsPath}`
-    : "agents-deck: no Claude hooks to remove");
+    ? `${PRODUCT}: hooks removed from ${claude.settingsPath}`
+    : `${PRODUCT}: no Claude hooks to remove`);
   // The sound toggle is a second entry in the same file, marked
   // __agent-dag-sound rather than __agent-dag, and uninstallHooks does not know
   // that mark — so it used to be left behind, playing on every turn after the
@@ -53,16 +54,16 @@ if (flags.uninstall) {
   const { uninstallSoundHook } = await import(pathToFileURL(join(PKG_ROOT, "src/server/sound-hook.mjs")).href);
   const sound = await uninstallSoundHook();
   if (sound.ok === false) {
-    console.error(`agents-deck: sound hook left in place — ${sound.message}`);
+    console.error(`${PRODUCT}: sound hook left in place — ${sound.message}`);
   } else {
-    if (sound.removed) console.log("agents-deck: sound hook removed");
-    if (sound.restored) console.log(`agents-deck: restored ${sound.restored} of your own sound hook(s)`);
+    if (sound.removed) console.log(`${PRODUCT}: sound hook removed`);
+    if (sound.restored) console.log(`${PRODUCT}: restored ${sound.restored} of your own sound hook(s)`);
   }
   if (hasCodexInstalled()) {
     const codex = await uninstallHooks({ provider: "codex" });
     console.log(codex.changed
-      ? `agents-deck: hooks removed from ${codex.settingsPath}`
-      : "agents-deck: no Codex hooks to remove");
+      ? `${PRODUCT}: hooks removed from ${codex.settingsPath}`
+      : `${PRODUCT}: no Codex hooks to remove`);
   }
   process.exit(0);
 }
@@ -102,7 +103,7 @@ const wantCodex = flags.noCodex
 
 const WEB_DIST = join(PKG_ROOT, "dist", "web", "index.html");
 if (!existsSync(WEB_DIST)) {
-  console.error("agents-deck: ui not built. run `npm run build` (or `pnpm build`) first.");
+  console.error(`${PRODUCT}: ui not built. run \`npm run build\` (or \`pnpm build\`) first.`);
   process.exit(1);
 }
 
@@ -274,7 +275,7 @@ async function reportStartup(jobs) {
     // The file it names is one only the user can repair, and every Claude Code
     // session on this machine is reading it too.
     write(row({ mark: G.fail, tone: P.err, label: "Claude hooks", detail: "not installed" }));
-    console.error(`\n  agents-deck: ${hooks.err.message}\n`);
+    console.error(`\n  ${PRODUCT}: ${hooks.err.message}\n`);
     process.exit(1);
   }
   write(row({ mark: G.ok, label: "Claude hooks", detail: fileLink(hooks.v.hookPath) }));
@@ -428,7 +429,7 @@ const starting = startServer({
 const server = await (RESPAWN ? starting : step(`starting server${G.ellipsis}`, starting)).catch(err => {
   // stderr, not a row: a deck that could not bind is not a status line, and
   // whatever launched it reads this stream.
-  console.error(`agents-deck: server failed: ${err.message}`);
+  console.error(`${PRODUCT}: server failed: ${err.message}`);
   process.exit(1);
 });
 const addr = server.address();
@@ -584,10 +585,10 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  process.stdout.write(`agents-deck — live deck of Claude Code + Codex agents
+  process.stdout.write(`${PRODUCT} — live deck of Claude Code + Codex agents
 
 Usage:
-  agents-deck [options]
+  ${PRODUCT} [options]
 
 Options:
   -p, --port <number>      Preferred port (default: 4317; falls back to random 4318–4400)
@@ -599,7 +600,7 @@ Options:
       --no-persist         Don't write or replay events log (RAM-only)
       --codex              Force-enable Codex capture even if ~/.codex/ missing
       --no-codex           Skip Codex capture (Claude only)
-      --uninstall          Remove agents-deck's hooks from ~/.claude/settings.json and
+      --uninstall          Remove ${PRODUCT}'s hooks from ~/.claude/settings.json and
                            ~/.codex/hooks.json, and restore any sound hooks of yours it parked
   -h, --help               Show this help
 `);

@@ -31,6 +31,7 @@ import { isUnplaced, needsLayout, recordPlacement, stampPlaceholder, type Provis
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
 import { readStored } from "./storage";
+import { PRODUCT } from "./brand";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -318,7 +319,7 @@ function exportSessionJson(state: GraphState, sessionId: string): void {
   const a = document.createElement("a");
   const safeLabel = (root.label || "session").replace(/[^a-z0-9._-]/gi, "_");
   a.href = url;
-  a.download = `agents-deck-${safeLabel}-${sessionId.slice(0, 8)}.json`;
+  a.download = `${PRODUCT}-${safeLabel}-${sessionId.slice(0, 8)}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1939,7 +1940,7 @@ function Inner() {
       <header className="topbar">
         <div className="brand">
           <span className="logo" />
-          agents-deck
+          {PRODUCT}
           {/* The server's own version, not the bundle's — an upgrade replaces
               dist/ too, so a reloaded page can show a number the running
               process never had. Stale → the chip stays lit even after the
@@ -2218,8 +2219,8 @@ function Inner() {
           {restarting
             ? restartMode === "npx"
               ? "Fetching the new version with npx — this can take a minute…"
-              : "Restarting agents-deck…"
-            : "Lost connection to agents-deck server. Reconnecting…"}
+              : `Restarting ${PRODUCT}…`
+            : `Lost connection to the ${PRODUCT} server. Reconnecting…`}
         </div>
       ) : noticeOpen && notice && (
         // Both banners want grid row 2, and a dead connection is the more
@@ -2252,7 +2253,15 @@ function Inner() {
             </>
           ) : (
             <>
-              <strong>agents-deck v{notice.to} is out — you are on v{notice.from}.</strong>
+              {/* The product's name, not the `name` /api/version reports: that
+                  one is the npm package the registry was asked about, and it is
+                  `ccdeck`, `agents-deck` or `agent-dag` depending on how this
+                  deck was started. A release announcement whose subject changes
+                  with the install method names three products where there is
+                  one, and contradicts the wordmark directly above it. The
+                  package belongs where it is actionable — the button's title
+                  below, which is the command that actually installs. */}
+              <strong>{PRODUCT} v{notice.to} is out — you are on v{notice.from}.</strong>
               {/* One button when we can actually install; the command, always,
                   because the button can fail and the command never does. */}
               {version?.upgradeMode === "install" && upgradeState !== "failed" && (
@@ -2637,7 +2646,7 @@ function EmptyHero({ live, everConnected }: { live: boolean; everConnected: bool
           <h2>{everConnected ? "Disconnected from server" : "Server unreachable"}</h2>
           <p>
             The browser cannot reach <code>/events</code>. Check that
-            <code>agents-deck</code> is still running in your terminal, then this
+            <code>{PRODUCT}</code> is still running in your terminal, then this
             page will resume automatically.
           </p>
         </>
@@ -2656,7 +2665,7 @@ function agentNoneCopy() {
         fork and tools are called.
       </p>
       <p className="hint-row">
-        Not seeing anything? Make sure <code>agents-deck</code> is running and that
+        Not seeing anything? Make sure <code>{PRODUCT}</code> is running and that
         hooks are installed in your Claude settings (<code>$CLAUDE_CONFIG_DIR</code>{" "}
         if you set it, otherwise <code>~/.claude/settings.json</code>) and{" "}
         <code>~/.codex/hooks.json</code>. (Codex requires{" "}

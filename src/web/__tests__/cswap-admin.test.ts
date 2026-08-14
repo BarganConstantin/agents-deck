@@ -259,7 +259,7 @@ describe("firstUseful / addFailureText", () => {
     // stops short of naming the fix.
     const out = addFailureText({ stderr: "Error: The macOS Keychain is unreadable right now (locked).", code: 1 });
     expect(out).toMatch(/Keychain is unreadable/);
-    expect(out).toMatch(/start agents-deck from a Terminal/i);
+    expect(out).toMatch(/start ccdeck from a Terminal/i);
   });
 
   it("falls back to the exit code when the CLI said nothing at all", () => {
