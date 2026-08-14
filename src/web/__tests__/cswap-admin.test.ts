@@ -6,7 +6,7 @@
 // live credential that has to stop working on its own.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, importAccount, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
 // @ts-expect-error — plain JS module, no types
 import { looksMissing } from "../../server/exec.mjs";
 // @ts-expect-error — plain JS module, no types
@@ -240,5 +240,28 @@ describe("cswapCandidates", () => {
   it("includes uv's own tool venv, which exists even when the symlink was never made", () => {
     expect(cswapCandidates("darwin", {}, HOME_NIX))
       .toContain("/home/dorin/.local/share/uv/tools/claude-swap/bin/cswap");
+  });
+});
+
+// The import path used to call a helper that did not exist. Nothing caught it:
+// every unit test stopped at the envelope, and the route's 500 reached the
+// dialog as its generic fallback — "the import failed" — which is exactly what
+// a genuinely refused import says. This one runs the whole function, with cswap
+// pointed at a path that cannot exist, so a ReferenceError anywhere between the
+// envelope and the child fails the test instead of shipping.
+describe("importAccount reaches the CLI", () => {
+  it("returns a refusal, not a crash, when cswap cannot be run", async () => {
+    const before = process.env.AGENTS_DECK_CSWAP;
+    process.env.AGENTS_DECK_CSWAP = "/nonexistent/definitely/not/cswap";
+    try {
+      const blob = wrapShare(JSON.stringify({ version: 1, accounts: [] }));
+      const out = await importAccount(blob);
+      expect(out.ok).toBe(false);
+      expect(out.reason).toBe("import_failed");
+      expect(out.detail).toMatch(/not on PATH/);
+    } finally {
+      if (before === undefined) delete process.env.AGENTS_DECK_CSWAP;
+      else process.env.AGENTS_DECK_CSWAP = before;
+    }
   });
 });
