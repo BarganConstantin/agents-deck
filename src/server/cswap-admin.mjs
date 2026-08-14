@@ -237,7 +237,16 @@ export async function startLogin({ email } = {}) {
   const url = await waitFor(() => flow.url, 15_000);
   if (!url) {
     child.kill();
-    _login = { state: "failed", error: "the claude CLI did not print a sign-in link" };
+    // Same identity check as the done handler above, and for a sharper reason:
+    // a second startLogin cancels this one's child (the yield path at the top),
+    // so this url can never arrive and this wait always runs its full fifteen
+    // seconds. Overwriting _login then would erase a live flow — the dialog
+    // would flip to "failed" while the newer child is still waiting for a code
+    // that can no longer be delivered, and with its handle gone not even
+    // cancelLogin could reach it.
+    if (flow === _login) {
+      _login = { state: "failed", error: "the claude CLI did not print a sign-in link" };
+    }
     return { ok: false, reason: "no_url", ...loginState() };
   }
   return { ok: true, ...loginState() };

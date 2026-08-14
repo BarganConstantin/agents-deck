@@ -4,13 +4,63 @@
 // link is printed twice inside escape sequences, the removal prompt has no
 // --yes flag and must be answered by matching it, and a shared account is a
 // live credential that has to stop working on its own.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // @ts-expect-error — plain JS module, no types
-import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, importAccount, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, importAccount, startLogin, loginState, cancelLogin, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
 // @ts-expect-error — plain JS module, no types
 import { looksMissing } from "../../server/exec.mjs";
 // @ts-expect-error — plain JS module, no types
 import { cswapCandidates } from "../../server/cswap-install.mjs";
+
+// A stand-in for `claude auth login`, because the login tests need a child that
+// prints its link on cue and then stays alive — a real one cannot be scripted
+// that precisely. Nothing else is faked: `cswap import` and `cswap remove` go
+// on reaching the real exec.mjs, since the test at the bottom of this file is
+// about what the real one does when the binary is missing.
+const fakeLogin = vi.hoisted(() => {
+  type Sub = (line: string, partial: boolean) => void;
+  const children: any[] = [];
+  let waiting: ((c: any) => void) | null = null;
+
+  function spawn() {
+    let settle!: (r: any) => void;
+    const subs: Sub[] = [];
+    const child = {
+      done: new Promise((r) => { settle = r; }),
+      killed: false,
+      onLine(cb: Sub) { subs.push(cb); },
+      write(_text: string) {},
+      kill() { child.killed = true; },
+      /** What the CLI writes. */
+      say(line: string) { for (const cb of subs) cb(line, false); },
+      /** How the CLI ends. */
+      end(r: unknown) { settle(r); },
+    };
+    children.push(child);
+    waiting?.(child);
+    waiting = null;
+    return child;
+  }
+
+  /** The nth login child, resolved once startLogin has actually spawned it. */
+  function child(i: number): Promise<any> {
+    return children[i] ? Promise.resolve(children[i]) : new Promise((res) => { waiting = res; });
+  }
+
+  return { spawn, child, children };
+});
+
+vi.mock("../../server/exec.mjs", async (importOriginal) => {
+  const real = await importOriginal<Record<string, any>>();
+  return {
+    ...real,
+    runInteractive: (cmd: string, args: string[], opts: unknown) =>
+      args[0] === "auth" && args[1] === "login" ? fakeLogin.spawn() : real.runInteractive(cmd, args, opts),
+  };
+});
 
 const AUTHORIZE =
   "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e" +
@@ -240,6 +290,61 @@ describe("cswapCandidates", () => {
   it("includes uv's own tool venv, which exists even when the symlink was never made", () => {
     expect(cswapCandidates("darwin", {}, HOME_NIX))
       .toContain("/home/dorin/.local/share/uv/tools/claude-swap/bin/cswap");
+  });
+});
+
+// Two sign-ins overlap more easily than it sounds: the CLI is slow to print its
+// link, the user reloads the page, and the second request takes over — which
+// kills the first child, so that first request's link can never arrive and its
+// fifteen-second wait always runs to the end. Announcing its own failure then
+// used to publish over a live login: the dialog flipped to "failed" while the
+// newer child sat waiting for a code nothing could deliver any more, and the
+// only handle to it was gone, so it ran on for its full five minutes with the
+// next attempt spawning a second one beside it.
+describe("a startLogin that gives up after a newer one took over", () => {
+  it("leaves the newer login standing, handle and all", async () => {
+    const claude = process.env.AGENTS_DECK_CLAUDE;
+    const backup = process.env.CLAUDE_SWAP_BACKUP;
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-login-"));
+    // An empty store, so nothing in here can decide to switch the active
+    // account of the machine running the tests; and a claude that is not
+    // there, so the identity read answers "nobody" without running the real
+    // one.
+    process.env.CLAUDE_SWAP_BACKUP = dir;
+    process.env.AGENTS_DECK_CLAUDE = join(dir, "no-such-claude");
+    vi.useFakeTimers();
+    try {
+      const first = startLogin();
+      const childA = await fakeLogin.child(0);
+      expect(loginState().state).toBe("awaiting_url");
+
+      // The reload: a second request, which yields the first one out of the way.
+      const second = startLogin();
+      const childB = await fakeLogin.child(1);
+      expect(childA.killed).toBe(true);
+      childB.say(`If the browser didn't open, visit: ${AUTHORIZE}`);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await second).toMatchObject({ ok: true, state: "awaiting_code" });
+
+      // Now the first request's wait expires, with the second one live.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await first).toMatchObject({ ok: false, reason: "no_url" });
+
+      expect(loginState().state).toBe("awaiting_code");
+      expect(loginState().url).toBe(AUTHORIZE);
+      // And the child is still reachable, which is the orphan half of the bug.
+      await cancelLogin();
+      expect(childB.killed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      await cancelLogin();
+      for (const c of fakeLogin.children) c.end({ ok: false, killed: true });
+      if (claude === undefined) delete process.env.AGENTS_DECK_CLAUDE;
+      else process.env.AGENTS_DECK_CLAUDE = claude;
+      if (backup === undefined) delete process.env.CLAUDE_SWAP_BACKUP;
+      else process.env.CLAUDE_SWAP_BACKUP = backup;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
