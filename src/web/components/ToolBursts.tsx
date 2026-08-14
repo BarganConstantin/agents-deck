@@ -264,14 +264,17 @@ const SHELL_TOOLS = new Set(["Bash", "PowerShell", "shell", "exec_command", "she
 // vs "Bash"), so the fixed ESTIMATED_BUBBLE_W under-shoots the primary
 // bubble's real width and the chained sub-bubble lands on top of it with no
 // gap. For these tools only we widen the primary estimate from the label
-// length; floored at ESTIMATED_BUBBLE_W so Claude/MCP bubbles are unchanged.
+// length; floored at ESTIMATED_BUBBLE_W so Claude bubbles are unchanged.
 const CODEX_TOOLS = new Set(["shell", "exec_command", "shell_command", "write_stdin", "wait", "apply_patch", "update_plan"]);
 
-/** Estimated primary-bubble width in px. For Codex tools, scale with the
- *  label length so the sub-bubble clears the (longer) primary; everything
- *  else keeps the original fixed estimate, leaving Claude rendering intact. */
-function primaryBubbleWidth(toolName: string, label: string): number {
-  if (!CODEX_TOOLS.has(toolName)) return ESTIMATED_BUBBLE_W;
+/** Estimated primary-bubble width in px. Codex tools and MCP calls both chain
+ *  a sub-bubble behind a primary whose label can run long — an unrecognised
+ *  MCP server keeps its raw segment (often a uuid) as the label — so for those
+ *  the estimate scales with the label; everything else keeps the original
+ *  fixed estimate, leaving Claude rendering intact. Exported for tests. */
+export function primaryBubbleWidth(toolName: string, label: string): number {
+  const scales = CODEX_TOOLS.has(toolName) || toolName.startsWith("mcp__");
+  if (!scales) return ESTIMATED_BUBBLE_W;
   // emoji + paddings ≈ 34px, then ~7.5px per character.
   return Math.max(ESTIMATED_BUBBLE_W, 34 + label.length * 7.5);
 }
