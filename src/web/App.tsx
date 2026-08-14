@@ -2127,6 +2127,14 @@ function Inner() {
           nodesDraggable
           nodesConnectable={false}
           selectionOnDrag={false}
+          // Without a threshold React Flow begins a drag on pointerdown, so a
+          // plain click ran onNodeDragStart/onNodeDragStop at zero delta: it
+          // pinned the card — every card of the session, for the group handle —
+          // and switched auto-fit off for good. The distance is measured in
+          // flow units, so it scales with the zoom; 5 is roughly the slop a
+          // mouse, a trackpad or a finger has to beat before the gesture counts
+          // as a drag instead of a click.
+          nodeDragThreshold={5}
           onNodeClick={(e, n) => {
             if (n.type === "sessionGroup") { clearSelection(); return; }
             selectAgent(n.id, e.shiftKey);
