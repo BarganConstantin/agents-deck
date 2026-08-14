@@ -166,20 +166,35 @@ async function safePythons() {
  * any `pip install --user pipx` where ~/.local/bin was never added to PATH. The
  * two-entry version of this list reported "needs uv or pipx" to people who had
  * pipx installed, which is the kind of wrong answer that stops someone looking.
+ *
+ * Every entry carries its UPGRADE command line as well as its install one. The
+ * upgrade used to be re-derived from the `via` label instead, and any label that
+ * derivation did not recognise fell through to `-m pipx upgrade` — so the
+ * bundled uv, which is the only installer present on a machine that had neither
+ * uv nor pipx nor a usable python, was asked to run a pipx command it rejects.
  */
 async function installers() {
   const out = [
-    { cmd: "uv",   probe: ["--version"], args: ["tool", "install", "claude-swap"], via: "uv" },
-    { cmd: "pipx", probe: ["--version"], args: ["install", "claude-swap"],         via: "pipx" },
+    { cmd: "uv",   probe: ["--version"], args: ["tool", "install", "claude-swap"], upgrade: ["tool", "upgrade", "claude-swap"], via: "uv" },
+    { cmd: "pipx", probe: ["--version"], args: ["install", "claude-swap"],         upgrade: ["upgrade", "claude-swap"],         via: "pipx" },
   ];
   // A uv fetched on an earlier run counts as installed tooling from here on.
   const own = existingBootstrappedUv();
-  if (own) out.push({ cmd: own, probe: ["--version"], args: ["tool", "install", "claude-swap"], via: "uv (bundled)" });
+  if (own) {
+    out.push({
+      cmd: own,
+      probe: ["--version"],
+      args: ["tool", "install", "claude-swap"],
+      upgrade: ["tool", "upgrade", "claude-swap"],
+      via: "uv (bundled)",
+    });
+  }
   for (const py of await safePythons()) {
     out.push({
       cmd: py,
       probe: ["-m", "pipx", "--version"],
       args: ["-m", "pipx", "install", "claude-swap"],
+      upgrade: ["-m", "pipx", "upgrade", "claude-swap"],
       via: `${py} -m pipx`,
     });
   }
@@ -270,21 +285,19 @@ function isOlder(a, b) {
  * Detached and unawaited: an upgrade resolves a Python environment and can
  * take tens of seconds, which is not a thing to put in front of the server
  * starting. The running copy keeps working; the new one is there next launch.
+ *
+ * The command line comes from the installer entry rather than from its label:
+ * runDetached captures nothing, so an upgrade aimed at the wrong tool fails
+ * where nobody can see it while the caller still reports "upgrading".
  */
-function upgradeInBackground(found) {
-  const { cmd, via } = found;
-  const args = via === "uv"
-    ? ["tool", "upgrade", "claude-swap"]
-    : via === "pipx"
-      ? ["upgrade", "claude-swap"]
-      : ["-m", "pipx", "upgrade", "claude-swap"];   // python -m pipx
-  runDetached(cmd, args);
+function upgradeInBackground({ cmd, upgrade }) {
+  runDetached(cmd, upgrade);
 }
 
 /** Whichever Python tool installer is available, or null. */
 async function findInstaller() {
-  for (const { cmd, probe, via } of await installers()) {
-    if ((await run(cmd, probe, { timeout: 8_000 })).ok) return { cmd, via };
+  for (const { cmd, probe, upgrade, via } of await installers()) {
+    if ((await run(cmd, probe, { timeout: 8_000 })).ok) return { cmd, upgrade, via };
   }
   return null;
 }
