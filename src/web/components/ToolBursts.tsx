@@ -549,7 +549,10 @@ function fadeAt(t: ToolCall, now: number, agentExitAt: number | null): number {
 }
 
 interface Burst {
-  /** React key — unique per visible bubble (a tool can produce 1 or 2). */
+  /** React key — unique per visible bubble (a tool can produce 1 or 2).
+   *  Scoped by the owning agent, because tool ids are only unique within an
+   *  agent: the same tool_use_id can legitimately be echoed to a parent and
+   *  its subagent, and a bare tool id would then key two bubbles the same. */
   id: string;
   /** Underlying ToolCall id, used for click-to-open. Same for primary and
    *  its shell sub-bubble. */
@@ -581,7 +584,35 @@ interface Burst {
   spawnDy: number;
 }
 
-function collectBursts(
+/** The tail of `tools` that actually gets bubbles: the last `limit` calls,
+ *  with at most one entry per tool id.
+ *
+ *  `tools` is a plain array and nothing upstream guarantees a tool id appears
+ *  only once — a repeated PreToolUse for the same tool_use_id pushes a second
+ *  record. Both copies land on identical coordinates (the slot geometry is
+ *  derived from the agent's position), so the duplicate is invisible clutter,
+ *  and it used to give two bubbles the same React key, which corrupts the
+ *  keyed list and leaves orphan DOM behind. Collapsing the window here means
+ *  the keys built from these ids are unique by construction.
+ *
+ *  The LAST record of an id wins: PostToolUse settles the tool the reducer's
+ *  toolIndex points at, which is the most recently pushed one, so the survivor
+ *  is the copy carrying the real status instead of a spinner that never ends.
+ *  Walking backwards also stops as soon as the window is full, so this stays
+ *  O(limit) on an agent with a long history. */
+export function distinctRecentTools(tools: ToolCall[], limit: number): ToolCall[] {
+  const out: ToolCall[] = [];
+  const seen = new Set<string>();
+  for (let i = tools.length - 1; i >= 0 && out.length < limit; i--) {
+    const t = tools[i];
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push(t);
+  }
+  return out.reverse();
+}
+
+export function collectBursts(
   agents: Map<string, AgentNodeData>,
   visibleAgentIds: Set<string>,
   positions: Map<string, { x: number; y: number }>,
@@ -603,7 +634,7 @@ function collectBursts(
     // "trail" of recent activity — no time-based culling. Bubbles only
     // leave when newer tools push them out of the window, or when the
     // agent itself retires (exitAt set, handled via fadeAt above).
-    const visible = a.tools.slice(-MAX_PER_AGENT);
+    const visible = distinctRecentTools(a.tools, MAX_PER_AGENT);
     if (visible.length === 0) continue;
     const agentExitAt = a.exitAt ?? null;
     const size = measured.get(a.id);
@@ -631,7 +662,7 @@ function collectBursts(
       // reads "🐙 GitHub → create_pr" instead of two identical 🔌s.
       const primary = primaryDisplayFor(t.name);
       out.push({
-        id: t.id,
+        id: `${a.id}::${t.id}`,
         toolId: t.id,
         agentId: a.id,
         toolName: t.name,
@@ -664,7 +695,7 @@ function collectBursts(
         const subAnchorX = worldX + primaryW;
         const subAnchorY = worldY + BUBBLE_HALF_H;
         out.push({
-          id: `sub:${t.id}`,
+          id: `sub:${a.id}::${t.id}`,
           toolId: t.id,
           agentId: a.id,
           toolName: t.name,
