@@ -8,6 +8,13 @@
   --text: #d8dae0;
   --muted: #7e828c;
   --muted-dim: #50535b;
+  /* Annotation text. --muted-dim is a decorative tint — 2.35:1 on --panel — and
+     seventeen rules were reading small body copy out of it, which is the whole
+     reason this token exists. The dark ramp has no room for a third readable
+     tier (--muted is itself only 4.70:1 on --panel), so here it shares --muted's
+     value and the step down is carried by size and weight; the light ramp has
+     the headroom and keeps a visible one. Lift this the day --muted lifts. */
+  --text-dim: #7e828c;
   --accent: #7dd3fc;
   --accent-dim: #38bdf850;
   --ok: #86efac;
@@ -34,6 +41,7 @@
   --text: #0d1117;
   --muted: #4a5260;
   --muted-dim: #7c8493;
+  --text-dim: #5f6673;
   --accent: #0369a1;
   --accent-dim: rgba(3,105,161,0.22);
   --ok: #15803d;
@@ -491,7 +499,11 @@ button.btn.icon-btn {
   padding: 8px 18px;
   background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 13%, transparent), transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-  color: var(--warn);
+  /* The accent stays in the dot, the rule and the button; the running text is
+     --text. --warn on its own 13% wash is 3.74:1 in the light theme, and this
+     row is the one that asks the user to restart — the worst place in the app
+     to make someone squint. Dark was fine either way. */
+  color: var(--text);
   font-size: 12.5px;
   font-weight: 500;
   animation: fadeIn 200ms ease;
@@ -552,7 +564,8 @@ button.btn.icon-btn {
 .ver-banner.done {
   background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 13%, transparent), transparent);
   border-bottom-color: color-mix(in srgb, var(--ok) 30%, transparent);
-  color: var(--ok);
+  /* No colour override: --ok on its own 13% wash is the same 3.75:1 trap the
+     --warn variant fell into, and the tint plus the dot already say "done". */
 }
 .ver-banner.done .ver-dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: none; }
 
@@ -1180,7 +1193,7 @@ button.btn.icon-btn {
   background: rgba(252,165,165,0.06);
 }
 .chips-empty {
-  color: var(--muted-dim);
+  color: var(--text-dim);
   font-size: 11px;
   font-style: italic;
 }
@@ -1892,7 +1905,7 @@ button.btn.icon-btn {
   flex-wrap: wrap;
 }
 .detail-hero .hero-meta-item { letter-spacing: 0.03em; }
-.detail-hero .hero-sep { color: var(--muted-dim); }
+.detail-hero .hero-sep { color: var(--text-dim); }
 .detail-hero .hero-cost {
   margin-top: 8px;
   padding: 10px 12px;
@@ -2483,17 +2496,26 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-color: rgba(126,34,206,0.65);
   box-shadow: 0 0 0 1px rgba(126,34,206,0.30), 0 8px 22px rgba(126,34,206,0.18);
 }
-:root[data-theme="light"] .agent-node.state-done { border-color: rgba(21,128,61,0.55); }
-:root[data-theme="light"] .agent-node.state-err  { border-color: rgba(185,28,28,0.60); }
+/* Opaque, not a wash. The alphas these two carried were transplanted from the
+   dark rules, where 0.5 over #14161b still reads; over a white node they landed
+   at 2.26:1 and 3.12:1 against the node interior — under the 3:1 that 1.4.11
+   asks of a boundary. The tokens themselves are 5.02:1 and 6.47:1. */
+:root[data-theme="light"] .agent-node.state-done { border-color: var(--ok); }
+:root[data-theme="light"] .agent-node.state-err  { border-color: var(--err); }
 
 :root[data-theme="light"] .state-pill.state-active {
   border-color: rgba(126,34,206,0.45);
   background: rgba(126,34,206,0.10);
 }
 :root[data-theme="light"] .state-pill.state-active::before { box-shadow: 0 0 5px rgba(126,34,206,0.55); }
+/* --ok on its own 10% wash is 4.39:1 — the one pill that misses AA, because
+   green is the lightest of the three state hues. Deepened the same way
+   .tool-chip.done below already deepens it, rather than moving --ok, which
+   would drag every cost figure and status dot in the light theme with it. */
 :root[data-theme="light"] .state-pill.state-done {
   border-color: rgba(21,128,61,0.45);
   background: rgba(21,128,61,0.10);
+  color: #166534;
 }
 :root[data-theme="light"] .state-pill.state-err {
   border-color: rgba(185,28,28,0.50);
@@ -2673,7 +2695,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   margin-left: auto;
   font-size: 10px;
   font-weight: 400;
-  color: var(--muted-dim);
+  color: var(--text-dim);
   text-transform: none;
   letter-spacing: 0;
   white-space: nowrap;
@@ -2825,7 +2847,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .qb-reset {
   font-size: 10px;
-  color: var(--muted-dim);
+  color: var(--text-dim);
 }
 .qb-pace {
   font-size: 10px;
@@ -2846,7 +2868,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-radius: 3px;
   font-size: 9px;
   font-weight: 500;
-  color: var(--muted-dim);
+  color: var(--text-dim);
   text-transform: none;
   letter-spacing: 0;
   vertical-align: 1px;
@@ -2858,15 +2880,15 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 11px;
   color: var(--muted);
 }
-.up-quota-hint { color: var(--muted-dim); }
+.up-quota-hint { color: var(--text-dim); }
 .up-quota-hint code {
   background: var(--line);
   padding: 0 3px;
   border-radius: 3px;
   font-size: 10.5px;
 }
-.up-quota-loading { font-size: 11px; color: var(--muted-dim); }
-.up-quota-sub { font-size: 10px; color: var(--muted-dim); margin-top: 4px; }
+.up-quota-loading { font-size: 11px; color: var(--text-dim); }
+.up-quota-sub { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
 /* Both of these are .up-quota-sub lines, so they have to come after it to win
    on source order — they read as dim grey otherwise. */
 .up-credits { color: var(--accent); }
@@ -2901,7 +2923,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .uh-titlewrap { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
 .uh-title { font-size: 14px; font-weight: 600; }
-.uh-sub { font-size: 10.5px; color: var(--muted-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.uh-sub { font-size: 10.5px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .uh-range { display: inline-flex; gap: 2px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
 .uh-range-btn {
   font: inherit; font-size: 10.5px;
@@ -2959,7 +2981,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-bar-seg { width: 100%; }
 .uh-bar-label {
   position: absolute; bottom: -15px;
-  font-size: 8px; color: var(--muted-dim);
+  font-size: 8px; color: var(--text-dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap; transform: rotate(0deg);
   overflow: hidden; max-width: 100%; text-overflow: ellipsis;
@@ -2980,7 +3002,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-detail-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .uh-detail-date { font-size: 12px; font-weight: 600; }
 .uh-detail-cost { font-size: 12px; color: var(--ok); font-variant-numeric: tabular-nums; }
-.uh-detail-agents { margin-left: auto; font-size: 10px; color: var(--muted-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.uh-detail-agents { margin-left: auto; font-size: 10px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .uh-detail-mini { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
 .uh-ministat { display: flex; flex-direction: column; gap: 1px; }
 .uh-ministat-val { font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -3073,7 +3095,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   gap: 2px 6px;
   margin-bottom: 3px;
 }
-.ap-lane-label { grid-area: label; font-size: 10px; color: var(--muted-dim); }
+.ap-lane-label { grid-area: label; font-size: 10px; color: var(--text-dim); }
 .ap-lane-track {
   grid-area: track;
   height: 4px;
@@ -3433,7 +3455,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   border: 1px solid transparent;
   border-radius: 6px;
   background: none;
-  color: var(--muted-dim);
+  color: var(--text-dim);
   font-size: 13px;
   line-height: 1.1;
   cursor: pointer;
@@ -3455,12 +3477,12 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-manage-label {
   width: 34px;
   flex: none;
-  color: var(--muted-dim);
+  color: var(--text-dim);
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.ap-manage-hint { color: var(--muted-dim); font-size: 10px; }
+.ap-manage-hint { color: var(--text-dim); font-size: 10px; }
 .ap-manage-input {
   flex: 1;
   min-width: 0;
@@ -3582,7 +3604,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.aa-field input::placeholder { color: var(--muted-dim); }
+.aa-field input::placeholder { color: var(--text-dim); }
 .aa-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .aa-field input:disabled { opacity: 0.55; }
 
@@ -3764,7 +3786,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--muted-dim);
+  color: var(--text-dim);
 }
 /* Copy is the point of the whole block, so it looks like it. */
 .ap-share-foot .ap-manage-btn {
