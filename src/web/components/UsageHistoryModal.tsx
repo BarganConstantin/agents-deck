@@ -8,6 +8,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { fmtCost } from "../pricing";
 import { createLatestGuard } from "../latest";
+import { presetSince } from "../usage-range";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
 interface ModelBreakdown {
@@ -65,11 +66,6 @@ function modelColor(m: string): string {
   if (s.includes("gemini")) return "#a5b4fc"; // indigo
   if (s.includes("codex")) return "#fdba74";  // orange
   return "#94a3b8";                            // zinc
-}
-
-function presetSince(days: number): string {
-  const d = new Date(Date.now() - (days - 1) * 86400_000);
-  return d.toISOString().slice(0, 10).replace(/-/g, "");
 }
 
 const PRESETS = [7, 14, 30, 90];
