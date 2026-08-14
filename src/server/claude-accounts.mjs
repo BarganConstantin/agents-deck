@@ -22,7 +22,17 @@ import { homedir, platform } from "node:os";
 
 // claude-swap keeps its store under XDG on Linux and in the home directory
 // everywhere else (paths.py get_backup_root).
-function backupRoot() {
+//
+// A relative XDG_DATA_HOME is ignored, per the XDG base-dir spec: those paths
+// must be absolute, and the alternative is a store root resolved against
+// whatever directory the deck happened to be launched from — a different one
+// per terminal. `/` is the whole test because this branch only runs on Linux.
+//
+// Exported because cswap-admin.mjs reads sequence.json out of the same root to
+// work out which slot `cswap add` just created. Two copies of this rule that
+// disagree means the reader and the writer look at two different stores, and
+// the panel reports a successful add as having produced nothing.
+export function backupRoot() {
   if (process.env.CLAUDE_SWAP_BACKUP) return process.env.CLAUDE_SWAP_BACKUP;
   if (platform() === "linux") {
     const xdg = process.env.XDG_DATA_HOME;

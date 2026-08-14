@@ -200,22 +200,34 @@ function ToolRateSpark({ tools, now }: { tools: ToolCall[]; now: number }) {
 }
 
 /** Render model ids into compact display labels:
- *    "claude-opus-4-7-20250101" → "Opus 4.7"
- *    "claude-haiku-4-5"         → "Haiku 4.5"
- *    "gpt-5.3-codex"            → "GPT-5.3 Codex"
- *    "gpt-5"                    → "GPT-5"
- *    "o3-mini"                  → "o3-mini"
- *  Falls back to the raw id if the shape is unfamiliar so we never hide info. */
+ *    "claude-opus-4-7-20250101"            → "Opus 4.7"
+ *    "claude-haiku-4-5"                    → "Haiku 4.5"
+ *    "anthropic.claude-sonnet-4-5-…-v1:0"  → "Sonnet 4.5"
+ *    "gpt-5.3-codex"                       → "GPT-5.3 Codex"
+ *    "gpt-5"                               → "GPT-5"
+ *    "o3-mini"                             → "o3-mini"
+ *  Falls back to the raw id if the shape is unfamiliar so we never hide info.
+ *
+ *  Two things are dropped before matching, because an id carries them and a
+ *  chip has no room for them: Bedrock's `anthropic.` namespace, and the release
+ *  date Anthropic stamps on every Claude id. The date was being read as a third
+ *  version component ever since this was written — "Opus 4.7.20250101", against
+ *  the "Opus 4.7" promised right above — because eight digits satisfy the same
+ *  `\d+` as the one or two a version number has. Length is what tells them
+ *  apart. The usage-history modal used to carry a second labeller purely to
+ *  strip both; one function now, so a family added here reaches every panel
+ *  rather than four out of five. */
 export function shortModel(id: string): string {
-  const claude = id.match(/^claude[-_](opus|sonnet|haiku|fable|mythos)[-_](\d+(?:[-_.]\d+)*)/i);
+  const bare = id.replace(/^anthropic\./, "").replace(/[-_]\d{8}(?!\d)/, "");
+  const claude = bare.match(/^claude[-_](opus|sonnet|haiku|fable|mythos)[-_](\d+(?:[-_.]\d+)*)/i);
   if (claude) {
     const family = claude[1][0].toUpperCase() + claude[1].slice(1).toLowerCase();
     const version = claude[2].replace(/[-_]/g, ".");
     return `${family} ${version}`;
   }
-  const gptCodex = id.match(/^gpt[-_](\d+(?:[-_.]\d+)*)[-_]codex\b/i);
+  const gptCodex = bare.match(/^gpt[-_](\d+(?:[-_.]\d+)*)[-_]codex\b/i);
   if (gptCodex) return `GPT-${gptCodex[1].replace(/[-_]/g, ".")} Codex`;
-  const gpt = id.match(/^gpt[-_](\d+(?:[-_.]\d+)*)/i);
+  const gpt = bare.match(/^gpt[-_](\d+(?:[-_.]\d+)*)/i);
   if (gpt) return `GPT-${gpt[1].replace(/[-_]/g, ".")}`;
   return id;
 }
