@@ -21,7 +21,7 @@
 // it by name and only where it can actually work: a global install, on a
 // directory we can write, outside a git checkout and outside an npx cache.
 // Everywhere else this stays what it has always been — a printed command.
-import { accessSync, constants as FS, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants as FS, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -267,6 +267,12 @@ async function isPublished(name, version) {
  *  cannot produce a path the OS refuses. An unusable name falls back to the
  *  default rather than to the shared file this fix exists to get rid of. */
 export function markerFileName(name = "agents-deck") {
+  return `.self-update-check-${safeNamePart(name)}`;
+}
+
+/** The sanitised half, shared with the restart-failure note below so the two
+ *  files agree on what a package name becomes on disk. */
+function safeNamePart(name) {
   const raw = typeof name === "string" ? name.trim().toLowerCase() : "";
   const safe = raw
     .replace(/^@/, "")
@@ -276,7 +282,7 @@ export function markerFileName(name = "agents-deck") {
     // trailing dot from a file name, so a name that ends in one would write to
     // a path that is not the path we would later read.
     .replace(/^[-.]+|[-.]+$/g, "");
-  return `.self-update-check-${safe || "agents-deck"}`;
+  return safe || "agents-deck";
 }
 
 function markerPath(name) {
@@ -514,6 +520,84 @@ export function upgradeBlock(pkgRoot) {
   });
 }
 
+// ── the note a failed npx relaunch leaves behind ─────────────────────────────
+//
+// The npx upgrade is the one path whose failure the server cannot see. It runs
+// in the SUPERVISOR, after this process has already exited: the worker asks to
+// come back through `npx -y <spec>@latest`, npx fails, and the supervisor
+// relaunches the copy on disk. The new worker boots knowing nothing, so
+// /api/version kept answering `upgrade: {state:"idle"}` — the banner still
+// offered "Update & restart", the tab said nothing at all, and a user who
+// clicked the button without watching the terminal saw the deck blink and come
+// back unchanged. Every click then repeated the whole cycle identically.
+//
+// A file is the only channel between the two processes: the supervisor writes
+// one when the relaunch fails, and the worker it starts instead reads it here.
+// Same directory and same per-package naming as the update markers, for the
+// same reason — several decks share a home directory and must not answer for
+// each other.
+
+export function restartFailureFileName(name = "agents-deck") {
+  return `.restart-failed-${safeNamePart(name)}`;
+}
+
+function restartFailurePath(name) {
+  return join(MARKER_DIR, restartFailureFileName(name));
+}
+
+/** Called by the supervisor, in the moment between "npx failed" and "relaunch
+ *  the old copy". Best-effort: a read-only home costs the report, not the deck. */
+export function recordRestartFailure({ name = "agents-deck", command = null, error = null, version = null, at = Date.now() } = {}) {
+  const path = restartFailurePath(name);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      command,
+      error: error ? String(error).slice(0, 300) : null,
+      // The version that failed to leave — see restartFailureNotice.
+      version,
+      at,
+    }));
+  } catch { /* ignore */ }
+}
+
+/** Called before each attempt, so a retry is answered by its own outcome rather
+ *  than by the last one's. */
+export function clearRestartFailure(name = "agents-deck") {
+  try { rmSync(restartFailurePath(name), { force: true }); } catch { /* ignore */ }
+}
+
+export function readRestartFailure(name = "agents-deck") {
+  try {
+    const m = JSON.parse(readFileSync(restartFailurePath(name), "utf8"));
+    return m && typeof m === "object" ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The note as the version report should carry it, or null when it no longer
+ * describes this deck. Pure, because the staleness rule is the whole subtlety.
+ *
+ * The note names the version that was running when the upgrade failed. While
+ * that is still the version on disk, the failure is current: the deck really is
+ * stuck where it was. Once the files are a different version the upgrade
+ * happened some other way — a `npm i -g`, a fixed npm prefix, a manual npx —
+ * and a note about a deck that no longer exists must not keep claiming the
+ * update is broken.
+ */
+export function restartFailureNotice(record, installed = null) {
+  if (!record || typeof record.error !== "string" || !record.error) return null;
+  if (record.version && installed && record.version !== installed) return null;
+  return {
+    state: "failed",
+    command: typeof record.command === "string" ? record.command : null,
+    error: record.error,
+    at: typeof record.at === "number" ? record.at : 0,
+  };
+}
+
 // One install at a time, per process. State is deliberately coarse: the UI only
 // needs to know whether to show a spinner, a version, or an error.
 let _upgrade = { state: "idle", command: null, error: null, at: 0 };
@@ -642,6 +726,14 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
   const latest = skipRegistry ? null : await latestOnNpm(target, now, force);
   const marker = skipRegistry ? null : readMarker(target);
   const blocked = upgradeBlock(pkgRoot);
+  // An install started in THIS process outranks the note on disk: it is newer
+  // by construction, and a running one must not be reported as a past failure.
+  // The note is read whatever the registry is doing — it is a local event, not
+  // a lookup — so an offline deck still explains why its update did nothing.
+  const live = upgradeStatus();
+  const upgrade = live.state === "idle"
+    ? (restartFailureNotice(readRestartFailure(target), installed) ?? live)
+    : live;
   return {
     name: target,
     running: running ?? null,
@@ -669,6 +761,6 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     // of the install, not of the update: upgradeMode says so.
     upgradeBlocked: blocked,
     upgradeMode: upgradeMode(blocked),
-    upgrade: upgradeStatus(),
+    upgrade,
   };
 }
