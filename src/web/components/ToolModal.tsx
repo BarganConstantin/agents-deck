@@ -49,6 +49,14 @@ export default function ToolModal({
         </header>
 
         <section className="modal-body">
+          {tool.trimmed && (
+            <div className="modal-section">
+              <p className="modal-note">
+                Full payloads for this call were released to keep memory bounded — only
+                the previews below are still held.
+              </p>
+            </div>
+          )}
           <div className="modal-section">
             <h4>Input</h4>
             <pre>{safeJson(tool.input ?? tool.inputPreview)}</pre>

@@ -2170,6 +2170,16 @@ button.tool.clickable:last-child { border-bottom: none; }
   background: rgba(252,165,165,0.10);
   border: 1px solid rgba(252,165,165,0.30);
 }
+.modal-note {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
 .modal-section pre {
   margin: 0;
   padding: 12px;

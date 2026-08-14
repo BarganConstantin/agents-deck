@@ -23,13 +23,15 @@ function buildRows(state: GraphState, now: number): Row[] {
   const rows: Row[] = [];
   for (const a of state.agents.values()) {
     if (a.kind !== "root") continue;
-    let toolCount = a.tools.length;
+    // `toolCount`, not `tools.length` — the reducer keeps only a bounded
+    // window of recent calls, but the counter tracks every call ever made.
+    let toolCount = a.toolCount;
     let cost = costForUsage(a.usage, a.model).total;
     let lastActivity = a.endedAt ?? a.startedAt;
     // Roll up subagents' tools + costs + activity into the row.
     for (const sub of state.agents.values()) {
       if (sub.sessionId !== a.sessionId || sub.kind === "root") continue;
-      toolCount += sub.tools.length;
+      toolCount += sub.toolCount;
       cost += costForUsage(sub.usage, sub.model).total;
       const t = sub.endedAt ?? sub.startedAt;
       if (t > lastActivity) lastActivity = t;
