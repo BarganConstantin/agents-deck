@@ -1165,53 +1165,6 @@ button.btn.icon-btn {
   text-overflow: ellipsis;
 }
 
-.agent-node .chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 8px;
-  min-height: 18px;
-  align-items: center;
-}
-.tool-chip {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--text);
-  white-space: nowrap;
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tool-chip.inflight {
-  border-color: rgba(240,171,252,0.5);
-  color: var(--inflight);
-  background: rgba(240,171,252,0.06);
-  animation: pulse 1.4s infinite;
-}
-.tool-chip.done {
-  border-color: rgba(134,239,172,0.25);
-  color: var(--ok);
-}
-.tool-chip.err {
-  border-color: rgba(252,165,165,0.4);
-  color: var(--err);
-  background: rgba(252,165,165,0.06);
-}
-.chips-empty {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-style: italic;
-}
-.chips-more {
-  color: var(--muted);
-  font-size: 10.5px;
-  padding: 2px 4px;
-}
-
 /* Tool-rate sparkline — tools-per-second over the last 60s. Most recent
    bucket is on the right; brighter for the live one. */
 .tool-spark-row {
@@ -1344,50 +1297,6 @@ button.btn.icon-btn {
 :root[data-theme="light"] .model-chip[title*="sonnet"] { color: #075985; border-color: rgba(3,105,161,0.55);   background: rgba(3,105,161,0.14); }
 :root[data-theme="light"] .model-chip[title*="haiku"]  { color: #166534; border-color: rgba(21,128,61,0.55);   background: rgba(21,128,61,0.14); }
 :root[data-theme="light"] .model-chip[title*="fable"]  { color: #92400e; border-color: rgba(180,83,9,0.55);    background: rgba(180,83,9,0.14); }
-
-.now-running {
-  margin-top: 8px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: linear-gradient(90deg, rgba(240,171,252,0.10), rgba(125,211,252,0.08));
-  border: 1px solid rgba(240,171,252,0.30);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--text);
-}
-:root[data-theme="light"] .now-running {
-  background: linear-gradient(90deg, rgba(162,28,175,0.07), rgba(2,132,199,0.06));
-  border-color: rgba(162,28,175,0.30);
-}
-.now-running .now-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--inflight);
-  box-shadow: 0 0 8px var(--inflight);
-  animation: pulse 1.1s infinite;
-}
-.now-running .now-label {
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--inflight);
-  font-size: 9.5px;
-  font-weight: 700;
-}
-.now-running .now-tool {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text);
-  font-weight: 600;
-}
-.now-running .now-time {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  font-size: 10.5px;
-}
 
 /* React Flow edge label background — match theme */
 .react-flow__edge-textbg { fill: var(--bg-soft); fill-opacity: 0.9; }
@@ -1730,17 +1639,6 @@ button.btn.icon-btn {
 }
 :root[data-theme="light"] .tool-conn.status-done { stroke: rgba(21,128,61,0.85); }
 :root[data-theme="light"] .tool-conn.status-err  { stroke: rgba(185,28,28,0.85); }
-
-/* Category colors — shared across ToolBursts and the detail panel
-   via the --cat-color custom property so a single variable drives both. */
-.cat-file  { --cat-color: #7dd3fc; }
-.cat-shell { --cat-color: #fcd34d; }
-.cat-web   { --cat-color: #67e8f9; }
-.cat-agent { --cat-color: #f0abfc; }
-.cat-task  { --cat-color: #86efac; }
-.cat-plan  { --cat-color: #c4b5fd; }
-.cat-mcp   { --cat-color: #5eead4; }
-.cat-other { --cat-color: #94a3b8; }
 
 /* ---------------- session list sidebar ---------------- */
 
@@ -2518,9 +2416,9 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 :root[data-theme="light"] .state-pill.state-active::before { box-shadow: 0 0 5px rgba(126,34,206,0.55); }
 /* --ok on its own 10% wash is 4.39:1 — the one pill that misses AA, because
-   green is the lightest of the three state hues. Deepened the same way
-   .tool-chip.done below already deepens it, rather than moving --ok, which
-   would drag every cost figure and status dot in the light theme with it. */
+   green is the lightest of the three state hues. Deepened on the pill itself
+   rather than by moving --ok, which would drag every cost figure and status
+   dot in the light theme with it. */
 :root[data-theme="light"] .state-pill.state-done {
   border-color: rgba(21,128,61,0.45);
   background: rgba(21,128,61,0.10);
@@ -2531,29 +2429,10 @@ button.tool.clickable:last-child { border-bottom: none; }
   background: rgba(185,28,28,0.10);
 }
 
-:root[data-theme="light"] .tool-chip { background: #f4f6fa; }
-:root[data-theme="light"] .tool-chip.inflight {
-  border-color: rgba(126,34,206,0.65);
-  background: rgba(126,34,206,0.16);
-  color: #6b21a8;
-}
-:root[data-theme="light"] .tool-chip.done {
-  border-color: rgba(21,128,61,0.55);
-  background: rgba(21,128,61,0.12);
-  color: #166534;
-}
-:root[data-theme="light"] .tool-chip.err {
-  border-color: rgba(185,28,28,0.65);
-  background: rgba(185,28,28,0.16);
-  color: #991b1b;
-}
-
 :root[data-theme="light"] .modal-section .err-tag {
   background: rgba(185,28,28,0.10);
   border-color: rgba(185,28,28,0.45);
 }
-
-:root[data-theme="light"] .now-running .now-dot { box-shadow: 0 0 6px rgba(126,34,206,0.6); }
 
 :root[data-theme="light"] .empty-hero .orbit { border-color: rgba(3,105,161,0.30); }
 :root[data-theme="light"] .empty-hero .orbit.r2 { border-color: rgba(126,34,206,0.30); }
@@ -2796,12 +2675,6 @@ button.tool.clickable:last-child { border-bottom: none; }
 
 /* ── quota bars ── */
 .up-quota-section { padding-top: 10px; border-top: none; }
-.up-quota-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
 .up-refresh-btn {
   font-size: 14px;
   padding: 1px 7px;
@@ -3082,7 +2955,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 .ap-alias {
   font-size: 11px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--text);
 }
 .ap-email {
   font-size: 10.5px;
@@ -3153,7 +3026,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-radius: 5px;
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   color: var(--text);
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -3312,7 +3185,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-auto-note code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 9px;
-  color: var(--fg);
+  color: var(--text);
   white-space: nowrap;   /* "cswap auto" is one name; never break it in half */
 }
 

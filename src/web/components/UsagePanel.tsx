@@ -92,45 +92,6 @@ function CostBar({ cost }: { cost: CostBreakdown }) {
   );
 }
 
-// ── Codex usage row (token counts, no cap → no %) ─────────────────────────
-function CodexUsageRow({ label, win }: { label: string; win: { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalTokens: number; sessionCount: number } }) {
-  const total = win.totalTokens;
-  if (total === 0) {
-    return (
-      <div className="qb-row">
-        <div className="qb-meta">
-          <span className="qb-label">{label}</span>
-          <span className="qb-pct" style={{ color: "var(--fg-dim)" }}>no sessions</span>
-        </div>
-      </div>
-    );
-  }
-  const sessions = win.sessionCount;
-  return (
-    <div className="qb-row">
-      <div className="qb-meta">
-        <span className="qb-label">{label}</span>
-        <span className="qb-pct" style={{ color: "var(--accent)" }}>{fmtTokens(total)}</span>
-      </div>
-      <div className="qb-track">
-        {/* Visual bar: split by input vs output+cache */}
-        <div
-          className="qb-fill"
-          style={{
-            width: `${Math.min(100, (win.inputTokens / Math.max(1, total)) * 100)}%`,
-            background: "var(--accent)",
-          }}
-        />
-      </div>
-      <div className="qb-reset">
-        {fmtTokens(win.inputTokens)} in · {fmtTokens(win.outputTokens)} out
-        {win.cacheReadTokens > 0 && ` · ${fmtTokens(win.cacheReadTokens)} cached`}
-        {` · ${sessions} session${sessions !== 1 ? "s" : ""}`}
-      </div>
-    </div>
-  );
-}
-
 // ── Countdown + pace helpers ───────────────────────────────────────────────
 function fmtCountdown(resetAtSec: number, nowSec: number): string | null {
   const diff = resetAtSec - nowSec;
