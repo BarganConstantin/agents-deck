@@ -4,10 +4,11 @@
 // Both providers share the discovery dir at ~/.claude/agent-dag/ so a single
 // running server can receive events from either CLI. Re-runs are safe; entries
 // are tagged with __agent-dag and de-duped.
-import { readFile, writeFile, mkdir, copyFile, unlink } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, unlink, rename, open, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -128,7 +129,7 @@ async function readSettingsForWrite(p) {
   try {
     raw = await readFile(p, "utf8");
   } catch (err) {
-    if (err?.code === "ENOENT") return {};
+    if (err?.code === "ENOENT") return { settings: {}, raw: null };
     throw unreadableSettings(p, err?.message ?? String(err));
   }
   let parsed;
@@ -140,7 +141,61 @@ async function readSettingsForWrite(p) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw unreadableSettings(p, "top level is not a JSON object");
   }
-  return parsed;
+  return { settings: parsed, raw };
+}
+
+// Rename over an open file is the one thing Windows does differently here. The
+// call itself is atomic (MoveFileEx with MOVEFILE_REPLACE_EXISTING), but it
+// fails outright while another process holds the target open — and a virus
+// scanner or the search indexer opens files the instant they are written, for a
+// few milliseconds at a time. Retrying a sharing violation a handful of times
+// turns that into a successful install. POSIX never hits this path, and a real
+// permission error just costs an extra fraction of a second before it surfaces.
+const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+async function renameWithRetry(from, to, attempts = 5) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (err) {
+      if (attempt >= attempts || !RENAME_RETRY_CODES.has(err?.code)) throw err;
+      await delay(20 * attempt);
+    }
+  }
+}
+
+/**
+ * Replace a file in a single step readers cannot land inside.
+ *
+ * The temp file is created beside the target rather than in $TMPDIR, because
+ * rename is only atomic within one filesystem and the two are routinely on
+ * different ones. It is fsync'd before the rename so that a crash or power loss
+ * just after a successful install cannot leave the new directory entry pointing
+ * at blocks that were never flushed — the classic file-of-zero-bytes. The pid in
+ * the name keeps two decks starting at once off each other's temp file.
+ */
+async function writeFileAtomic(target, text) {
+  const tmp = `${target}.agent-dag-${process.pid}.tmp`;
+  let handle;
+  try {
+    handle = await open(tmp, "w");
+    await handle.writeFile(text, "utf8");
+    await handle.sync();
+  } finally {
+    await handle?.close();
+  }
+  try {
+    // A rename creates a fresh directory entry, so the old file's mode does not
+    // come with it. Carry it over — a settings.json the user chmod'ed to 600 has
+    // to stay 600. No-op on Windows, where chmod only toggles the read-only bit.
+    const mode = await stat(target).then(s => s.mode, () => null);
+    if (mode !== null) await chmod(tmp, mode).catch(() => {});
+    await renameWithRetry(tmp, target);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 async function installHookScript(installDir) {
@@ -163,14 +218,14 @@ function dedupeOurEntries(group) {
   return group.filter(g => !isOurEntry(g));
 }
 
-/** Install hooks for a single provider. Returns {settingsPath, hookPath, events}. */
+/** Install hooks for a single provider. Returns {settingsPath, hookPath, events, changed}. */
 export async function installHooks({ provider = "claude" } = {}) {
   const cfg = PROVIDERS[provider];
   if (!cfg) throw new Error(`unknown provider: ${provider}`);
 
   // Read before writing anything, so a settings file we cannot parse aborts
   // the install without leaving half of it behind.
-  const current = await readSettingsForWrite(cfg.settingsPath);
+  const { settings: current, raw: before } = await readSettingsForWrite(cfg.settingsPath);
 
   const hookPath = await installHookScript(cfg.hookInstallDir);
   const command = hookCommand(hookPath, provider);
@@ -186,8 +241,15 @@ export async function installHooks({ provider = "claude" } = {}) {
     current.hooks[evt] = cleaned;
   }
 
-  await writeFile(cfg.settingsPath, JSON.stringify(current, null, 2) + "\n", "utf8");
-  return { settingsPath: cfg.settingsPath, hookPath, events: cfg.events, provider };
+  // Every launch reinstalls, and on all but the first the entries are already
+  // there and identical. Writing anyway is pure downside: it is one more chance
+  // to be interrupted mid-write, and one more window in which a change Claude
+  // Code made to the file between our read and our write gets discarded. So
+  // compare against the exact bytes we read and, when they match, do nothing.
+  const next = JSON.stringify(current, null, 2) + "\n";
+  const changed = next !== before;
+  if (changed) await writeFileAtomic(cfg.settingsPath, next);
+  return { settingsPath: cfg.settingsPath, hookPath, events: cfg.events, provider, changed };
 }
 
 export async function uninstallHooks({ provider = "claude" } = {}) {
@@ -202,7 +264,7 @@ export async function uninstallHooks({ provider = "claude" } = {}) {
     if (cleaned.length === 0) delete current.hooks[evt];
     else current.hooks[evt] = cleaned;
   }
-  if (changed) await writeFile(cfg.settingsPath, JSON.stringify(current, null, 2) + "\n", "utf8");
+  if (changed) await writeFileAtomic(cfg.settingsPath, JSON.stringify(current, null, 2) + "\n");
   return { changed, provider, settingsPath: cfg.settingsPath };
 }
 
