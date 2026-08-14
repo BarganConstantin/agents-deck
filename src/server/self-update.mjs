@@ -458,24 +458,54 @@ export function startUpgrade({ pkgRoot, name = "agents-deck" }) {
   child.stdout.on("data", d => keepTail(String(d)));
   child.stderr.on("data", d => keepTail(String(d)));
 
+  // The deadline states the outcome itself, and only then kills.
+  //
   // npm is a .cmd shim on Windows and is therefore spawned through a shell, so
   // `child` is cmd.exe and npm itself is a grandchild — a plain kill would
-  // report the install as timed out while it carried on writing to node_modules.
-  const timer = setTimeout(() => killTree(child), INSTALL_TIMEOUT_MS);
+  // report the install as timed out while it carried on writing to
+  // node_modules. killTree is what reaches it (taskkill /T there, the same
+  // plain signal everywhere else).
+  //
+  // Leaving the verdict to 'close' was the other half of the same bug. 'close'
+  // waits for the stdio pipes, which the grandchild inherited, so on Windows it
+  // could arrive minutes after the deadline — or never, if the tree kill could
+  // not run at all — and until it did, /api/version kept reporting
+  // `state: "running"` with the UI spinning on "installing…" and the guard at
+  // the top of this function refusing every retry. When it finally arrived it
+  // carried the killed wrapper's status, so a five-minute timeout was announced
+  // to the user as "npm exited null".
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    _upgrade = {
+      state: "failed",
+      command,
+      error: `timed out after ${Math.round(INSTALL_TIMEOUT_MS / 60_000)} minutes`,
+      at: Date.now(),
+    };
+    killTree(child);
+  }, INSTALL_TIMEOUT_MS);
   timer.unref?.();
 
   child.on("error", (e) => {
     clearTimeout(timer);
+    // A kill can make the child emit one of these; whatever it says, the reason
+    // this install failed is the deadline that has already been reported.
+    if (timedOut) return;
     _upgrade = { state: "failed", command, error: e?.message ?? String(e), at: Date.now() };
   });
   child.on("close", (code) => {
     clearTimeout(timer);
     if (code === 0) {
+      // A clean exit is a real install even if it lands after the deadline —
+      // npm finishing in the same breath as the timer is the one case where the
+      // files on disk disagree with the verdict above, and the files win.
+      //
       // Deliberately does not restart anything. The new files on disk make
       // installedVersion() disagree with the running one, and the ordinary
       // drift path takes it from there — including its wait for an idle moment.
       _upgrade = { state: "done", command, error: null, at: Date.now() };
-    } else {
+    } else if (!timedOut) {
       _upgrade = { state: "failed", command, error: lastMeaningfulLine(err) || `npm exited ${code}`, at: Date.now() };
     }
   });

@@ -4,9 +4,47 @@
 // on disk. Nothing in the product said so: the terminal banner still showed the
 // boot version, and the browser bundle shows whichever version it was served.
 // These tests pin the three-way comparison that makes that state visible.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Nothing is executed: the install child and the kill that follows it are
+// recorded and handed back as fakes, so no test in this file can install
+// anything onto the machine running the suite or kill anything on it.
+type FakeChild = {
+  pid: number;
+  stdout: { emit: (event: string, data: string) => void };
+  stderr: { emit: (event: string, data: string) => void };
+  emit: (event: string, ...args: unknown[]) => void;
+  signals: (string | undefined)[];
+};
+const { spawns } = vi.hoisted(() => ({
+  spawns: [] as { cmd: string; args: string[]; opts: Record<string, unknown>; child: FakeChild }[],
+}));
+vi.mock("node:child_process", async () => {
+  const { EventEmitter } = await import("node:events");
+  class Fake extends EventEmitter {
+    pid = 4242;
+    stdout = new EventEmitter();
+    stderr = new EventEmitter();
+    signals: (string | undefined)[] = [];
+    kill(signal?: string) { this.signals.push(signal); return true; }
+    unref() { /* the real one is unref'd so it cannot hold the process open */ }
+  }
+  return {
+    spawn: (cmd: string, args: string[] = [], opts = {}) => {
+      const child = new Fake();
+      spawns.push({ cmd, args, opts, child: child as unknown as FakeChild });
+      return child;
+    },
+    // exec.mjs names this import; nothing here should reach it.
+    execFile: () => { throw new Error("test: execFile blocked"); },
+  };
+});
+
 // @ts-expect-error — plain JS module, no types
-import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, nextMarker, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode, markerFileName } from "../../server/self-update.mjs";
+import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, nextMarker, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode, markerFileName, startUpgrade, upgradeStatus } from "../../server/self-update.mjs";
 
 describe("isOlder", () => {
   it("compares numerically, not lexically", () => {
@@ -397,5 +435,109 @@ describe("checkDue after a failed lookup", () => {
 
   it("does not wait out a failure timestamp from the future", () => {
     expect(checkDue({ at: NOW - 2 * HOUR, failedAt: NOW + HOUR, now: NOW })).toBe(true);
+  });
+});
+
+// The in-app `npm i -g` gets five minutes, for the cold install on a slow line
+// the timeout exists for. Reaching that deadline used to be reported twice
+// wrongly on Windows: npm is a .cmd shim spawned through cmd.exe, so the child
+// is the wrapper and npm is a grandchild holding the inherited pipes — the kill
+// stopped only the wrapper, and 'close' (which waits for those pipes) arrived
+// minutes later, or never. Until it did, /api/version still said
+// `state: "running"` and the button still said "installing…", with no retry
+// possible; when it did, it carried the killed wrapper's status and the user
+// was told "npm exited null" — sometimes while the drift notice, reading the
+// files npm had gone on to write, offered a restart into the new version.
+describe("an install that runs past its deadline", () => {
+  const INSTALL_TIMEOUT_MS = 300_000;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  let dir = "";
+  let pkgRoot = "";
+  let optOut: string | undefined;
+
+  beforeEach(() => {
+    spawns.length = 0;
+    // Writable, no .git, no _npx — the one shape where an in-app install is
+    // allowed. Under a temp directory, so nothing real is a candidate.
+    dir = mkdtempSync(join(tmpdir(), "ccdeck-upgrade-"));
+    pkgRoot = join(dir, "node_modules", "ccdeck");
+    mkdirSync(pkgRoot, { recursive: true });
+    optOut = process.env.AGENTS_DECK_NO_INSTALL;
+    delete process.env.AGENTS_DECK_NO_INSTALL;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(process, "platform", platform);
+    if (optOut === undefined) delete process.env.AGENTS_DECK_NO_INSTALL;
+    else process.env.AGENTS_DECK_NO_INSTALL = optOut;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const start = (os: string) => {
+    // Windows is the platform this repo cannot execute, so it is claimed here;
+    // killTree reads process.platform when the timer fires.
+    Object.defineProperty(process, "platform", { value: os, configurable: true });
+    expect(startUpgrade({ pkgRoot, name: "ccdeck" })).toMatchObject({ ok: true });
+    expect(upgradeStatus().state).toBe("running");
+    expect(spawns).toHaveLength(1);
+    return spawns[0].child;
+  };
+
+  it("kills npm itself on Windows, not just the cmd.exe wrapper it hides behind", () => {
+    const child = start("win32");
+    vi.advanceTimersByTime(INSTALL_TIMEOUT_MS);
+
+    expect(spawns).toHaveLength(2);
+    expect(spawns[1].cmd.toLowerCase()).toContain("taskkill");
+    // /T is the descendant walk; a plain kill is one TerminateProcess against
+    // the wrapper and leaves npm writing to node_modules.
+    expect(spawns[1].args).toEqual(["/pid", String(child.pid), "/T", "/F"]);
+  });
+
+  it("reports the timeout at the deadline, not whenever the pipes close", () => {
+    const child = start("win32");
+    vi.advanceTimersByTime(INSTALL_TIMEOUT_MS);
+
+    // The regression: this stayed "running" — spinner and all, retries refused
+    // — for as long as the unkilled grandchild kept the pipes open.
+    expect(upgradeStatus()).toMatchObject({ state: "failed" });
+    expect(upgradeStatus().error).toBe("timed out after 5 minutes");
+
+    // And the wrapper's status, whenever it turns up, must not overwrite the
+    // reason with a number nobody can act on.
+    child.emit("close", null);
+    expect(upgradeStatus()).toMatchObject({ state: "failed", error: "timed out after 5 minutes" });
+  });
+
+  it("signals the child directly off Windows, exactly as it did before", () => {
+    for (const os of ["linux", "darwin"]) {
+      spawns.length = 0;
+      const child = start(os);
+      vi.advanceTimersByTime(INSTALL_TIMEOUT_MS);
+
+      expect(spawns).toHaveLength(1);      // no taskkill on a POSIX box
+      expect(child.signals).toHaveLength(1); // the same plain kill as always
+      child.emit("close", null, "SIGTERM");
+      expect(upgradeStatus()).toMatchObject({ state: "failed", error: "timed out after 5 minutes" });
+    }
+  });
+
+  it("counts an install that finished in the same breath as the timer as done", () => {
+    // The files are on disk either way, and the drift notice is about to offer
+    // the restart — saying "failed" next to it is the mismatch this fixes.
+    const child = start("win32");
+    vi.advanceTimersByTime(INSTALL_TIMEOUT_MS);
+    child.emit("close", 0);
+    expect(upgradeStatus()).toMatchObject({ state: "done", error: null });
+  });
+
+  it("still reports npm's own complaint when npm fails on its own", () => {
+    const child = start("linux");
+    child.stderr.emit("data", "npm ERR! code EACCES\nnpm ERR! Error: EACCES: permission denied, mkdir '/usr/local/lib'\n");
+    child.emit("close", 1);
+    expect(upgradeStatus()).toMatchObject({ state: "failed" });
+    expect(upgradeStatus().error).toContain("permission denied");
   });
 });
