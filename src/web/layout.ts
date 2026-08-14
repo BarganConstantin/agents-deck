@@ -27,9 +27,21 @@ const SESSION_GAP = SESSION_CHROME + SESSION_VISIBLE_GAP;
 // close enough to look joined. A whole node of clear space is where the eye
 // stops trying to relate them. Measured from the widest card actually on
 // screen rather than the default, so the gap holds when cards are wider.
-function columnGap(measured: Map<string, { width: number; height: number }>): number {
+//
+// Read per node id, the way every other pass here reads `measured`. Walking
+// the map's values instead took in the invisible per-session drag handles,
+// which React Flow measures like any other node and which are as wide as the
+// whole session box: one session fanned out to subagents reported ~1100px, and
+// that became the pitch between two 240px columns. Either the fit check below
+// then failed and every session collapsed into one very tall strip that
+// fit-to-view had to shrink to cover, or the columns survived with an ~850px
+// band of dead canvas between them.
+function columnGap(
+  nodes: Node[],
+  measured: Map<string, { width: number; height: number }>,
+): number {
   let widest = NODE_W;
-  for (const m of measured.values()) widest = Math.max(widest, m.width);
+  for (const n of nodes) widest = Math.max(widest, measured.get(n.id)?.width ?? NODE_W);
   return widest;
 }
 
@@ -280,7 +292,7 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
   // one wide session set the pitch for all of them, so two columns never fit
   // and everything stacked into one very tall strip that fit-to-view then
   // shrank to nothing.
-  const gap = columnGap(measured);
+  const gap = columnGap(nodes, measured);
   const overflowAt = opts.availableHeight && opts.availableHeight > 0
     ? opts.availableHeight
     : Number.POSITIVE_INFINITY;
