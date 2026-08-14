@@ -29,7 +29,7 @@ ccdeck draws the tree instead. It is local and needs no configuration: it regist
 ## Quick start
 
 ```bash
-npx ccdeck          # or: npx agents-deck · npx agent-dag — same package
+npx ccdeck          # or: npx agents-deck · npx agent-dag — same deck
 ```
 
 Opens **http://127.0.0.1:4317** and registers the Claude Code hook on first run. Start any Claude Code or Codex session and the graph fills in live. `Ctrl+C` stops it.
@@ -153,15 +153,19 @@ One canvas. No tabs. No kanban.
 
 ## Names
 
-**ccdeck** is the name — of this repo and of the command. On npm the same build
-is published under three names, and all three ship all three commands, so use
-whichever you can remember.
+**ccdeck** is the name — of this repo and of the command. On npm it goes out
+under three, and `npx` runs the same deck from any of them.
 
 ```bash
 npx ccdeck        # this repo's name — the short one
 npx agents-deck   # the canonical npm package (in-app updates install this one)
 npx agent-dag     # the original name; existing installs and scripts keep working
 ```
+
+A global install is the one place the three differ. `agents-deck` and
+`agent-dag` are one build published twice, so `npm i -g` on either puts all
+three commands on your `PATH`. `ccdeck` is a thin package that depends on
+`agents-deck` and ships only the `ccdeck` command.
 
 The repository was previously named `agents-deck`; the old URL redirects here,
 so existing clones, links and bookmarks keep working.

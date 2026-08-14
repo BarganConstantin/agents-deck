@@ -408,7 +408,8 @@ Options:
       --no-persist         Don't write or replay events log (RAM-only)
       --codex              Force-enable Codex capture even if ~/.codex/ missing
       --no-codex           Skip Codex capture (Claude only)
-      --uninstall          Remove agents-deck Claude hook entries
+      --uninstall          Remove agents-deck's hooks from ~/.claude/settings.json and
+                           ~/.codex/hooks.json, and restore any sound hooks of yours it parked
   -h, --help               Show this help
 `);
 }
