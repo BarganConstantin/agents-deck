@@ -307,7 +307,7 @@ export function hasCodexInstalled() {
 // pid keeps its old mode through writeFile, hence the explicit chmod.
 export async function writeDiscovery({ port, workspace, token }) {
   await ensureDir(AGENT_DAG_DIR);
-  const file = join(AGENT_DAG_DIR, `${process.pid}.json`);
+  const file = discoveryPath();
   const data = {
     pid: process.pid,
     port,
@@ -324,6 +324,78 @@ export async function writeDiscovery({ port, workspace, token }) {
 
 export async function removeDiscovery(file) {
   try { await unlink(file); } catch {}
+}
+
+/** Where this process registers itself. One file per deck, named by pid. */
+export function discoveryPath() {
+  return join(AGENT_DAG_DIR, `${process.pid}.json`);
+}
+
+/**
+ * Make sure this deck's discovery file is on disk and says what it should.
+ *
+ * Registration was a single write at boot, so anything that took the file away
+ * afterwards — a sweep on another machine's clock, a half-finished restart, a
+ * user tidying the directory — left a deck that was listening, serving and
+ * completely invisible: hook.js enumerates this directory and nothing else, so
+ * the deck received zero events while looking perfectly healthy. Re-asserting
+ * is cheap (one small read), so the deck checks rather than assumes.
+ *
+ * A file this process wrote is left alone, mode included. Anything else — no
+ * file, unreadable, another pid, a stale port or token — is replaced.
+ */
+export async function ensureDiscovery({ port, workspace, token }) {
+  const file = discoveryPath();
+  try {
+    const d = JSON.parse(stripBom(await readFile(file, "utf8")));
+    if (d
+      && d.pid === process.pid
+      && d.port === port
+      && (d.workspace ?? "") === (workspace ?? "")
+      && (d.token ?? "") === (token ?? "")) {
+      return { file, rewritten: false };
+    }
+  } catch { /* missing, unreadable or corrupt — rewritten below */ }
+  await writeDiscovery({ port, workspace, token });
+  return { file, rewritten: true };
+}
+
+/**
+ * Keep this deck registered for as long as it runs, and tell the caller when
+ * that stops being true.
+ *
+ * `onState` hears the first outcome, every change of health, and every
+ * re-registration after the first — never a steady state. A deck that cannot
+ * write the file has to say so: silently listening while no hook can find it
+ * is the failure this exists to end, not a state worth hiding.
+ *
+ * The interval is unref'd, so it never keeps a finished process alive, and
+ * `stop()` must be called before the file is removed on shutdown — otherwise
+ * the next tick would put it straight back.
+ */
+export function keepDiscovery({ port, workspace, token, intervalMs = 5000, onState = null } = {}) {
+  // null until the first outcome, which therefore always differs and is always
+  // reported — the caller learns where it stands before anything else happens.
+  let healthy = null;
+
+  const check = async () => {
+    let state;
+    try {
+      const { rewritten } = await ensureDiscovery({ port, workspace, token });
+      state = { ok: true, rewritten, file: discoveryPath(), error: null };
+    } catch (err) {
+      state = { ok: false, rewritten: false, file: discoveryPath(), error: err };
+    }
+    const worthSaying = healthy !== state.ok || state.rewritten;
+    healthy = state.ok;
+    if (worthSaying && onState) { try { onState(state); } catch { /* not our problem */ } }
+    return state;
+  };
+
+  const timer = setInterval(() => { check(); }, intervalMs);
+  timer.unref?.();
+
+  return { file: discoveryPath(), check, stop: () => clearInterval(timer) };
 }
 
 export const HOOK_EVENTS = CLAUDE_EVENTS;
