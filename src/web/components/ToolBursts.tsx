@@ -718,7 +718,12 @@ interface ToolBurstsProps {
 }
 
 export default function ToolBursts({ agents, visibleAgentIds, positions, pinned, measured, dimUnmatched, spotlight, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
-  const { x, y, zoom } = useViewport();
+  // Deliberately NOT subscribed to the viewport. useViewport() fires on every
+  // frame of a pan/zoom gesture, and this walk of the agents map — regex
+  // parsing every tool input, allocating a fresh Burst per bubble — is pure
+  // waste when nothing but the camera moved. It lives in the parent so it runs
+  // once per data change (App re-renders whenever positions, sizes, the agents
+  // map or the clock move), and the camera is read one level down.
   const all = collectBursts(agents, visibleAgentIds, positions, pinned, measured, now);
   const bursts = hiddenCategories && hiddenCategories.size > 0
     ? all.filter(b => !hiddenCategories.has(b.category))
@@ -727,6 +732,29 @@ export default function ToolBursts({ agents, visibleAgentIds, positions, pinned,
   // CSS spawn animations don't re-run every time the agent's tool list
   // briefly normalises. Returning null here would unmount the entire
   // layer (and every bubble inside) on any momentary empty state.
+  return (
+    <BurstLayer
+      bursts={bursts}
+      dimUnmatched={dimUnmatched}
+      spotlight={spotlight}
+      onOpenTool={onOpenTool}
+    />
+  );
+}
+
+interface BurstLayerProps {
+  bursts: Burst[];
+  dimUnmatched?: Set<string> | null;
+  spotlight?: Set<string> | null;
+  onOpenTool?: (toolId: string) => void;
+}
+
+/** The part that genuinely depends on the camera: bursts carry world-space
+ *  coordinates, and every bubble/connector is drawn in screen space. Keeping
+ *  the useViewport() subscription here — and only here — means a pan/zoom
+ *  frame re-renders this and nothing above it. */
+function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerProps) {
+  const { x, y, zoom } = useViewport();
 
   return (
     <div className="tool-bursts-layer" aria-hidden>
