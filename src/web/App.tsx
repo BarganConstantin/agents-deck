@@ -89,6 +89,9 @@ type VersionInfo = {
   // False when nothing is supervising the process, or when --no-persist means a
   // restart would take the canvas with it.
   canRestart?: boolean;
+  /** When npm was last asked, so the chip can say it. Null when the check is off. */
+  checkedAt?: number | null;
+  checkDisabled?: boolean;
   /** Why an in-app `npm i -g` is refused here, or null when it is allowed. */
   upgradeBlocked?: string | null;
   /** How this copy can update itself: install in place, come back through npx,
@@ -105,6 +108,15 @@ const UPGRADE_BLOCK_TEXT: Record<string, string> = {
   not_writable: "the install directory is not writable by this user — run:",
   opted_out: "installs are off (AGENTS_DECK_NO_INSTALL=1) — run:",
 };
+
+/** "just now" / "12m ago" / "3h ago" — for the version chip's tooltip. */
+function shortAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
 const AUTO_RESTART_KEY = "agent-dag.autoRestart";
 // Per-tab, not per-browser: it guards one reload, not a preference.
@@ -673,8 +685,10 @@ function Inner() {
     try { return window.localStorage.getItem(VERSION_DISMISSED_KEY) ?? ""; } catch { return ""; }
   });
   const [cmdCopied, setCmdCopied] = useState(false);
-  const loadVersion = useCallback(() => {
-    fetch("/api/version")
+  // `force` asks npm now instead of reusing the answer cached on disk. Used by
+  // the chip, because "no banner" and "no check ran" look identical from here.
+  const loadVersion = useCallback((force = false) => {
+    fetch(force ? "/api/version?refresh=1" : "/api/version")
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setVersion(d as VersionInfo); })
       .catch(() => {});
@@ -1686,7 +1700,22 @@ function Inner() {
               <span className="v-dot" aria-hidden />
             </button>
           ) : (
-            <span className="v">v{version?.running ?? __APP_VERSION__}</span>
+            // Not decoration: "no banner" and "the check never ran" look the
+            // same from a chair, and on a machine that only ever runs
+            // `npx ccdeck` the difference is the whole feature. Clicking asks
+            // npm now.
+            <button
+              type="button"
+              className="v"
+              onClick={() => loadVersion(true)}
+              title={version?.checkDisabled
+                ? "Update checks are off (AGENTS_DECK_NO_UPDATE_CHECK=1)."
+                : `${version?.latest ? `npm has v${version.latest}` : "npm not reached yet"}${
+                    version?.checkedAt ? ` · checked ${shortAgo(now - version.checkedAt)}` : ""
+                  } · click to check now`}
+            >
+              v{version?.running ?? __APP_VERSION__}
+            </button>
           )}
         </div>
         {selected && (() => {

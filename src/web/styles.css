@@ -163,6 +163,13 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   cursor: pointer;
   transition: background 130ms, border-color 130ms, color 130ms;
 }
+/* The same chip when nothing is stale: still a button — clicking it asks npm
+   now — but it must not draw attention to itself for saying "up to date". */
+.topbar .brand button.v:not(.stale) { color: var(--muted); font-weight: 400; }
+.topbar .brand button.v:not(.stale):hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
 .topbar .brand button.v.stale {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 34%, transparent);
