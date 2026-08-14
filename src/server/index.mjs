@@ -81,6 +81,197 @@ async function maybeRotatePersistFile() {
   }
 }
 
+// ─── Incremental transcript scanning ─────────────────────────────────────
+// Model, usage and context enrichment all derive from the same append-only
+// transcript JSONL, and each one used to re-read and re-parse the whole file
+// on every throttled pass. A session's transcript grows to tens of MB, so
+// that cost O(n) per pass, O(n²) over the session, and — because the parse
+// loop is one synchronous block — it stalled SSE broadcasts and /api/event
+// ingest for as long as it ran.
+//
+// Instead we keep one cursor per file plus the running totals derived so
+// far, read only the bytes appended since the last pass, and fold them into
+// that state. The three scanners share it, so the first one to run in a
+// cycle pays for the read and the other two reuse the result. This mirrors
+// the offset tailing the Codex rollout watcher already does further down.
+const transcriptScans = new Map();        // path -> scan state
+const transcriptScanInFlight = new Map(); // path -> in-progress scan promise
+const MAX_TRANSCRIPT_SCANS = 256;         // bound the per-path state
+
+const MODEL_ID_RE = /^claude[-_]/i;
+const USAGE_BLOCK_RE = /"usage"\s*:\s*\{([^}]+)\}/g;
+// CC `/clear` and `/compact` write a marker into the transcript and reset the
+// context window to ~0 while the JSONL keeps growing — everything before the
+// last marker is stale.
+const CONTEXT_RESET_RE = /<command-name>\s*\/(?:clear|compact)\s*<\/command-name>/g;
+const TYPE_USER_RE = /"type"\s*:\s*"user"/g;
+const TYPE_ASSISTANT_RE = /"type"\s*:\s*"assistant"/g;
+const TYPE_TOOL_USE_RE = /"type"\s*:\s*"tool_use"/g;
+const TYPE_TOOL_RESULT_RE = /"type"\s*:\s*"tool_result"/g;
+const SYSTEM_REMINDER_RE = /<system-reminder>/g;
+const USAGE_FIELD_RE = {
+  input_tokens: /"input_tokens"\s*:\s*(\d+)/,
+  output_tokens: /"output_tokens"\s*:\s*(\d+)/,
+  cache_read_input_tokens: /"cache_read_input_tokens"\s*:\s*(\d+)/,
+  cache_creation_input_tokens: /"cache_creation_input_tokens"\s*:\s*(\d+)/,
+};
+
+function grabUsageField(blob, key) {
+  const m = blob.match(USAGE_FIELD_RE[key]);
+  return m ? Number(m[1]) : 0;
+}
+
+function newContextBreakdown() {
+  return {
+    msgsUser: 0,
+    msgsAssistant: 0,
+    toolUses: 0,
+    toolResults: 0,
+    systemReminders: 0,
+    currentContextTokens: 0,
+  };
+}
+
+function newTranscriptState() {
+  return {
+    offset: 0,          // bytes already folded in
+    touchedAt: 0,
+    rootModel: null,
+    lastModel: null,    // last claude-* model on any line, sidechain included
+    subagentModels: {},
+    usage: {
+      input_tokens: 0, output_tokens: 0,
+      cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+    },
+    ctx: newContextBreakdown(),
+  };
+}
+
+async function readByteRange(path, from, to) {
+  const fh = await open(path, "r");
+  try {
+    const len = to - from;
+    if (len <= 0) return "";
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, from);
+    return buf.toString("utf8");
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Fold one transcript line into the running state. Every fact the three
+ *  scanners need lives on a single line, so line-at-a-time folding sees
+ *  exactly what a whole-file pass would. */
+function foldTranscriptLine(state, line) {
+  if (!line) return;
+
+  // Model. Only a line that mentions a model can change it, and parsing the
+  // rest is what made the full rescan expensive.
+  if (line.includes('"model"')) {
+    let obj = null;
+    try { obj = JSON.parse(line); } catch {}
+    const msg = obj && obj.message;
+    const model = (msg && typeof msg.model === "string" && MODEL_ID_RE.test(msg.model)) ? msg.model
+                : (obj && typeof obj.model === "string" && MODEL_ID_RE.test(obj.model)) ? obj.model
+                : null;
+    if (model) {
+      state.lastModel = model;
+      const isSide = obj.isSidechain === true || obj.is_sidechain === true;
+      const ptid = obj.parentToolUseID || obj.parent_tool_use_id || obj.parentToolUseId || null;
+      if (isSide && ptid) state.subagentModels[ptid] = model;
+      else if (!isSide) state.rootModel = model;
+    }
+  }
+
+  // Usage totals sum every block in the file, resets included.
+  for (const m of line.matchAll(USAGE_BLOCK_RE)) {
+    const blob = m[1];
+    state.usage.input_tokens += grabUsageField(blob, "input_tokens");
+    state.usage.output_tokens += grabUsageField(blob, "output_tokens");
+    state.usage.cache_read_input_tokens += grabUsageField(blob, "cache_read_input_tokens");
+    state.usage.cache_creation_input_tokens += grabUsageField(blob, "cache_creation_input_tokens");
+  }
+
+  // Context counts only what follows the most recent /clear or /compact.
+  let ctxText = line;
+  let resetEnd = -1;
+  for (const m of line.matchAll(CONTEXT_RESET_RE)) resetEnd = (m.index ?? -1) + m[0].length;
+  if (resetEnd >= 0) {
+    state.ctx = newContextBreakdown();
+    ctxText = line.slice(resetEnd);
+  }
+  const ctx = state.ctx;
+  ctx.msgsUser += (ctxText.match(TYPE_USER_RE) ?? []).length;
+  ctx.msgsAssistant += (ctxText.match(TYPE_ASSISTANT_RE) ?? []).length;
+  ctx.toolUses += (ctxText.match(TYPE_TOOL_USE_RE) ?? []).length;
+  ctx.toolResults += (ctxText.match(TYPE_TOOL_RESULT_RE) ?? []).length;
+  ctx.systemReminders += (ctxText.match(SYSTEM_REMINDER_RE) ?? []).length;
+  // Current context size = the LAST usage block after the reset. Stays 0
+  // right after a /clear, which is what CC's own /context reports.
+  let lastBlob = null;
+  for (const m of ctxText.matchAll(USAGE_BLOCK_RE)) lastBlob = m[1];
+  if (lastBlob) {
+    ctx.currentContextTokens =
+      grabUsageField(lastBlob, "input_tokens") +
+      grabUsageField(lastBlob, "cache_read_input_tokens") +
+      grabUsageField(lastBlob, "cache_creation_input_tokens");
+  }
+}
+
+function pruneTranscriptScans() {
+  if (transcriptScans.size <= MAX_TRANSCRIPT_SCANS) return;
+  let oldestPath = null;
+  let oldestAt = Infinity;
+  for (const [p, st] of transcriptScans) {
+    if (st.touchedAt < oldestAt) { oldestAt = st.touchedAt; oldestPath = p; }
+  }
+  if (oldestPath !== null) transcriptScans.delete(oldestPath);
+}
+
+/** Bring a transcript's scan state up to date and return it. Concurrent
+ *  callers share one read — folding the same appended bytes twice would
+ *  double the usage totals. Never throws; an unreadable file just leaves
+ *  the state where it was. */
+function scanTranscript(path) {
+  if (!path || typeof path !== "string") return Promise.resolve(null);
+  const inFlight = transcriptScanInFlight.get(path);
+  if (inFlight) return inFlight;
+  const run = (async () => {
+    let state = transcriptScans.get(path);
+    if (!state) {
+      state = newTranscriptState();
+      transcriptScans.set(path, state);
+      pruneTranscriptScans();
+    }
+    state.touchedAt = Date.now();
+    try {
+      const s = await stat(path);
+      // Shorter than the cursor means the file was truncated, rotated or
+      // replaced — the offset now points at unrelated bytes, so start over.
+      if (s.size < state.offset) {
+        state = newTranscriptState();
+        state.touchedAt = Date.now();
+        transcriptScans.set(path, state);
+      }
+      if (s.size <= state.offset) return state;
+      const text = await readByteRange(path, state.offset, s.size);
+      const lastNl = text.lastIndexOf("\n");
+      if (lastNl < 0) return state;   // no complete line appended yet
+      const consumed = text.slice(0, lastNl);
+      // Advance before folding: a fold that throws half-way must not leave
+      // the cursor where the next pass would count those lines again.
+      state.offset += Buffer.byteLength(consumed, "utf8") + 1; // +1 for the \n
+      for (const line of consumed.split("\n")) foldTranscriptLine(state, line);
+    } catch { /* keep whatever we already folded */ }
+    return state;
+  })();
+  transcriptScanInFlight.set(path, run);
+  return run.finally(() => {
+    if (transcriptScanInFlight.get(path) === run) transcriptScanInFlight.delete(path);
+  });
+}
+
 // ─── Model enrichment ────────────────────────────────────────────────────
 // CC's hook payloads never carry the `model` field — but every hook
 // references a `transcript_path` JSONL that contains lines like
@@ -108,46 +299,13 @@ export function cachedModelId(cached) {
  *  inline with `isSidechain:true` + `parentToolUseID`). Current CC versions
  *  store subagents in `<sessionDir>/subagents/agent-<id>.jsonl` — those are
  *  handled by `readSubagentModelsFromDir` below. */
-async function readModelFromTranscript(path) {
-  try {
-    const s = await stat(path);
-    if (s.size === 0) return null;
-    const fh = await open(path, "r");
-    let text;
-    try {
-      const buf = Buffer.alloc(s.size);
-      await fh.read(buf, 0, s.size, 0);
-      text = buf.toString("utf8");
-    } finally {
-      await fh.close();
-    }
-    let rootModel = null;
-    const subagentModels = {};
-    let anyModelSeen = null;
-    for (const line of text.split("\n")) {
-      if (!line) continue;
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      const msg = obj && obj.message;
-      const model = (msg && typeof msg.model === "string" && /^claude[-_]/i.test(msg.model)) ? msg.model
-                  : (typeof obj.model === "string" && /^claude[-_]/i.test(obj.model))         ? obj.model
-                  : null;
-      if (!model) continue;
-      anyModelSeen = model;
-      const isSide = obj.isSidechain === true || obj.is_sidechain === true;
-      const ptid = obj.parentToolUseID || obj.parent_tool_use_id || obj.parentToolUseId || null;
-      if (isSide && ptid) {
-        subagentModels[ptid] = model;
-      } else if (!isSide) {
-        rootModel = model;
-      }
-    }
-    if (!rootModel) rootModel = anyModelSeen;
-    if (!rootModel && Object.keys(subagentModels).length === 0) return null;
-    return { rootModel, subagentModels };
-  } catch {
-    return null;
-  }
+export async function readModelFromTranscript(path) {
+  const state = await scanTranscript(path);
+  if (!state) return null;
+  const rootModel = state.rootModel ?? state.lastModel;
+  const subagentModels = { ...state.subagentModels };
+  if (!rootModel && Object.keys(subagentModels).length === 0) return null;
+  return { rootModel, subagentModels };
 }
 
 /** Newer CC schema (~2026-06): each subagent turn writes its OWN file at
@@ -173,30 +331,11 @@ async function readSubagentModelsFromDir(transcriptPath) {
     const agentId = f.replace(/^agent-/, "").replace(/\.jsonl$/i, "");
     const full = join(subDir, f);
     try {
-      const s = await stat(full);
-      if (s.size === 0) continue;
-      const fh = await open(full, "r");
-      let text;
-      try {
-        const buf = Buffer.alloc(s.size);
-        await fh.read(buf, 0, s.size, 0);
-        text = buf.toString("utf8");
-      } finally {
-        await fh.close();
-      }
-      // Last-seen claude-* model wins — subagents may switch model mid-turn
-      // (Sonnet → Haiku for tool-call fallback etc.).
-      let last = null;
-      for (const line of text.split("\n")) {
-        if (!line) continue;
-        let obj;
-        try { obj = JSON.parse(line); } catch { continue; }
-        const msg = obj && obj.message;
-        const m = (msg && typeof msg.model === "string" && /^claude[-_]/i.test(msg.model)) ? msg.model
-                : (typeof obj.model === "string" && /^claude[-_]/i.test(obj.model))         ? obj.model
-                : null;
-        if (m) last = m;
-      }
+      // Same incremental cursor as the main transcript. Last-seen claude-*
+      // model wins — subagents may switch model mid-turn (Sonnet → Haiku for
+      // tool-call fallback etc.).
+      const state = await scanTranscript(full);
+      const last = state ? state.lastModel : null;
       if (last) models[agentId] = last;
     } catch { /* skip unreadable file */ }
   }
@@ -250,47 +389,16 @@ const lastUsageReadAt = new Map();      // sid -> ms timestamp
 const pendingUsageReads = new Set();    // sid currently being read
 const USAGE_READ_THROTTLE_MS = 2500;
 
-async function readUsageFromTranscript(path) {
-  try {
-    const s = await stat(path);
-    if (s.size === 0) return null;
-    // Transcripts can grow large (thinking blocks, tool inputs) — read the
-    // whole file. Each entry has its own usage object and we sum every
-    // occurrence, so missing earlier bytes would undercount. Files are
-    // usually < 1MB; tens-of-MB sessions cost a few ms to scan.
-    const fh = await open(path, "r");
-    let buf;
-    try {
-      buf = Buffer.alloc(s.size);
-      await fh.read(buf, 0, s.size, 0);
-    } finally {
-      await fh.close();
-    }
-    const text = buf.toString("utf8");
-    const totals = {
-      input_tokens: 0, output_tokens: 0,
-      cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
-    };
-    // Match each `"usage":{...}` block and sum the four numeric fields.
-    // Regex is good enough — these blocks are flat single-level JSON.
-    const re = /"usage"\s*:\s*\{([^}]+)\}/g;
-    const grab = (blob, key) => {
-      const km = blob.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
-      return km ? Number(km[1]) : 0;
-    };
-    for (const m of text.matchAll(re)) {
-      const blob = m[1];
-      totals.input_tokens += grab(blob, "input_tokens");
-      totals.output_tokens += grab(blob, "output_tokens");
-      totals.cache_read_input_tokens += grab(blob, "cache_read_input_tokens");
-      totals.cache_creation_input_tokens += grab(blob, "cache_creation_input_tokens");
-    }
-    if (totals.input_tokens === 0 && totals.output_tokens === 0
-        && totals.cache_read_input_tokens === 0 && totals.cache_creation_input_tokens === 0) return null;
-    return totals;
-  } catch {
-    return null;
-  }
+// Every entry carries its own usage object and we sum every occurrence, so
+// the totals are cumulative over the whole transcript — the running state
+// keeps them across passes and each pass only adds the newly appended blocks.
+export async function readUsageFromTranscript(path) {
+  const state = await scanTranscript(path);
+  if (!state) return null;
+  const totals = { ...state.usage };
+  if (totals.input_tokens === 0 && totals.output_tokens === 0
+      && totals.cache_read_input_tokens === 0 && totals.cache_creation_input_tokens === 0) return null;
+  return totals;
 }
 
 function maybeResolveUsage(payload) {
@@ -323,61 +431,16 @@ const lastContextReadAt = new Map();
 const pendingContextReads = new Set();
 const CONTEXT_READ_THROTTLE_MS = 4000;
 
-async function readContextFromTranscript(path) {
-  try {
-    const s = await stat(path);
-    if (s.size === 0) return null;
-    const fh = await open(path, "r");
-    let buf;
-    try { buf = Buffer.alloc(s.size); await fh.read(buf, 0, s.size, 0); }
-    finally { await fh.close(); }
-    const fullText = buf.toString("utf8");
-    // CC `/clear` writes a user message `<command-name>/clear</command-name>`
-    // into the same transcript file and resets its in-memory context window
-    // to ~0, but the JSONL keeps growing — every usage block before the
-    // clear marker is stale (pre-reset) and reading the LAST one made the
-    // donut report ~100% even though CC's actual context was empty. Same
-    // applies to `/compact`: it writes a summary and starts a fresh context.
-    // Slice the transcript to the segment AFTER the most recent reset so
-    // counts/usage reflect what CC is actually carrying forward.
-    const resetRe = /<command-name>\s*\/(?:clear|compact)\s*<\/command-name>/g;
-    let lastResetIdx = -1;
-    for (const m of fullText.matchAll(resetRe)) {
-      lastResetIdx = (m.index ?? -1) + m[0].length;
-    }
-    const text = lastResetIdx >= 0 ? fullText.slice(lastResetIdx) : fullText;
-    const breakdown = {
-      msgsUser: 0,
-      msgsAssistant: 0,
-      toolUses: 0,
-      toolResults: 0,
-      systemReminders: 0,
-      currentContextTokens: 0,
-    };
-    breakdown.msgsUser       = (text.match(/"type"\s*:\s*"user"/g) ?? []).length;
-    breakdown.msgsAssistant  = (text.match(/"type"\s*:\s*"assistant"/g) ?? []).length;
-    breakdown.toolUses       = (text.match(/"type"\s*:\s*"tool_use"/g) ?? []).length;
-    breakdown.toolResults    = (text.match(/"type"\s*:\s*"tool_result"/g) ?? []).length;
-    breakdown.systemReminders = (text.match(/<system-reminder>/g) ?? []).length;
-    // Current context size = input + cache_read + cache_create on the LAST
-    // usage block in the post-reset slice. If the user just ran /clear and
-    // hasn't sent a new prompt yet, this stays 0 (no usage blocks yet) —
-    // matches what CC's own `/context` would report.
-    const re = /"usage"\s*:\s*\{([^}]+)\}/g;
-    const grab = (blob, key) => {
-      const km = blob.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
-      return km ? Number(km[1]) : 0;
-    };
-    let lastBlob = null;
-    for (const m of text.matchAll(re)) lastBlob = m[1];
-    if (lastBlob) {
-      breakdown.currentContextTokens =
-        grab(lastBlob, "input_tokens") +
-        grab(lastBlob, "cache_read_input_tokens") +
-        grab(lastBlob, "cache_creation_input_tokens");
-    }
-    return breakdown;
-  } catch { return null; }
+// The counts reset at every `/clear` or `/compact` marker (see
+// foldTranscriptLine): CC resets its in-memory window there while the JSONL
+// keeps growing, and reading the pre-reset blocks made the donut report ~100%
+// on an empty context.
+export async function readContextFromTranscript(path) {
+  const state = await scanTranscript(path);
+  // Nothing folded yet — the file is empty, unreadable, or has no complete
+  // line. Callers treat that as "no breakdown", same as before.
+  if (!state || state.offset === 0) return null;
+  return { ...state.ctx };
 }
 
 /** Encode an absolute path the way CC stores it under
@@ -669,19 +732,6 @@ async function listRecentCodexRollouts() {
     }
   }
   return out;
-}
-
-async function readByteRange(path, from, to) {
-  const fh = await open(path, "r");
-  try {
-    const len = to - from;
-    if (len <= 0) return "";
-    const buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, from);
-    return buf.toString("utf8");
-  } finally {
-    await fh.close();
-  }
 }
 
 // Read the first complete JSON line of a rollout (the session_meta header)
