@@ -45,12 +45,26 @@ const CHECK_MS = 3600_000;
 // enough that a full npm outage costs a dozen ~20-byte requests an hour.
 const RETRY_MS = 300_000;
 const FETCH_TIMEOUT_MS = 6_000;
-// A third marker path: ccusage owns ~/.agents-deck/ccusage/.last-update-check
+// A third marker family: ccusage owns ~/.agents-deck/ccusage/.last-update-check
 // and cswap owns ~/.agents-deck/.cswap-update-check. Sharing one would make the
 // three features fight over a single daily slot.
-const MARKER = join(homedir(), ".agents-deck", ".self-update-check");
+const MARKER_DIR = join(homedir(), ".agents-deck");
+// The name this deck was published under is part of the marker's identity.
+//
+// A single ~/.agents-deck/.self-update-check was shared by every deck on the
+// machine, so whichever one asked npm first pinned the answer for all of them
+// until the window expired — including a freshly started `npx ccdeck` that had
+// never written it, and including decks running a DIFFERENT package where the
+// cached version means nothing. Reported with four decks alive at once: three
+// served the same `checkedAt` to the millisecond and none of them showed the
+// seven releases that had shipped meanwhile. One file per package name means
+// `agents-deck`, `ccdeck` and `agent-dag` decks stop silencing each other; the
+// old shared path stays here only to be inherited from once.
+const LEGACY_MARKER = join(MARKER_DIR, ".self-update-check");
 
-let _inflight = null; // dedupe concurrent /api/version calls into one fetch
+// Dedupe concurrent /api/version calls into one fetch, per package name — two
+// names are two different questions and must not be answered with one answer.
+const _inflight = new Map();
 
 // ── version comparison ───────────────────────────────────────────────────────
 
@@ -186,18 +200,44 @@ async function fetchLatest(name) {
   }
 }
 
+/** Marker file name for a package: `ccdeck` → `.self-update-check-ccdeck`.
+ *
+ *  Pure, and deliberately strict about what reaches the filesystem — a package
+ *  name may be scoped (`@scope/pkg`), and `/`, `\` and `:` are either a path
+ *  separator or outright illegal in a Windows file name. Everything outside
+ *  `[a-z0-9._-]` collapses to `-`, the scope's leading `@` is dropped so the
+ *  common case reads plainly, and the tail is trimmed so a pathological name
+ *  cannot produce a path the OS refuses. An unusable name falls back to the
+ *  default rather than to the shared file this fix exists to get rid of. */
+export function markerFileName(name = "agents-deck") {
+  const raw = typeof name === "string" ? name.trim().toLowerCase() : "";
+  const safe = raw
+    .replace(/^@/, "")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .slice(0, 64)
+    // Trimmed after the slice, and at both ends: Windows silently drops a
+    // trailing dot from a file name, so a name that ends in one would write to
+    // a path that is not the path we would later read.
+    .replace(/^[-.]+|[-.]+$/g, "");
+  return `.self-update-check-${safe || "agents-deck"}`;
+}
+
+function markerPath(name) {
+  return join(MARKER_DIR, markerFileName(name));
+}
+
 // The marker carries the answer, not just the timestamp. The existing markers
-// store only an mtime, which means a restart inside the 24h window forgets what
-// npm said and shows nothing until the window expires.
+// store only an mtime, which means a restart inside the window forgets what npm
+// said and shows nothing until the window expires.
 //
 // It carries the outcome too. `at` is when npm last ANSWERED and `version` is
 // what it said; `failedAt` is when the last attempt failed, and is null the
 // moment one succeeds. Keeping them apart is what lets the deck say "checked
 // 3m ago" and "could not reach npm" as the different things they are, instead
 // of reporting a timeout as a fresh, up-to-date check.
-function readMarker() {
+function readMarkerFile(path) {
   try {
-    const m = JSON.parse(readFileSync(MARKER, "utf8"));
+    const m = JSON.parse(readFileSync(path, "utf8"));
     // Either half is enough to be worth keeping: a marker written by a first
     // attempt that failed has no `at` yet, and markers written before
     // `failedAt` existed have no `failedAt` at all.
@@ -206,10 +246,26 @@ function readMarker() {
     return null;
   }
 }
-function writeMarker(marker) {
+
+// The unsuffixed marker every earlier deck wrote, read at most once per name
+// per process: upgrading to this version should not throw away an answer npm
+// already gave. It is consulted only while the per-name file is still missing,
+// so the shared file never goes back to being in charge.
+const _legacy = new Map();
+function legacyMarker(name) {
+  const key = markerFileName(name);
+  if (!_legacy.has(key)) _legacy.set(key, readMarkerFile(LEGACY_MARKER));
+  return _legacy.get(key);
+}
+
+function readMarker(name) {
+  return readMarkerFile(markerPath(name)) ?? legacyMarker(name);
+}
+function writeMarker(name, marker) {
+  const path = markerPath(name);
   try {
-    mkdirSync(dirname(MARKER), { recursive: true });
-    writeFileSync(MARKER, JSON.stringify(marker));
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(marker));
   } catch { /* a read-only home must not break the deck */ }
 }
 
@@ -226,11 +282,12 @@ export function nextMarker({ prev, now, ok, version }) {
   return { at: prev?.at ?? null, version: prev?.version ?? null, failedAt: now };
 }
 
-// The marker is shared by every deck on the machine, so one deck's check
-// silences the others for the rest of the window. Asking once per PROCESS fixes
-// that, and it lands the check exactly where the user expects the truth: a
-// freshly started deck — which for `npx ccdeck` is every single run.
-let _askedThisProcess = false;
+// Even a per-package marker is shared by every deck running that package, so
+// one deck's check still answers for the others inside the window. Asking once
+// per PROCESS lands the check exactly where the user expects the truth: a
+// freshly started deck — which for `npx ccdeck` is every single run. Keyed by
+// name, so a process that asked about one package has not asked about another.
+const _askedThisProcess = new Set();
 
 /**
  * Whether to ask npm, or reuse the answer on disk. Pure, because "why did no
@@ -258,22 +315,27 @@ export function checkDue({ at, failedAt, now, first = false, force = false, ttlM
  *  `force` skips the window: the first call in this process, and an explicit
  *  "check now" from the UI. */
 async function latestOnNpm(name, now, force = false) {
-  const m = readMarker();
-  const first = !_askedThisProcess;
-  _askedThisProcess = true;
+  const m = readMarker(name);
+  const key = markerFileName(name);
+  const first = !_askedThisProcess.has(key);
+  _askedThisProcess.add(key);
   if (!checkDue({ at: m?.at, failedAt: m?.failedAt, now, first, force })) return m?.version ?? null;
-  if (_inflight) return _inflight;
-  _inflight = fetchLatest(name)
-    // Record the outcome, not just the moment. Only an answer stamps `at`; a
-    // failure takes the short retry window instead of the hour, and keeps the
-    // version we already knew rather than erasing it.
+  const pending = _inflight.get(key);
+  if (pending) return pending;
+  const run = fetchLatest(name)
+    // Record the outcome, not just the moment, and record it against THIS
+    // package: only an answer stamps `at`; a failure takes the short retry
+    // window instead of the hour, keeps the version we already knew rather
+    // than erasing it, and lands in this name's marker rather than spending
+    // another package's window on a lookup that was never about it.
     .then(({ ok, version }) => {
-      writeMarker(nextMarker({ prev: m, now, ok, version }));
+      writeMarker(name, nextMarker({ prev: m, now, ok, version }));
       return (ok ? version : null) ?? m?.version ?? null;
     })
     .catch(() => m?.version ?? null)
-    .finally(() => { _inflight = null; });
-  return _inflight;
+    .finally(() => { _inflight.delete(key); });
+  _inflight.set(key, run);
+  return run;
 }
 
 // ── the notice ───────────────────────────────────────────────────────────────
@@ -448,7 +510,7 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     process.env.AGENTS_DECK_NO_UPDATE_CHECK === "1" ||
     process.env.AGENTS_DECK_NO_INSTALL === "1";
   const latest = skipRegistry ? null : await latestOnNpm(name, now, force);
-  const marker = skipRegistry ? null : readMarker();
+  const marker = skipRegistry ? null : readMarker(name);
   const blocked = upgradeBlock(pkgRoot);
   return {
     name,

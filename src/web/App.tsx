@@ -76,6 +76,11 @@ const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 const USAGE_PANEL_OPEN_KEY = "agent-dag.usagePanelOpen";
 const ACCOUNTS_PANEL_OPEN_KEY = "agent-dag.accountsPanelOpen";
 const VERSION_DISMISSED_KEY = "agent-dag.versionNoticeDismissed";
+// How stale the last registry lookup may get before a poll asks npm again
+// instead of accepting the server's cached answer. Three times the poll
+// interval: often enough that a release shows up while you are looking at the
+// deck, rare enough that the cost stays the one request the README advertises.
+const VERSION_FORCE_MS = 15 * 60_000;
 
 // What GET /api/version answers. `running` is the version this server process
 // booted with; `installed` is what is on disk right now. They diverge the
@@ -694,24 +699,43 @@ function Inner() {
   const [cmdCopied, setCmdCopied] = useState(false);
   // `force` asks npm now instead of reusing the answer cached on disk. Used by
   // the chip, because "no banner" and "no check ran" look identical from here.
+  const lastForcedRef = useRef(0);
   const loadVersion = useCallback((force = false) => {
+    if (force) lastForcedRef.current = Date.now();
     fetch(force ? "/api/version?refresh=1" : "/api/version")
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setVersion(d as VersionInfo); })
       .catch(() => {});
   }, []);
+  // Every unforced poll is answered from the server's on-disk marker, so once a
+  // deck had checked, nothing it could do would ever learn about a release
+  // published afterwards until that marker's hour was up — reported as seven
+  // releases shipping with no banner on any of four running decks. The client is
+  // the right place to decide how fresh the answer has to be, so the periodic
+  // poll forces on a slower cadence of its own rather than never.
+  //
+  // Gated on the ref rather than forced every time, because forcing skips the
+  // server's window entirely: the ~20-byte registry GET still happens at most
+  // once per interval per deck, whether the trigger was the poll, a tab
+  // regaining focus, or the chip — all of them stamp the same ref.
+  const forceVersionIfStale = useCallback(() => {
+    loadVersion(Date.now() - lastForcedRef.current >= VERSION_FORCE_MS);
+  }, [loadVersion]);
   useEffect(() => {
+    // Unforced: the server asks npm on the first call of its own process, so a
+    // deck the user has just started is already answering with a fresh number.
     loadVersion();
-    const iv = window.setInterval(loadVersion, 5 * 60_000);
+    const iv = window.setInterval(forceVersionIfStale, 5 * 60_000);
     // Coming back to this tab is exactly the moment after someone ran the
-    // upgrade in another window — cheaper and far more timely than the interval.
-    const onVis = () => { if (document.visibilityState === "visible") loadVersion(); };
+    // upgrade in another window, and exactly the moment to be right — cheaper
+    // and far more timely than waiting out the interval.
+    const onVis = () => { if (document.visibilityState === "visible") forceVersionIfStale(); };
     document.addEventListener("visibilitychange", onVis);
     return () => {
       window.clearInterval(iv);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [loadVersion]);
+  }, [loadVersion, forceVersionIfStale]);
   // The stream coming back is the end of a restart, and the only moment the
   // answer is known to have changed. Without this the banner sat on
   // "restarting…" until the five-minute poll came round — and in a background
