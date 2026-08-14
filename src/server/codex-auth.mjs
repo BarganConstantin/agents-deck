@@ -12,9 +12,10 @@
 // immediately before it is spent, a response that does not clearly carry a
 // new access token is never treated as success, and nothing here throws —
 // a rejected promise from a background poll would take the server down.
-import { readFile, writeFile, rename, chmod, unlink, realpath, open } from "node:fs/promises";
+import { readFile, writeFile, chmod, unlink, realpath, open } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { renameWithRetry } from "./installer.mjs";
 
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const AUTH_PATH  = join(CODEX_HOME, "auth.json");
@@ -78,6 +79,13 @@ async function readAuthFile() {
  * dotfiles repo or an encrypted volume, and renaming onto the link would
  * replace it with a regular file, quietly detaching the user's setup.
  *
+ * The rename is the installer's retrying one because Windows fails it outright
+ * with EPERM/EBUSY while another process holds auth.json open, and a virus
+ * scanner, the search indexer or the Codex CLI itself does exactly that for a
+ * few milliseconds at a time. Everywhere else that costs a re-download; here
+ * the refresh token has already been spent server-side, so losing that
+ * millisecond race logs the user out of Codex until they run `codex login`.
+ *
  * Throws on failure; the caller must treat that as "the refresh did not
  * happen" rather than swallowing it.
  */
@@ -92,7 +100,7 @@ async function persistAuth(auth) {
     await chmod(tmp, 0o600);
     const fd = await open(tmp, "r+");
     try { await fd.sync(); } finally { await fd.close(); }
-    await rename(tmp, target);
+    await renameWithRetry(tmp, target);
     ok = true;
   } finally {
     // A tmp left behind holds a live rotated refresh token in cleartext.
