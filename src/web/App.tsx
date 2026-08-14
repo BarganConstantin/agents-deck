@@ -23,7 +23,7 @@ import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, shouldReloadBundle } from "./restart";
 import { isBrowserChord } from "./shortcuts";
-import { pruneStaleEntries } from "./prune";
+import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
 import UsageHistoryModal from "./components/UsageHistoryModal";
@@ -547,6 +547,14 @@ function snapshotToFlow(
   // canvas — where a later session, laid out from the top, gets stacked
   // straight onto it.
   pruneStaleEntries(pinned, state.agents);
+  // Drop measurements for nodes that no longer exist. This cache is not
+  // restored from storage, but it is not rebuilt either: nothing but the Clear
+  // button ever removed an id, so a tab left open for days holds a size for
+  // every agent and every session that has ever been on the canvas. columnGap()
+  // takes the widest measured node of all, and a session drag handle is as wide
+  // as the whole session box, so a single long-gone session kept the gap
+  // between columns at its width for the rest of the tab's life.
+  pruneStaleEntries(measured, measuredNodeIds(state.agents.values()));
   // Never silently drop a visible node — if its position is missing, place
   // it at {0,0} for THIS frame and force a fresh dagre pass on the next
   // frame by invalidating lastLayoutSigRef. The previous skip-this-frame
