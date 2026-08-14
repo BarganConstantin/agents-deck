@@ -14,6 +14,26 @@ function fmtKB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
+/** Widest path the row can print. `.ctx-md-path` is 12px monospace inside a
+ *  560px modal, sharing the row with the size column, so ~60 columns is what
+ *  fits before CSS starts clipping. */
+const PATH_MAX_CHARS = 60;
+
+/** Cuts the head off an over-long path and marks the cut with a leading
+ *  ellipsis, so the tail survives — every file in this list is named CLAUDE.md,
+ *  so the trailing directories are the only thing telling two rows apart. This
+ *  used to be `direction: rtl` in styles.css, which got the left-side ellipsis
+ *  by flipping the paragraph to RTL and, with it, moved the leading '/' of
+ *  every POSIX path to the end of the line. Cutting at a separator keeps half a
+ *  directory name off the screen; '\' counts as one because a Windows path
+ *  reads C:\Users\… Exported for tests. */
+export function truncatePathStart(path: string, max = PATH_MAX_CHARS): string {
+  if (path.length <= max) return path;
+  const tail = path.slice(path.length - (max - 1)); // one column pays for the ellipsis
+  const sep = tail.search(/[/\\]/);
+  return "…" + (sep === -1 ? tail : tail.slice(sep));
+}
+
 interface Props {
   agent: AgentNodeData;
   onClose: () => void;
@@ -75,7 +95,7 @@ export default function ContextModal({ agent, onClose }: Props) {
           <ul className="ctx-md-list">
             {ctx!.claudeMdFiles.map(f => (
               <li key={f.path}>
-                <span className="ctx-md-path" title={f.path}>{f.path}</span>
+                <span className="ctx-md-path" title={f.path}>{truncatePathStart(f.path)}</span>
                 <span className="ctx-md-size">{fmtKB(f.bytes)}</span>
               </li>
             ))}
