@@ -20,18 +20,27 @@
 // inherited so the terminal is unchanged, and Ctrl+C keeps working because the
 // process group never changes.
 //
+// The upgrade path has one more constraint, learned the expensive way: the
+// worker must not be torn down to find out whether an upgrade is possible. It
+// used to be — the worker exited 76, and only then did npx discover it was
+// offline — so every failed update cost a full outage and could be retried
+// identically forever. Now the worker ASKS (an `upgrade` message), the fetch
+// happens beside it while it keeps serving, and only a fetch that worked is
+// answered with the exit that gives up the port. See prefetchUpgrade.
+//
 // Everything else the deck does still lives in bin/deck.js. This file must stay
 // boring: it is the one process that is never replaced.
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { npxFailureHint, npxFailureSummary, npxLaunch } from "../src/server/npx.mjs";
+import { killTree } from "../src/server/exec.mjs";
+import { npxFailureHint, npxFailureSummary, npxLaunch, npxPrefetch } from "../src/server/npx.mjs";
 import {
-  bareSpecName, claimRestartFailureKey, clearRestartFailure, installedVersion, npxRestartSpec,
-  recordRestartFailure,
+  bareSpecName, claimRestartFailureKey, clearRestartFailure, installedVersion, lastKnownLatest,
+  npxRestartSpec, readRestartFailure, recordRestartFailure,
 } from "../src/server/self-update.mjs";
-import { dieOfSignal, workerExitAction } from "../src/server/supervisor.mjs";
+import { dieOfSignal, upgradeAttempt, upgradeRefusalText, workerExitAction } from "../src/server/supervisor.mjs";
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
@@ -55,6 +64,15 @@ claimRestartFailureKey();
 let boundPort = null;
 let restarts = 0;
 let child = null;
+// The npx process fetching a replacement, while the worker above keeps serving.
+// Held separately from `child` for exactly that reason: for the length of a
+// fetch there are two of them, and only one is the deck.
+let fetching = null;
+// The upgrade this supervisor has committed to, from the moment the pre-flight
+// allowed it until the replacement is serving or the attempt has been written
+// off. giveUp runs long after the decision that permitted the attempt and has
+// to record that decision's count, not a fresh one.
+let attempting = null;
 // Set by the signal handlers, and the first thing every exit path asks. Without
 // it, Ctrl+C during an npx fetch looks exactly like a failed fetch, and a
 // worker that was already exiting 75 or 76 when the signal landed reads as a
@@ -66,7 +84,7 @@ function launch(respawn) {
   // Appended last so it wins: the worker's parser keeps the final --port.
   if (respawn && boundPort != null) args.push("--port", String(boundPort));
 
-  child = spawn(process.execPath, args, {
+  const worker = spawn(process.execPath, args, {
     // stdio inherited so the child owns the same terminal the user started:
     // same banner, same colours, same Ctrl+C. The fourth slot adds an IPC
     // channel — the only way the worker can tell us which port it got, since
@@ -82,12 +100,24 @@ function launch(respawn) {
     },
   });
 
-  child.on("message", (m) => {
-    if (m && m.type === "listening" && typeof m.port === "number") boundPort = m.port;
+  child = worker;
+
+  worker.on("message", (m) => {
+    if (!m || typeof m !== "object") return;
+    if (m.type === "listening" && typeof m.port === "number") boundPort = m.port;
+    // The worker asking to be replaced, while it is still serving. Answered by
+    // prefetchUpgrade, which is the whole of this file's new shape: the fetch
+    // happens here, and only then does that worker exit — see UPGRADE_CODE.
+    else if (m.type === "upgrade") prefetchUpgrade(worker);
   });
 
-  child.on("exit", (code, signal) => {
+  worker.on("exit", (code, signal) => {
     child = null;
+    // A fetch is for the worker that asked for it. That worker is gone, so the
+    // download is spent effort and the process holding it has to be stopped:
+    // left running it would keep writing into the npx cache directory the next
+    // attempt reads, minutes after the deck stopped waiting for it.
+    if (fetching) { killTree(fetching); fetching = null; attempting = null; }
     // `stopping` outranks the exit code — see supervisor.mjs. A restart and a
     // Ctrl+C can land together, and honouring the code first is how the deck
     // came back to life after the user stopped it.
@@ -111,7 +141,7 @@ function launch(respawn) {
     else process.exit(next.code);
   });
 
-  child.on("error", (err) => {
+  worker.on("error", (err) => {
     console.error(`agents-deck: could not start ${WORKER}: ${err.message}`);
     process.exit(1);
   });
@@ -129,6 +159,88 @@ function withoutPortAndOpen(args) {
     out.push(a);
   }
   return out;
+}
+
+/** The note the browser reads, written by the only process that knows why an
+ *  upgrade did not happen. `failedAt` is when the FETCH failed, which a refusal
+ *  restating an earlier failure carries forward — see upgradeAttempt. */
+function noteFailure({ pkgName, spec, error, target, attempts, failedAt = Date.now() }) {
+  recordRestartFailure({
+    name: pkgName,
+    command: `npx -y ${spec}`,
+    error,
+    version: VERSION === "?" ? null : VERSION,
+    target,
+    attempts,
+    failedAt,
+  });
+}
+
+/**
+ * Fetch the replacement while the deck this supervisor started keeps serving.
+ *
+ * The order used to be: kill the working deck, attempt, fail, rebuild the deck.
+ * Every failed upgrade was therefore a real interruption — the SSE stream
+ * dropped, hook events fired into the gap lost outright, the canvas back with
+ * tools stuck in flight — and it was paid in full even when the update never
+ * had a chance of working. Reported from a terminal that had been left alone:
+ * the same version, the same ETARGET, the same teardown, four times over.
+ *
+ * npm can resolve and download without the deck dying. So the fetch is done
+ * first, and the worker is only asked to exit once there is something to hand
+ * the port to. There is never a second server: npxPrefetch installs the package
+ * and runs nothing out of it, and the replacement is spawned only after this
+ * process has watched the old worker's exit.
+ *
+ * A refusal costs nothing but the click. The deck keeps its port, its stream
+ * and its hooks; the failure reaches the browser through the note, exactly as a
+ * failed fetch always has.
+ */
+async function prefetchUpgrade(worker) {
+  if (stopping || fetching || attempting) return;
+  const reply = (msg) => { try { worker.send?.(msg); } catch { /* the worker is gone */ } };
+
+  const spec = npxRestartSpec(PKG_ROOT);
+  // Not an npx run after all, so there is nothing to fetch and the files on
+  // disk are already the newest this deck can reach.
+  if (!spec) { reply({ type: "upgrade-refused", error: "this deck was not started by npx" }); return; }
+  const pkgName = bareSpecName(spec) ?? "agents-deck";
+  // What the banner offered, straight off the marker the version check writes.
+  // The note is keyed by it so that "this exact version already failed here" is
+  // a question anything can answer — and so a newer release clears the slate.
+  const target = lastKnownLatest(pkgName);
+
+  const note = readRestartFailure(pkgName);
+  const decision = upgradeAttempt({ note, target, now: Date.now() });
+  if (!decision.allow) {
+    const error = upgradeRefusalText(decision, target);
+    // Re-stamped even though nothing was attempted: the tab ends its attempt on
+    // a failure note it has not seen before, so a refusal that left the note
+    // untouched would leave the button reading "fetching…" for the full three
+    // minutes it allows, over a deck that never went anywhere.
+    noteFailure({
+      pkgName, spec, error, target,
+      attempts: decision.attempt,
+      failedAt: typeof note?.failedAt === "number" ? note.failedAt : Date.now(),
+    });
+    reply({ type: "upgrade-refused", error });
+    return;
+  }
+
+  attempting = { pkgName, spec, target, attempt: decision.attempt };
+  process.stdout.write(`\n  ↻  fetching ${spec}…\n`);
+  const got = await npxPrefetch(spec, { onChild: (c) => { fetching = c; } });
+  fetching = null;
+  // Ctrl+C, or a worker that died on its own while npm was working: either way
+  // the deck this fetch was for is not there to be replaced, and the exit path
+  // that noticed has already had its say.
+  if (stopping || child !== worker) { attempting = null; return; }
+  if (got.ok) { reply({ type: "upgrade-ready" }); return; }
+
+  const error = [got.error, got.hint].filter(Boolean).join(" — ");
+  noteFailure({ pkgName, spec, error, target, attempts: decision.attempt });
+  attempting = null;
+  reply({ type: "upgrade-refused", error });
 }
 
 /**
@@ -162,7 +274,10 @@ function launchNpx() {
   const pkgName = bareSpecName(spec) ?? "agents-deck";
   clearRestartFailure(pkgName);
 
-  process.stdout.write(`\n  ↻  fetching ${spec}…\n`);
+  // No "fetching…" line here any more: prefetchUpgrade printed it and the
+  // tarball is already unpacked, so this resolves out of the npx cache and the
+  // next thing on screen is the new deck's own banner.
+  //
   // npxLaunch prefers npm's own npx-cli.js next to this Node binary, which
   // needs no PATH lookup and no batch shim; the PATH shim is the fallback and
   // still goes through cmd.exe with each argument quoted.
@@ -222,12 +337,18 @@ function launchNpx() {
     if (hint) console.error(`  ${hint}`);
     // Left for the worker about to be launched: it is the only way the browser
     // learns this happened at all. See recordRestartFailure.
-    recordRestartFailure({
-      name: pkgName,
-      command: `npx -y ${spec}`,
+    //
+    // This is the outage the pre-flight cannot spare anyone: the fetch worked,
+    // the port was handed over, and the replacement still did not serve. It
+    // counts against the same target as any other failed attempt, so a copy
+    // that starts and dies is not offered forever either.
+    noteFailure({
+      pkgName, spec,
       error: [summary ?? why, hint].filter(Boolean).join(" — "),
-      version: VERSION === "?" ? null : VERSION,
+      target: attempting?.target ?? null,
+      attempts: attempting?.attempt ?? 1,
     });
+    attempting = null;
     restarts++;
     launch(true);
   };
@@ -256,6 +377,13 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     // on the next boot.
     const second = stopping; // an impatient user pressing Ctrl+C again
     stopping = true;
+    // A fetch in flight is not the deck and does not stop with it. On POSIX the
+    // Ctrl+C that reached us reached it too — it is in this process group — but
+    // a plain `kill` of the supervisor, or a systemd stop, is not, and on
+    // Windows the shim path leaves npm as a grandchild of cmd.exe that only
+    // killTree can reach. Stopped before the worker, since the worker's own
+    // exit path is what ends this process.
+    if (fetching) { killTree(fetching, second ? "SIGKILL" : sig); fetching = null; }
     if (!child) { process.exit(0); return; }
     try { child.kill(second ? "SIGKILL" : sig); } catch { /* already gone */ }
     // The npx step is a shell that exec's the new deck, and a signal can land in

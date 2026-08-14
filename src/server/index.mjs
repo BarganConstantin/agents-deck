@@ -1417,6 +1417,17 @@ async function handleRestart(req, res) {
   setTimeout(() => { try { _onRestart(mode); } catch { _restarting = false; } }, 120).unref();
 }
 
+/** The other end of the latch above, for the upgrade that never happened.
+ *
+ * An npx upgrade is now fetched before anything is torn down, so a fetch that
+ * fails leaves this process serving — with `_restarting` still set from a
+ * restart that is not coming. Nothing would ever clear it: the only path that
+ * did was the process ending. Every later click, from any tab, answered 202
+ * "already restarting" for the rest of the deck's life. */
+export function releaseRestart() {
+  _restarting = false;
+}
+
 async function handleQuota(req, res) {
   const { fetchClaudeQuota } = await import(
     pathToFileURL(join(PKG_ROOT, "src/server/quota.mjs")).href
