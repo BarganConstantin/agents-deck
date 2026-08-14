@@ -38,6 +38,10 @@ import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./v
 import { SESSION_GROUP_TYPE, minimapNodeColor } from "./minimap";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import { versionChipLabel, versionChipTitle } from "./version-chip";
+import { emptyScope } from "./scope";
+import { pauseButton, statusPill } from "./status-pill";
+import { searchStatus, shouldDimUnmatched } from "./search-status";
+import { promptTime, shortAgo } from "./relative-time";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -134,15 +138,6 @@ const UPGRADE_BLOCK_TEXT: Record<string, string> = {
   not_writable: "the install directory is not writable by this user — run:",
   opted_out: "installs are off (AGENTS_DECK_NO_INSTALL=1) — run:",
 };
-
-/** "just now" / "12m ago" / "3h ago" — for the version chip's tooltip. */
-function shortAgo(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 const AUTO_RESTART_KEY = "agent-dag.autoRestart";
 // Per-tab, not per-browser: it guards one reload, not a preference.
@@ -445,14 +440,22 @@ function snapshotToFlow(
 ): { nodes: Node<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>[]; edges: Edge[] } {
   const nodes: Node<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>[] = [];
   const edges: Edge[] = [];
+  // Visible agents only, so the size below counts the same population the
+  // toolbar's "3 of 11" does — an exited agent still in state must not be the
+  // reason the whole board dims.
   const matchSet = new Set<string>();
   if (query) {
-    for (const a of state.agents.values()) if (matchesQuery(a, query)) matchSet.add(a.id);
+    for (const a of state.agents.values()) {
+      if (visibleIds.has(a.id) && matchesQuery(a, query)) matchSet.add(a.id);
+    }
   }
+  // A query nothing matched dims nothing: see search-status.ts. The zero-result
+  // line on the canvas says it instead.
+  const dimming = shouldDimUnmatched(query, matchSet.size);
 
   for (const a of state.agents.values()) {
     if (!visibleIds.has(a.id)) continue;
-    const dim = query ? !matchSet.has(a.id) : false;
+    const dim = dimming && !matchSet.has(a.id);
     const exiting = a.exitAt != null;
     // Spotlight: out-of-lineage agents fade hard when a selection is active.
     const spotlitOut = lineage != null && !lineage.has(a.id);
@@ -805,6 +808,26 @@ function Inner() {
   // tab, where visibilitychange never fires, that was the only thing left.
   useEffect(() => { if (live) loadVersion(); }, [live, loadVersion]);
   const notice = version?.notice ?? null;
+
+  // Which sessions this deck is even allowed to see — "" for machine-wide, a
+  // path when it was started with --workspace/--scope. Null until health
+  // answers, and null forever against a server too old to report it; the empty
+  // state says nothing about scope in that case rather than guessing, which is
+  // how it came to claim a dead `--all` flag in the first place. Re-asked when
+  // the stream reconnects, because that is the far end of a restart and the
+  // only point the answer can have changed.
+  const [workspace, setWorkspace] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/health")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (cancelled || !d || typeof d.workspace !== "string") return;
+        setWorkspace(d.workspace);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [live]);
   // Keyed to the version it is about, so dismissing today's notice does not
   // silence next month's release.
   const noticeKey = notice ? `${notice.kind}:${notice.to}` : "";
@@ -1658,12 +1681,28 @@ function Inner() {
   // Set of agent ids that match the current /-search query, or null when
   // there's no query (= no dimming). Passed to ToolBursts so its bubbles
   // dim in lockstep with the agent nodes — consistent visual filter.
+  //
+  // Counted over the visible set only. It used to walk every agent in state,
+  // including ones that have exited and are no longer drawn, so its size was
+  // not a number that could be shown to anyone: the readout below would have
+  // claimed matches for agents that are not on the canvas, and the "nothing
+  // matched" branch would disagree with the dimming, which only ever touches
+  // what is drawn.
   const matchedAgentIds = useMemo<Set<string> | null>(() => {
     if (!query) return null;
     const set = new Set<string>();
-    for (const a of stateRef.current.agents.values()) if (matchesQuery(a, query)) set.add(a.id);
+    for (const a of stateRef.current.agents.values()) {
+      if (visibleAgentIds.has(a.id) && matchesQuery(a, query)) set.add(a.id);
+    }
     return set;
-  }, [stateRef.current, stateRef.current.lastSeq, query]);
+  }, [stateRef.current, stateRef.current.lastSeq, query, visibleAgentIds]);
+
+  // The one readout the search never had. `dim` is part of it because "dim
+  // everything" is a claim that something else is lit.
+  const search = useMemo(
+    () => searchStatus(query, matchedAgentIds?.size ?? 0, visibleAgentIds.size),
+    [query, matchedAgentIds, visibleAgentIds],
+  );
 
   // Which categories currently have at least one tool on the canvas — the
   // filter row only shows chips for active categories so users aren't
@@ -2000,11 +2039,26 @@ function Inner() {
             {query
               ? <button className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
               : <kbd className="search-kbd" aria-hidden>/</kbd>}
+            {/* The filter's own state, the way the category chips and the
+                selection ribbon show theirs. aria-live so a screen reader hears
+                the result change without leaving the field. */}
+            {search.count && (
+              <span
+                className={`search-count${search.empty ? " none" : ""}`}
+                aria-live="polite"
+                title={`${search.count} agents on the canvas match “${query}”`}
+              >{search.count}</span>
+            )}
           </div>
           <span className="status" role="status">
-            <span className={`pill ${live ? "live" : "dead"}`} title={live ? "Receiving events" : "SSE disconnected"}>
-              {live ? "live" : "offline"}
-            </span>
+            {/* Three states, not two. Read through the gate rather than a
+                counter of its own: the queue is the thing being reported. */}
+            {(() => {
+              const pill = statusPill({ connected: live, paused, held: pauseRef.current.size });
+              return (
+                <span className={`pill ${pill.tone}`} title={pill.title}>{pill.label}</span>
+              );
+            })()}
             <span className="stat" title="Distinct CC sessions"><span className="count">{sessionCount}</span><span className="lbl">sessions</span></span>
             <span className="stat" title="Total agents (root + subagents)"><span className="count">{agentCount}</span><span className="lbl">agents</span></span>
             <span className="stat" title="Total hook events received"><span className="count">{stateRef.current.totalEvents}</span><span className="lbl">events</span></span>
@@ -2050,9 +2104,14 @@ function Inner() {
               );
             })()}
           </span>
-          <button className={`btn ${paused ? "warn" : ""}`} onClick={togglePause} title="Pause/resume live updates (Space)">
-            {paused ? `Resume${pauseRef.current.size ? ` · ${pauseRef.current.size}` : ""}` : "Pause"}
-          </button>
+          {(() => {
+            const btn = pauseButton({ paused, held: pauseRef.current.size });
+            return (
+              <button className={`btn ${paused ? "warn" : ""}`} onClick={togglePause} title={btn.title}>
+                {btn.label}
+              </button>
+            );
+          })()}
           <button
             className={`btn icon-btn ${usagePanelOpen ? "primary" : ""}`}
             onClick={() => setUsagePanelOpen(o => !o)}
@@ -2294,6 +2353,20 @@ function Inner() {
         ref={canvasRef}
       >
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
+        {/* Said out loud rather than implied by a grey canvas: a query that
+            matches nothing is indistinguishable from every session having aged
+            out, and the dimming that was carrying the message on its own is
+            itself masked by the spawn animations (#316). */}
+        {search.empty && agentCount > 0 && (
+          <div className="search-empty" role="status">
+            <span className="search-empty-text">{search.message}</span>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => { setQuery(""); searchInputRef.current?.focus(); }}
+            >Clear search</button>
+          </div>
+        )}
         {presentCats.length > 1 && (
           <div
             ref={catBarRef}
@@ -2454,7 +2527,7 @@ function Inner() {
             positions={positionsRef.current}
             pinned={pinnedRef.current}
             measured={measuredRef.current}
-            dimUnmatched={matchedAgentIds}
+            dimUnmatched={search.dim ? matchedAgentIds : null}
             spotlight={spotlightSet}
             hiddenCategories={hiddenCats}
             now={now}
@@ -2510,7 +2583,7 @@ function Inner() {
                 }}
                 onExportSession={(sid) => exportSessionJson(stateRef.current, sid)}
               />
-            : <EmptyDetail count={agentCount} />}
+            : <EmptyDetail count={agentCount} workspace={workspace} />}
         </aside>
       ) : (
         <button
@@ -2598,15 +2671,15 @@ function agentNoneCopy() {
   );
 }
 
-function EmptyDetail({ count }: { count: number }) {
+function EmptyDetail({ count, workspace }: { count: number; workspace: string | null }) {
+  const scope = emptyScope(workspace);
   return (
     <>
       <h3>Detail</h3>
       {count === 0 ? (
         <div className="hint">
-          No data yet. Start a Claude Code or Codex session anywhere on this
-          machine — agents-deck is in <code>--all</code> mode and listens to every
-          workspace.
+          {scope.lead}
+          {scope.workspace !== null && <> <code>{scope.workspace}</code>{scope.tail}</>}
         </div>
       ) : (
         <div className="empty">Click an agent to see its tools.</div>
@@ -2762,12 +2835,15 @@ function Detail({
         <section className="detail-section">
           <h3>Prompts <span className="section-count">{agent.prompts.length}</span></h3>
           <div className="prompts">
-            {agent.prompts.slice().reverse().map((pr, i) => (
-              <div className="prompt-entry" key={i}>
-                <div className="prompt-time">{new Date(pr.at).toLocaleTimeString()}</div>
-                <div className="prompt-text">{pr.text}</div>
-              </div>
-            ))}
+            {agent.prompts.slice().reverse().map((pr, i) => {
+              const t = promptTime(pr.at, now);
+              return (
+                <div className="prompt-entry" key={i}>
+                  <div className="prompt-time" title={t.title}>{t.label}</div>
+                  <div className="prompt-text">{pr.text}</div>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}

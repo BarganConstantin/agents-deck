@@ -319,6 +319,21 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   box-shadow: 0 0 6px var(--ok);
   animation: pulse 1.6s ease-in-out infinite;
 }
+/* Paused: connected, but the canvas is frozen. Amber and a still dot — the
+   pulse is what "events are landing" means here, and under a pause none are.
+   Matches the Resume button's .btn.warn beside it, so the two read as one
+   state rather than two controls disagreeing. */
+.topbar .status .pill.paused {
+  color: var(--warn);
+  border-color: rgba(252,211,77,0.35);
+  background: rgba(252,211,77,0.06);
+}
+.topbar .status .pill.paused::before {
+  content: ""; display: inline-block;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
+}
 .topbar .status .pill.dead {
   color: var(--err);
   border-color: rgba(252,165,165,0.35);
@@ -466,6 +481,46 @@ button.btn.icon-btn {
   height: 16px;
 }
 .search input:focus ~ .search-kbd { opacity: 0; }
+/* Result count. In flow after the field rather than absolutely placed like the
+   × and the / hint, which share the input's right inset — this has to take
+   width of its own or a two-digit total would sit under them. */
+.search-count {
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.search-count.none { color: var(--warn); }
+
+/* Zero matches. Sits with the category bar rather than over the middle of the
+   canvas: the board behind it is still the user's, and the point is to name the
+   filter, not to replace what it is filtering. */
+.search-empty {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  background: rgba(20, 22, 27, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.30);
+}
+:root[data-theme="light"] .search-empty {
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 6px 18px rgba(15,23,42,0.10);
+}
+.search-empty-text {
+  font-size: 12px;
+  color: var(--text);
+}
 
 /* ---------------- connection banner ---------------- */
 .conn-banner {
@@ -2429,6 +2484,10 @@ button.tool.clickable:last-child { border-bottom: none; }
 :root[data-theme="light"] .topbar .status .pill.live {
   border-color: rgba(21,128,61,0.45);
   background: rgba(21,128,61,0.10);
+}
+:root[data-theme="light"] .topbar .status .pill.paused {
+  border-color: rgba(180,83,9,0.50);
+  background: rgba(180,83,9,0.10);
 }
 :root[data-theme="light"] .topbar .status .pill.dead {
   border-color: rgba(185,28,28,0.50);
