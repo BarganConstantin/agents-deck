@@ -4,11 +4,14 @@
 // 2026-06-13. All values are USD per million tokens of the base API
 // (no Batch discount, no fast-mode premium, no data-residency multiplier).
 //
-// Cache-write rate is the 5-minute variant (1.25× base input). CC's hook
-// payloads expose `cache_creation_input_tokens` without distinguishing
-// 5-minute vs 1-hour caches, so we pick the common case. If the 1-hour
-// variant matters to anyone, that's an easy follow-up — sum two fields
-// or store separately.
+// Anthropic bills a cache write by the TTL it was written at: 1.25× base
+// input for a 5-minute entry, 2× for a 1-hour one. CC writes 1-hour caches
+// for the bulk of its prefix, so charging the whole of
+// `cache_creation_input_tokens` at the 5-minute rate — which this file used
+// to do — under-reported every Claude session by 5-10% and disagreed with
+// the ccusage number the deck prints in its own usage-history modal. The
+// transcript carries the split; costForUsage documents what happens to
+// tokens that reach us without one.
 
 import type { TokenUsage } from "./types";
 
@@ -16,7 +19,12 @@ export interface ModelRates {
   input: number;       // $/Mtok
   output: number;      // $/Mtok
   cacheRead: number;   // $/Mtok — hits & refreshes
-  cacheWrite: number;  // $/Mtok — 5-minute writes
+  cacheWrite: number;  // $/Mtok — 5-minute writes (1.25× input)
+  /** $/Mtok for a 1-hour cache write (2× input). Anthropic is the only
+   *  family here that publishes a second cache-write price — OpenAI has one
+   *  cache tier and its usage never carries a TTL split — so the Codex rows
+   *  leave this unset and costForUsage falls back to `cacheWrite`. */
+  cacheWrite1h?: number;
 }
 
 // Sonnet 5 launched with introductory pricing that ends 2026-08-31. Computed
@@ -32,8 +40,8 @@ export interface ModelRates {
 const SONNET_5_INTRO_ENDS = Date.UTC(2026, 8, 1);  // 2026-09-01
 function sonnet5Rates(now: number): ModelRates {
   return now < SONNET_5_INTRO_ENDS
-    ? { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
-    : { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+    ? { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, cacheWrite1h: 4 }
+    : { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 };
 }
 
 // `rates` is either a fixed table entry or a function of the current time, for
@@ -41,40 +49,40 @@ function sonnet5Rates(now: number): ModelRates {
 const RATES: Array<{ match: RegExp; rates: ModelRates | ((now: number) => ModelRates) }> = [
   // Fable 5 / Mythos 5 — $10 / $50
   { match: /^claude[-_](fable|mythos)[-_]5\b/i,
-    rates: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
+    rates: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5, cacheWrite1h: 20 } },
 
   // Opus 5 — $5 / $25. Must precede the Opus 4.x rows: "opus-5" shares no
   // prefix with them, but keeping the generations in order stops the next
   // person from inserting a looser pattern above it.
   { match: /^claude[-_]opus[-_]5\b/i,
-    rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+    rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 } },
 
   // Sonnet 5 — $3 / $15, or $2 / $10 until 2026-08-31 (see above)
   { match: /^claude[-_]sonnet[-_]5\b/i, rates: sonnet5Rates },
 
   // Opus 4.5 - 4.8 — $5 / $25 (the "new" Opus tier introduced with 4.5)
   { match: /^claude[-_]opus[-_]4[-_.](?:5|6|7|8)\b/i,
-    rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+    rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 } },
 
   // Opus 4 / 4.1 (deprecated, but may still show up in older sessions) — $15 / $75
   { match: /^claude[-_]opus[-_]4(?:[-_.]1)?\b/i,
-    rates: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } },
+    rates: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75, cacheWrite1h: 30 } },
 
   // Sonnet 4.5 / 4.6 — $3 / $15
   { match: /^claude[-_]sonnet[-_]4[-_.](?:5|6)\b/i,
-    rates: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+    rates: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 } },
 
   // Sonnet 4 (deprecated) — same as 4.5/4.6
   { match: /^claude[-_]sonnet[-_]4\b/i,
-    rates: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+    rates: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 } },
 
   // Haiku 4.5 — $1 / $5
   { match: /^claude[-_]haiku[-_]4[-_.]5\b/i,
-    rates: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } },
+    rates: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 } },
 
   // Haiku 3.5 (retired except Bedrock/Vertex) — $0.80 / $4
   { match: /^claude[-_]haiku[-_]3[-_.]5\b/i,
-    rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
+    rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1, cacheWrite1h: 1.6 } },
 
   // ── OpenAI / Codex family ────────────────────────────────────────────────
   // Rates verified 2026-08-12 against developers.openai.com/api/docs/pricing,
@@ -209,6 +217,38 @@ export interface CostBreakdown {
 // makes the tier effectively unreachable. Restoring it would need per-request
 // input (the rollout's `last_token_usage`) accumulated request by request.
 
+/** Cache-creation tokens grouped by the TTL they were billed at, with the
+ *  dollars each bucket contributes. Exported so the cost tooltip can print
+ *  the same multiplication the total is built from rather than re-deriving
+ *  it and drifting. */
+export interface CacheWriteBreakdown {
+  tokens5m: number;
+  tokens1h: number;
+  usd5m: number;
+  usd1h: number;
+}
+
+/** Claude reports `cache_creation_input_tokens` alongside a per-TTL split
+ *  (`ephemeral_5m_input_tokens` + `ephemeral_1h_input_tokens`) that sums back
+ *  to it exactly. Whatever the split does not account for — a transcript
+ *  written before CC emitted one, a hook payload carrying only the flat
+ *  field, any Codex agent — is billed at the 5-minute rate, which is what
+ *  every token got before the split was plumbed through. So a session with
+ *  no split reads exactly as it did, and no token is ever charged twice. */
+export function cacheWriteBreakdown(usage: TokenUsage, rates: ModelRates): CacheWriteBreakdown {
+  const tokens1h = Math.max(0, usage.cacheCreate1hTokens ?? 0);
+  const split5m = Math.max(0, usage.cacheCreate5mTokens ?? 0);
+  const unsplit = Math.max(0, usage.cacheCreateTokens - tokens1h - split5m);
+  const tokens5m = split5m + unsplit;
+  const rate1h = rates.cacheWrite1h ?? rates.cacheWrite;
+  return {
+    tokens5m,
+    tokens1h,
+    usd5m: tokens5m * rates.cacheWrite / 1_000_000,
+    usd1h: tokens1h * rate1h / 1_000_000,
+  };
+}
+
 export function costForUsage(
   usage: TokenUsage,
   modelId: string | undefined,
@@ -227,7 +267,8 @@ export function costForUsage(
   const input      = fullInputTokens         * rates.input      / 1_000_000;
   const output     = usage.outputTokens      * rates.output     / 1_000_000;
   const cacheRead  = usage.cacheReadTokens   * rates.cacheRead  / 1_000_000;
-  const cacheWrite = usage.cacheCreateTokens * rates.cacheWrite / 1_000_000;
+  const cw = cacheWriteBreakdown(usage, rates);
+  const cacheWrite = cw.usd5m + cw.usd1h;
   return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
