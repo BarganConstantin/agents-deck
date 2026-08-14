@@ -126,8 +126,23 @@ export const tryNext = (err) =>
   Boolean(err) && (err.code === "ENOENT" || err.code === "EACCES" ||
                    err.code === "EINVAL" || err.code === "UNKNOWN");
 
+// The three lines cmd.exe prints when it cannot find what it was asked to run,
+// anchored to a whole line each. First the two-line pair for a bare name, then
+// the one it uses when a directory in an explicit path does not exist.
+const CMD_UNKNOWN = /^'(.+)' is not recognized as an internal or external command,?$/i;
+const CMD_UNKNOWN_TAIL = /^operable program or batch file\.?$/i;
+const CMD_NO_PATH = /^the system cannot find the (?:path|file) specified\.?$/i;
+
+// cmd.exe echoes the command token exactly as it was given, so an exact match
+// is what we expect; the comparison is only case- and quote-insensitive because
+// Windows paths are.
+const sameCommand = (quoted, name) => {
+  const norm = (s) => String(s).trim().replace(/^"+|"+$/g, "").toLowerCase();
+  return norm(quoted) === norm(name);
+};
+
 /**
- * cmd.exe's way of saying ENOENT.
+ * cmd.exe's way of saying ENOENT — and only cmd.exe's.
  *
  * A .cmd or .bat candidate is launched THROUGH cmd.exe, and cmd.exe exists — so
  * a missing tool is not a spawn error at all. It is a healthy shell exiting 1
@@ -140,11 +155,39 @@ export const tryNext = (err) =>
  * second line — on its own, meaningless — in front of the user. Reported from
  * Windows on 2026-08-14: the accounts panel said only "operable program or
  * batch file." when sharing an account.
+ *
+ * The fussiness is about the other direction, which is worse. "The system
+ * cannot find the file specified" is Windows' generic text for ENOENT, and it
+ * appears INSIDE the output of tools that ran perfectly well — cswap is a
+ * Python CLI, and a FileNotFoundError traceback ends in that exact sentence.
+ * Believed there, it threw the real error away, told the user the tool was not
+ * on PATH when PATH was fine, and — the dangerous half — sent the candidate
+ * loop on to re-run the entire command, which for `cswap remove 3` means asking
+ * to delete an account a second time.
+ *
+ * So the output has to be cmd.exe's message and nothing else: cmd.exe prints it
+ * INSTEAD of running anything, so any other line, or any prefix on the line,
+ * means something ran and this is its report. And when cmd.exe names the
+ * command it could not find, that name must be the candidate we asked for — a
+ * tool that shells out itself can forward the message about some other command.
+ *
+ * `name` is the candidate spelling that produced the output. Callers that only
+ * have the text (failureText) omit it and get the shape rules alone.
  */
-export const looksMissing = (text) =>
-  /is not recognized as an internal or external command/i.test(String(text ?? "")) ||
-  /operable program or batch file/i.test(String(text ?? "")) ||
-  /The system cannot find the (?:path|file) specified/i.test(String(text ?? ""));
+export function looksMissing(text, name = "") {
+  const lines = String(text ?? "").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return false;
+  for (const line of lines) {
+    const named = CMD_UNKNOWN.exec(line);
+    if (named) {
+      if (name && !sameCommand(named[1], name)) return false;
+      continue;
+    }
+    if (CMD_UNKNOWN_TAIL.test(line) || CMD_NO_PATH.test(line)) continue;
+    return false;
+  }
+  return true;
+}
 
 /**
  * Run a command and collect its output. Never rejects, and never throws —
@@ -175,8 +218,12 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
       const done = (err, stdout, stderr) => {
         clearTimeout(timer);
         // cmd.exe's "is not recognized" counts as "not this spelling" too, and
-        // it arrives as a normal non-zero exit rather than a spawn error.
-        const missing = Boolean(err) && looksMissing(`${stderr ?? ""}\n${stdout ?? ""}`);
+        // it arrives as a normal non-zero exit rather than a spawn error. Only
+        // a batch candidate goes through a shell, so only there can the output
+        // be a shell's verdict rather than the tool's own words — spawned
+        // directly, a missing file is a plain ENOENT and anything printed came
+        // from a tool that ran.
+        const missing = Boolean(err) && tree && looksMissing(`${stderr ?? ""}\n${stdout ?? ""}`, raw);
         if (err && (tryNext(err) || missing) && i + 1 < tries.length) return attempt(i + 1);
         if (!err) resolved.set(cmd, raw);
         resolve({
@@ -317,8 +364,11 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
     proc.on("close", (code) => {
       if (stale()) return;
       // Same cmd.exe case as in `run`: exit 1 with "is not recognized" means
-      // this spelling does not exist, not that the tool failed.
-      if (code !== 0 && looksMissing(`${stderr}\n${stdout}`)) {
+      // this spelling does not exist, not that the tool failed. Restricted to a
+      // batch candidate, which is the only kind launched through a shell, and
+      // to output that is cmd.exe's message alone — everything below re-runs
+      // the whole command, and these commands remove accounts.
+      if (code !== 0 && isBatch(raw) && looksMissing(`${stderr}\n${stdout}`, raw)) {
         if (i + 1 < tries.length) {
           stdout = ""; stderr = ""; pending = "";
           child = null;
