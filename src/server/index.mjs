@@ -694,8 +694,12 @@ function maybeResolveCodex(payload) {
 // transcript enrichment (which needs transcript_path / hook events) but still
 // persists + broadcasts them exactly like a hook event. This path is entirely
 // additive — the Claude hook flow is untouched.
-const codexFileState = new Map();      // path -> { offset, sid, cwd, skip }
+const codexFileState = new Map();      // path -> { offset, sid, cwd, skip, seenAt }
 const codexSessionModel = new Map();   // sid -> last model string
+// How long a rollout's tail cursor is kept after it stops showing up in the
+// listing. The listing covers two day-directories, so anything missing from it
+// is at least a day old and will never be appended to again.
+const CODEX_STATE_TTL_MS = 10 * 60 * 1000;
 let codexScanRunning = false;
 let codexWatchTimer = null;
 let codexWorkspace = "";
@@ -839,11 +843,13 @@ async function codexScanOnce(firstRun) {
   if (codexScanRunning) return;
   codexScanRunning = true;
   try {
+    const now = Date.now();
     const files = await listRecentCodexRollouts();
     for (const path of files) {
       let st;
       try { st = await stat(path); } catch { continue; }
       let state = codexFileState.get(path);
+      if (state) state.seenAt = now;
 
       if (!state) {
         // New file — read the header for sid + cwd, then decide whether to
@@ -851,10 +857,10 @@ async function codexScanOnce(firstRun) {
         const header = await readCodexHeader(path);
         if (!header || !header.sid) continue; // not ready yet — retry next tick
         if (!codexCwdInWorkspace(header.cwd)) {
-          codexFileState.set(path, { offset: st.size, sid: header.sid, cwd: header.cwd, skip: true, rootEmitted: false });
+          codexFileState.set(path, { offset: st.size, sid: header.sid, cwd: header.cwd, skip: true, rootEmitted: false, seenAt: now });
           continue;
         }
-        state = { offset: 0, sid: header.sid, cwd: header.cwd, skip: false, rootEmitted: false };
+        state = { offset: 0, sid: header.sid, cwd: header.cwd, skip: false, rootEmitted: false, seenAt: now };
         codexFileState.set(path, state);
         if (firstRun) {
           // On startup, skip a pre-existing session's history entirely — no
@@ -892,6 +898,15 @@ async function codexScanOnce(firstRun) {
         }
       }
     }
+
+    // Rollout files fall out of the newest-2-days listing and never come back,
+    // but their tail cursors used to live as long as the process did. Expire by
+    // "not seen for a while" rather than "absent from this listing": a single
+    // unreadable directory mid-scan would otherwise drop a live file's cursor,
+    // and re-adding it at offset 0 replays that entire rollout as fresh events.
+    for (const [p, s] of codexFileState) {
+      if (now - (s.seenAt ?? 0) > CODEX_STATE_TTL_MS) codexFileState.delete(p);
+    }
   } catch {
     /* swallow — watcher must never crash the server */
   } finally {
@@ -925,6 +940,80 @@ export function eventsSince(seq) {
   return events.filter(e => e.seq > after);
 }
 
+// ─── Per-session cache expiry ────────────────────────────────────────────
+// Every enrichment cache above is keyed by session id and nothing ever
+// removed an entry: a deck left up for weeks — the 24/7 use this thing is
+// built for — kept a model string, a subagent signature and four read-throttle
+// stamps for every session it had ever seen, plus the Codex rollout path and
+// model of each. SessionEnd is not a usable eviction signal
+// (a killed CLI never sends one, and Codex has no such hook at all), so
+// entries expire by least-recent use against a cap instead — the same shape
+// pruneTranscriptScans already uses for its per-path state. The cap sits far
+// above any plausible number of concurrent sessions, so a live session is
+// never evicted; and an evicted one that speaks again simply re-reads its
+// transcript.
+const sessionTouchedAt = new Map();   // sid -> ms of the last event seen
+const MAX_TRACKED_SESSIONS = 256;
+
+function forgetSession(sid) {
+  modelBySession.delete(sid);
+  modelLastReadAt.delete(sid);
+  lastUsageReadAt.delete(sid);
+  lastContextReadAt.delete(sid);
+  codexRolloutPathBySid.delete(sid);
+  lastCodexUsageReadAt.delete(sid);
+  codexSessionModel.delete(sid);
+}
+
+function touchSession(sid) {
+  if (!sid || typeof sid !== "string") return;
+  // Re-insert so the Map's own insertion order *is* the LRU order and eviction
+  // below is one key read rather than a scan of every session ever seen.
+  sessionTouchedAt.delete(sid);
+  sessionTouchedAt.set(sid, Date.now());
+  while (sessionTouchedAt.size > MAX_TRACKED_SESSIONS) {
+    const oldest = sessionTouchedAt.keys().next().value;
+    sessionTouchedAt.delete(oldest);
+    forgetSession(oldest);
+  }
+}
+
+// ─── SSE backpressure ────────────────────────────────────────────────────
+// A client that stops reading without closing its socket — a frozen tab, a
+// suspended machine, a stalled `ssh -L` tunnel — never fires 'close' and never
+// makes write() throw, so the old `try { res.write(line) } catch {}` had no
+// way to notice it. On loopback nothing times the connection out either, so
+// every event (tool responses run to megabytes) queued in that socket's write
+// buffer for as long as the process lived.
+//
+// We drop the client rather than the events. EventSource reconnects after the
+// `retry: 1500` we send on connect and resumes from Last-Event-ID, so the ring
+// buffer replays whatever it missed. Dropping individual events instead would
+// leave a hole the resume path cannot even see, the client's last id having
+// moved past it.
+const MAX_CLIENT_BUFFER_BYTES = 8 * 1024 * 1024;
+
+/** Bytes queued for a client: what the response has not handed to the socket
+ *  yet, plus what the socket has not handed to the kernel. */
+function queuedBytes(res) {
+  const own = typeof res.writableLength === "number" ? res.writableLength : 0;
+  const sock = res.socket && typeof res.socket.writableLength === "number" ? res.socket.writableLength : 0;
+  return own + sock;
+}
+
+/** Write one SSE frame, hanging up on a client too far behind to keep. */
+function writeSse(res, frame) {
+  try {
+    res.write(frame);
+    if (queuedBytes(res) <= MAX_CLIENT_BUFFER_BYTES) return;
+  } catch { /* already dead — drop it below */ }
+  sseClients.delete(res);
+  // Destroying the socket is what makes the request emit 'close', which is
+  // where the ping interval is cleared.
+  try { res.destroy(); } catch {}
+  try { res.socket?.destroy(); } catch {}
+}
+
 function pushEvent(raw, source, opts = {}) {
   // Synchronous enrichment: if we already know this session's model, stamp
   // it on the payload so the client's recursive scanner picks it up.
@@ -944,17 +1033,35 @@ function pushEvent(raw, source, opts = {}) {
   events.push(evt);
   if (events.length > MAX_BUFFER) events.splice(0, events.length - MAX_BUFFER);
 
-  const line = `id: ${seq}\nevent: hook\ndata: ${JSON.stringify(evt)}\n\n`;
-  for (const res of sseClients) {
-    try { res.write(line); } catch {}
+  // One serialization, shared by both consumers — and skipped entirely when
+  // neither wants it. This used to stringify the whole envelope twice on the
+  // hottest path in the process (once for the SSE frame, once for the persist
+  // line), and built the frame even with nobody subscribed: a headless deck
+  // paid a full stringify per event for a string no one read, and boot replay
+  // — which runs before the listener exists and never broadcasts — paid one
+  // for every line of a log that rotates at 50MB.
+  const persisting = persistPath && !opts.replay;
+  const json = (sseClients.size > 0 || persisting) ? JSON.stringify(evt) : null;
+
+  if (sseClients.size > 0) {
+    const line = `id: ${seq}\nevent: hook\ndata: ${json}\n\n`;
+    // writeSse may drop a client mid-loop; deleting from a Set while iterating
+    // it is well defined and skips only the entry removed.
+    for (const res of sseClients) writeSse(res, line);
   }
 
-  if (persistPath && !opts.replay) {
+  if (persisting) {
     // Fire-and-forget append. JSONL = newline-delimited JSON.
-    appendFile(persistPath, JSON.stringify(evt) + "\n", "utf8").catch(() => {});
+    appendFile(persistPath, json + "\n", "utf8").catch(() => {});
     // Cheap throttled check (every 30s) — only rotates if file > 50MB.
     maybeRotatePersistFile();
   }
+
+  // Note the session so the caches the scanners below fill can expire by
+  // least-recent use. Replays are excluded: they fill nothing, and a boot
+  // replay of a log spanning weeks would otherwise churn the whole LRU through
+  // dead session ids before the first live event even arrives.
+  if (!opts.replay && raw && typeof raw === "object") touchSession(raw.session_id);
 
   // Kick off async transcript scans. Model arrives as a one-shot
   // ModelObserved; usage is re-read periodically (throttled to 2.5s per
@@ -1093,9 +1200,10 @@ function handleSse(req, res) {
   res.write(`event: replay-end\ndata: {}\n\n`);
 
   sseClients.add(res);
-  const ping = setInterval(() => {
-    try { res.write(`: ping\n\n`); } catch {}
-  }, 15000);
+  // Through writeSse like every other frame: on a client that has stopped
+  // reading, the ping is the one thing still being written between events, and
+  // it is what eventually reveals the socket as unrecoverable.
+  const ping = setInterval(() => writeSse(res, `: ping\n\n`), 15000);
 
   req.on("close", () => {
     clearInterval(ping);
