@@ -5,8 +5,9 @@
 //
 // Inspired by the task-board project's ccusage modal, reimplemented in
 // agent-dag's idiom (plain CSS, no Tailwind/framer-motion).
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { fmtCost } from "../pricing";
+import { createLatestGuard } from "../latest";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
 interface ModelBreakdown {
@@ -78,18 +79,28 @@ function useCcusage(rangeDays: number) {
   const [data, setData] = useState<CcusageResp | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Responses can land out of order — a cached 7d range answers instantly while
+  // an uncached 90d one runs the CLI for seconds — so only the newest request
+  // is allowed to write data or clear `loading`.
+  const guard = useRef(createLatestGuard()).current;
+
   const load = (force = false) => {
+    const isCurrent = guard.begin();
     setLoading(true);
     const since = presetSince(rangeDays);
     const url = `/api/ccusage?since=${since}${force ? "&refresh=1" : ""}`;
     fetch(url)
       .then(r => r.json())
-      .then(setData)
-      .catch(() => setData({ ok: false, error: "request failed" }))
-      .finally(() => setLoading(false));
+      .then(d => { if (isCurrent()) setData(d); })
+      .catch(() => { if (isCurrent()) setData({ ok: false, error: "request failed" }); })
+      .finally(() => { if (isCurrent()) setLoading(false); });
   };
 
-  useEffect(() => { load(false); /* eslint-disable-next-line */ }, [rangeDays]);
+  useEffect(() => {
+    load(false);
+    return () => guard.cancel();
+    /* eslint-disable-next-line */
+  }, [rangeDays]);
   return { data, loading, reload: () => load(true) };
 }
 
