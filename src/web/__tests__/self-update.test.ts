@@ -6,7 +6,7 @@
 // These tests pin the three-way comparison that makes that state visible.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode } from "../../server/self-update.mjs";
+import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode, markerFileName } from "../../server/self-update.mjs";
 
 describe("isOlder", () => {
   it("compares numerically, not lexically", () => {
@@ -292,5 +292,46 @@ describe("checkDue", () => {
     // A clock moved backwards — by a VM resume or a timezone fix — would
     // otherwise silence the check until real time caught up.
     expect(checkDue({ at: NOW + 86_400_000, now: NOW })).toBe(true);
+  });
+});
+
+// Reported with four decks alive at once: three served the same `checkedAt` to
+// the millisecond, because one unsuffixed ~/.agents-deck/.self-update-check was
+// shared by every deck on the machine — so the first one to ask npm pinned the
+// answer for all of them, including a fresh `npx ccdeck` that had never written
+// it and decks running an entirely different package. One file per name.
+describe("markerFileName", () => {
+  it("keys the marker by the package being asked about", () => {
+    expect(markerFileName("ccdeck")).toBe(".self-update-check-ccdeck");
+    expect(markerFileName("agents-deck")).toBe(".self-update-check-agents-deck");
+    // The point of the fix: two aliases, two files, no shared window.
+    expect(markerFileName("ccdeck")).not.toBe(markerFileName("agent-dag"));
+  });
+
+  it("never lets a scoped name become a path", () => {
+    // `/` would nest the marker in a directory that does not exist, and `\` and
+    // `:` are illegal in a Windows file name — the same string has to be a
+    // usable file name on all three platforms.
+    const n = markerFileName("@bargan/ccdeck");
+    expect(n).toBe(".self-update-check-bargan-ccdeck");
+    expect(n).not.toMatch(/[\\/:]/);
+  });
+
+  it("collapses anything else that cannot be in a file name", () => {
+    expect(markerFileName("Deck Tools")).toBe(".self-update-check-deck-tools");
+    expect(markerFileName("a*b?c")).toBe(".self-update-check-a-b-c");
+    expect(markerFileName(" ccdeck ")).toBe(".self-update-check-ccdeck");
+  });
+
+  it("stays short enough to be a file name whatever it is given", () => {
+    expect(markerFileName("x".repeat(300)).length).toBeLessThanOrEqual(84);
+  });
+
+  it("falls back to the default rather than to the shared file", () => {
+    // A name that sanitises away must not land back on the unsuffixed marker
+    // this whole change exists to stop sharing.
+    for (const bad of [undefined, null, "", "   ", "@", "///", 7]) {
+      expect(markerFileName(bad as never)).toBe(".self-update-check-agents-deck");
+    }
   });
 });
