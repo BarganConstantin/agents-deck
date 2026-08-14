@@ -22,6 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, shouldReloadBundle } from "./restart";
+import { isBrowserChord } from "./shortcuts";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -1685,6 +1686,9 @@ function Inner() {
         return;
       }
       if (inInput) return;
+      // Ctrl/Cmd/Alt chords are the browser's, not ours — Ctrl+C is copy and
+      // Ctrl+R is reload, and both arrive here as the bare letter.
+      if (isBrowserChord(e)) return;
       if (e.key === "/") { e.preventDefault(); searchInputRef.current?.focus(); return; }
       if (e.key === " ") { e.preventDefault(); setPaused(p => !p); }
       if (e.key === "c" || e.key === "C") handleClear();
