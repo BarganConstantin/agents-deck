@@ -69,9 +69,11 @@ describe("isTrustedMutation", () => {
     // and `none` is a user-typed navigation, which no page can produce.
     expect(isTrustedMutation({ origin: "http://127.0.0.1:4317", host: HOST, secFetchSite: "None" })).toBe(true);
     expect(isTrustedMutation({ origin: "HTTP://127.0.0.1:4317", host: "127.0.0.1:4317" })).toBe(true);
-    // Default ports are spelled both ways depending on the client.
-    expect(isTrustedMutation({ origin: "http://deck.local", host: "deck.local:80" })).toBe(true);
-    expect(isTrustedMutation({ origin: "http://deck.local:80", host: "deck.local" })).toBe(true);
+    // Default ports are spelled both ways depending on the client. (This pair
+    // used to be spelled with a `deck.local` host, which is precisely the
+    // rebindable shape csrf-loopback-host.test.ts now refuses.)
+    expect(isTrustedMutation({ origin: "http://localhost", host: "localhost:80" })).toBe(true);
+    expect(isTrustedMutation({ origin: "http://localhost:80", host: "localhost" })).toBe(true);
     // IPv6 loopback keeps its brackets on both sides.
     expect(isTrustedMutation({ origin: "http://[::1]:4317", host: "[::1]:4317" })).toBe(true);
     // An Origin with nothing to compare against is not a match.
