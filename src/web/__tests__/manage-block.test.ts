@@ -16,6 +16,14 @@
 // computes the ratios from the sheet's own token values. The numbers in the
 // report become floors rather than a state somebody restored once.
 //
+// The two values #325 mixed out of --text moved to :root in #332, under names
+// of their own, once the sweep found twenty-two more controls with the same
+// defect. Nothing here about the manage block's appearance changed with them —
+// the ratios below are the same numbers on the same controls — but the two
+// assertions that pinned the tokens to `.ap-account` now pin what they were
+// really protecting: --line, by value, in both themes. control-edges.test.ts
+// carries the app-wide half.
+//
 // What it does NOT do is collapse --muted and --text-dim, which the report's
 // second finding asked for. Their sharing a value in dark is deliberate and
 // documented at styles.css:11 — the dark ramp has no readable tier below
@@ -153,9 +161,12 @@ function rootTokens(theme: Theme): Record<string, string> {
   const head = `:root[data-theme="${theme}"]`;
   const out: Record<string, string> = {};
   for (const [, name, value] of bodyOf(head).matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) out[name] = value.trim();
-  // Scoped to .ap-account rather than promoted to :root, so a control lifted
-  // here does not redraw every border in the app. Resolving them the same way
-  // is the point: inside the row these ARE the values.
+  // The row declared its own --ap-ctl-fill / --ap-ctl-edge until #332 measured
+  // the other sixty-five controls in the app, found twenty-two with the defect
+  // these two values exist to fix, and moved them to :root as --ctl-*. This
+  // merge is now a no-op and stays as one: anything the row re-declares is
+  // still what the block renders, and the assertions below say it declares
+  // nothing.
   for (const [, name, value] of bodyOf(".ap-account").matchAll(/(--[\w-]+)\s*:\s*([^;]+)(?:;|$)/g)) {
     out[name] = value.trim();
   }
@@ -289,24 +300,35 @@ describe("every control in the manage block has a perceivable boundary (1.4.11)"
     // both themes by construction, which is the whole point of the change.
     for (const c of CONTROLS) expect(c.fill, c.name).not.toMatch(/var\(--bg-soft\)\s*$/);
     for (const theme of themes) {
-      expect(TOK[theme]["--ap-ctl-fill"], theme).toMatch(/var\(--text\)/);
-      expect(TOK[theme]["--ap-ctl-edge"], theme).toMatch(/var\(--text\)/);
+      expect(TOK[theme]["--ctl-fill"], theme).toMatch(/var\(--text\)/);
+      expect(TOK[theme]["--ctl-edge"], theme).toMatch(/var\(--text\)/);
     }
-    // Light theme is where the old value was indistinguishable from the panel.
+    // Light theme is where the old value was indistinguishable from the panel,
+    // and #332 decided it stays that way: on white there is no room between
+    // #ffffff and the canvas for a third tier, and this block's controls take
+    // their recess from --ctl-fill instead. See the token's own note.
     expect(TOK.light["--bg-soft"]).toBe(TOK.light["--panel"]);
   });
 
-  it("keeps the lift inside the account row — every reader falls back to the old value", () => {
-    // The auto-switch threshold shares `.ap-field select` and sits outside
-    // `.ap-account`, so the fallback is what it renders. A token promoted to
-    // :root would have redrawn every border in the app instead.
-    for (const rule of RULES) {
-      for (const [, value] of rule.body.matchAll(/var\(\s*(--ap-ctl-[\w-]+)\s*\)/g)) {
-        expect.unreachable(`${rule.selector} reads ${value} with no fallback`);
-      }
+  it("keeps the lift off --line, which is the trap this issue named (#332)", () => {
+    // #325 scoped these two values to `.ap-account` and gave every reader a
+    // fallback, because the alternative on the table was lifting --line — and
+    // that redraws every panel edge, table rule and card in the app to fix a
+    // defect that belongs to controls. #332 promoted the values instead, under
+    // a name of their own: the scope moved, the refusal did not. --line is
+    // pinned by value here, and control-edges.test.ts sweeps the app-wide half.
+    expect(bare).not.toMatch(/--ap-ctl-/);
+    expect(bodyOf(".ap-account")).not.toMatch(/--ctl-/);
+    for (const theme of themes) expect(bodyOf(`:root[data-theme="${theme}"]`)).toMatch(/--ctl-edge\s*:/);
+    expect(TOK.dark["--line"]).toBe("#1f2229");
+    expect(TOK.light["--line"]).toBe("#c8cdd6");
+    // And every control in this block now reads the promoted token outright —
+    // a fallback to a value that cannot be reached is dead code claiming to be
+    // a safety net.
+    for (const c of CONTROLS) {
+      expect(c.fill, c.name).not.toMatch(/^var\([^)]*,/);
+      expect(c.edge, c.name).not.toMatch(/^var\([^)]*,/);
     }
-    expect(bodyOf(".ap-account")).toMatch(/--ap-ctl-fill\s*:/);
-    for (const theme of themes) expect(bodyOf(`:root[data-theme="${theme}"]`)).not.toMatch(/--ap-ctl-/);
   });
 
   it("never lowers a control's boundary on hover, which is what a hover is for", () => {
