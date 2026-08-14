@@ -8,6 +8,10 @@
 // and its parser silently ignores the orphan — the upgraded deck then watches
 // the wrong directory and shows no sessions, for good. Windows is the platform
 // this repo cannot execute, so the command line is asserted instead.
+//
+// The relaunch now prefers npm's own npx-cli.js under process.execPath and
+// reaches a PATH shim only when that is missing (see npx-launch.test.ts). This
+// file pins what the fallback must still do when it is reached.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — .mjs server module, no types
 import { spawnSpec } from "../../server/exec.mjs";

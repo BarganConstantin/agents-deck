@@ -26,17 +26,16 @@ import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSpec } from "../src/server/exec.mjs";
-import { installedVersion, npxRestartSpec } from "../src/server/self-update.mjs";
+import { npxFailureHint, npxFailureSummary, npxLaunch } from "../src/server/npx.mjs";
+import {
+  bareSpecName, clearRestartFailure, installedVersion, npxRestartSpec, recordRestartFailure,
+} from "../src/server/self-update.mjs";
 import { dieOfSignal, workerExitAction } from "../src/server/supervisor.mjs";
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
 const PKG_ROOT = dirname(BIN_DIR);
 
-// npx is a .cmd shim on Windows, which spawn can only launch through cmd.exe —
-// spawnSpec is how, with the arguments quoted rather than pasted together.
-const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
 const VERSION = installedVersion(PKG_ROOT) ?? "?";
 
 // The port the worker actually bound, which is not necessarily the one it was
@@ -147,16 +146,46 @@ function launchNpx() {
   // the deck talking over itself.
   args.push("--no-open");
 
+  // A retry answers for itself: whatever the last attempt left on disk is about
+  // to be replaced by this attempt's outcome, and leaving it there would keep
+  // the browser showing an old failure over a running fetch.
+  const pkgName = bareSpecName(spec) ?? "agents-deck";
+  clearRestartFailure(pkgName);
+
   process.stdout.write(`\n  ↻  fetching ${spec}…\n`);
-  // Not `shell: true`. Everything after the spec is the user's own argv, and
-  // Node would paste it into one command line unquoted: `--workspace C:\Users\
-  // John Smith\proj` would reach the new deck as two arguments, the second one
-  // silently dropped by its parser — an upgraded deck watching the wrong
-  // directory. spawnSpec routes npx.cmd through cmd.exe with every argument
-  // quoted, and is a plain spawn everywhere else.
-  const { file, args: argv, opts } = spawnSpec(NPX, args);
-  const started = spawn(file, argv, { stdio: "inherit", ...opts });
+  // npxLaunch prefers npm's own npx-cli.js next to this Node binary, which
+  // needs no PATH lookup and no batch shim; the PATH shim is the fallback and
+  // still goes through cmd.exe with each argument quoted.
+  //
+  // Not `shell: true` on either path. Everything after the spec is the user's
+  // own argv, and Node would paste it into one command line unquoted:
+  // `--workspace C:\Users\John Smith\proj` would reach the new deck as two
+  // arguments, the second one silently dropped by its parser — an upgraded deck
+  // watching the wrong directory.
+  const { file, args: argv, opts } = npxLaunch(args);
+  // stderr is piped rather than inherited so a crash can be summarised instead
+  // of dumped: npm's MODULE_NOT_FOUND stack, with its `requireStack` and its
+  // caret line, is not something a user of a DAG dashboard can act on. stdout
+  // stays inherited — the new deck's banner, colours and URL line are the whole
+  // point of the supervisor staying out of the way.
+  const started = spawn(file, argv, { stdio: ["inherit", "inherit", "pipe"], ...opts });
   child = started;
+
+  // Held, not discarded: the moment the replacement is serving, everything it
+  // wrote goes to the terminal and every later byte passes straight through.
+  // Until then it is only evidence for a failure that may not happen.
+  let tail = "";
+  let teeing = false;
+  const tee = () => {
+    if (teeing) return;
+    teeing = true;
+    if (tail) process.stderr.write(tail);
+  };
+  started.stderr?.on("data", (d) => {
+    const s = String(d);
+    if (teeing) { process.stderr.write(s); return; }
+    tail = (tail + s).slice(-8000);
+  });
 
   // Whether the replacement ever got as far as serving. An npx that cannot
   // resolve exits in seconds having bound nothing; a deck the user stops with
@@ -166,7 +195,7 @@ function launchNpx() {
     if (boundPort == null || served) return;
     const sock = connect({ port: boundPort, host: "127.0.0.1" });
     sock.setTimeout(1000);
-    sock.on("connect", () => { served = true; sock.destroy(); });
+    sock.on("connect", () => { served = true; tee(); sock.destroy(); });
     sock.on("timeout", () => sock.destroy());
     sock.on("error", () => { /* not up yet */ });
   }, 1000);
@@ -176,7 +205,19 @@ function launchNpx() {
     clearInterval(probe);
     child = null;
     if (stopping || served) return; // the user stopped it, or it ran and ended
+    const summary = npxFailureSummary(tail);
+    const hint = npxFailureHint(tail);
     console.error(`agents-deck: ${why} — staying on v${VERSION}`);
+    if (summary) console.error(`  ${summary}`);
+    if (hint) console.error(`  ${hint}`);
+    // Left for the worker about to be launched: it is the only way the browser
+    // learns this happened at all. See recordRestartFailure.
+    recordRestartFailure({
+      name: pkgName,
+      command: `npx -y ${spec}`,
+      error: [summary ?? why, hint].filter(Boolean).join(" — "),
+      version: VERSION === "?" ? null : VERSION,
+    });
     restarts++;
     launch(true);
   };
@@ -189,9 +230,9 @@ function launchNpx() {
       else process.exit(code ?? 0);
       return;
     }
-    giveUp(`${NPX} ${spec} exited ${code ?? signal}`);
+    giveUp(`npx ${spec} exited ${code ?? signal}`);
   });
-  started.on("error", (err) => giveUp(`could not run ${NPX}: ${err.message}`));
+  started.on("error", (err) => giveUp(`could not run npx: ${err.message}`));
 }
 
 // Ctrl+C already reaches the child directly — it shares this process group — so

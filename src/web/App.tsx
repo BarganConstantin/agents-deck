@@ -2108,12 +2108,20 @@ function Inner() {
                 <button type="button" className="ver-act" onClick={() => askRestart({ upgrade: true })}
                   disabled={restarting}
                   title={`Runs ${version?.command} and hands it this port. Nothing is installed globally — npx unpacks its own copy.`}>
-                  {restarting ? "fetching…" : "Update & restart"}
+                  {restarting ? "fetching…"
+                    /* A retry after a failure must not look like the first
+                       click: the last one already came back on the same
+                       version, and the label is where that shows. */
+                    : upgradeState === "failed" ? "Retry update"
+                    : "Update & restart"}
                 </button>
               )}
               {upgradeState === "failed" ? (
                 <span className="ver-sub fail" title={version?.upgrade?.error ?? ""}>
-                  install failed: {version?.upgrade?.error ?? "unknown error"} — run it yourself:
+                  {/* npx installs nothing — its failure is a fetch that came
+                      back on the old version, not a broken install. */}
+                  {version?.upgradeMode === "npx" ? "update failed" : "install failed"}
+                  : {version?.upgrade?.error ?? "unknown error"} — run it yourself:
                 </span>
               ) : version?.upgradeMode === "npx" ? (
                 <span className="ver-sub">
