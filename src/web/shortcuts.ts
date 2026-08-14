@@ -28,3 +28,79 @@ export interface ChordModifiers {
 export function isBrowserChord(e: ChordModifiers): boolean {
   return e.ctrlKey || e.metaKey || e.altKey;
 }
+
+// The other half of the rule is where the keystroke landed. The guard used to
+// be tagName === "INPUT" and nothing else, which left every other control in
+// the app defenceless: with a toolbar button focused, Space ran preventDefault
+// and toggled pause, and a canceled Space keydown also suppresses the button's
+// own activation, so a keyboard user pressing the button they had just tabbed
+// to paused the stream instead. The version banner's dismiss span and the
+// clickable tool bursts are role="button" with their own Space handler, so one
+// keypress did two unrelated things. Worst of all, with one of the accounts
+// panel's <select>s focused — a panel that opens by default — a bare "c"
+// reached Clear, which empties the server's ring buffer and truncates
+// events.jsonl with no confirmation and no undo.
+//
+// A focused control owns its own keys and the deck only gets what is left:
+// <select> matches bare letters as type-ahead, a checkbox and a <button> and
+// any role="button" answer Space, a contenteditable answers everything.
+
+/** The handful of properties of the focused element the target rules read.
+ *  Structural, and deliberately not an Element, so the rule can be tested in a
+ *  plain node environment where there is no DOM to focus anything in. */
+export interface FocusTarget {
+  tagName?: string | null;
+  isContentEditable?: boolean | null;
+  role?: string | null;
+  type?: string | null;
+}
+
+// <input> covers far more than typing, and the types below take Space or a
+// click rather than characters — blurring them on Escape would only cost the
+// keyboard user their place in the tab order.
+const NON_TEXT_INPUT_TYPES = new Set([
+  "button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit",
+]);
+
+// Native elements that answer a bare key by themselves.
+const KEY_OWNING_TAGS = new Set([
+  "INPUT", "TEXTAREA", "SELECT", "OPTION", "BUTTON", "SUMMARY", "A",
+]);
+
+// The same controls rebuilt out of <div>/<span> with tabIndex, which is how the
+// dismiss button and the tool bursts are written.
+const KEY_OWNING_ROLES = new Set([
+  "button", "checkbox", "combobox", "link", "listbox", "menu", "menubar",
+  "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio",
+  "searchbox", "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
+]);
+
+/** DOM tag names arrive uppercase, JSX authors them lowercase, and the target
+ *  may be window or the document, which has no tag at all. */
+function tagOf(t: FocusTarget): string {
+  return typeof t.tagName === "string" ? t.tagName.toUpperCase() : "";
+}
+
+/** True when the keystroke is going into text the user is writing. Escape
+ *  blurs one of these; every other key is simply not the deck's. */
+export function isTypingTarget(t: FocusTarget | null | undefined): boolean {
+  if (!t) return false;
+  if (t.isContentEditable) return true;
+  const tag = tagOf(t);
+  if (tag === "TEXTAREA") return true;
+  if (tag !== "INPUT") return false;
+  // A bare <input> defaults to type="text".
+  return !NON_TEXT_INPUT_TYPES.has(String(t.type ?? "text").toLowerCase());
+}
+
+/** True when the focused control answers bare keys itself, so the deck must
+ *  leave this keystroke alone rather than preventDefault it away. */
+export function ownsKeystroke(t: FocusTarget | null | undefined): boolean {
+  if (!t) return false;
+  if (isTypingTarget(t)) return true;
+  if (KEY_OWNING_TAGS.has(tagOf(t))) return true;
+  // role takes a whitespace-separated fallback list; an interactive role
+  // anywhere in it is enough reason for us to stay out of the way.
+  const roles = typeof t.role === "string" ? t.role.trim().toLowerCase() : "";
+  return roles !== "" && roles.split(/\s+/).some(r => KEY_OWNING_ROLES.has(r));
+}
