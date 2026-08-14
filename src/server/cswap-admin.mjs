@@ -190,6 +190,20 @@ export function countCodePrompts(line) {
  */
 let _login = null;
 
+// A start that has not published its flow yet.
+//
+// `_login` is only assigned once the child exists, and everything before that
+// awaits — a store read, then `claude auth status`, which shells out and takes
+// hundreds of milliseconds. Two requests overlapping inside that window (two
+// tabs, or a double-submitted POST) therefore both read `_login` as null, both
+// walked past the guards below, and both spawned `claude auth login`. Only the
+// later assignment stayed reachable, so the other child — holding an open OAuth
+// flow and an open stdin — was beyond cancelLogin and beyond the dialog's
+// Escape, and ran on invisibly until its five-minute timeout. Concurrent starts
+// share the one spawn instead, the promise guard ccusage.mjs uses to share an
+// install.
+let _starting = null;
+
 export function loginState() {
   if (!_login) return { state: "idle" };
   const { state, url, error, account, expiresAt } = _login;
@@ -208,6 +222,38 @@ export async function startLogin({ email } = {}) {
   if (_login?.state === "awaiting_url" || _login?.state === "awaiting_code") {
     await cancelLogin();
   }
+  if (!_starting) {
+    _starting = spawnLogin(email).finally(() => { _starting = null; });
+  }
+  const flow = await _starting;
+
+  // The URL arrives on the child's first write, typically within a second.
+  const url = await waitFor(() => flow.url, 15_000);
+  if (!url) {
+    flow.child.kill();
+    // Same identity check as the done handler below, and for a sharper reason:
+    // a second startLogin cancels this one's child (the yield path above), so
+    // this url can never arrive and this wait always runs its full fifteen
+    // seconds. Overwriting _login then would erase a live flow — the dialog
+    // would flip to "failed" while the newer child is still waiting for a code
+    // that can no longer be delivered, and with its handle gone not even
+    // cancelLogin could reach it.
+    if (flow === _login) {
+      _login = { state: "failed", error: "the claude CLI did not print a sign-in link" };
+    }
+    return { ok: false, reason: "no_url", ...loginState() };
+  }
+  return { ok: true, ...loginState() };
+}
+
+/**
+ * Start the child and publish it, as one indivisible step.
+ *
+ * Separate from startLogin so `_starting` can dedupe it: everything here runs
+ * before `_login` exists, and a caller that reaches it a second time
+ * concurrently would spawn a sign-in nothing can cancel.
+ */
+async function spawnLogin(email) {
   const before = await readStore();
   const identity = await currentIdentity();
 
@@ -270,24 +316,7 @@ export async function startLogin({ email } = {}) {
       flow.error = r.timedOut ? "the sign-in window expired" : failureText(r, "claude auth login") || "sign-in ended without a code";
     }
   });
-
-  // The URL arrives on the child's first write, typically within a second.
-  const url = await waitFor(() => flow.url, 15_000);
-  if (!url) {
-    child.kill();
-    // Same identity check as the done handler above, and for a sharper reason:
-    // a second startLogin cancels this one's child (the yield path at the top),
-    // so this url can never arrive and this wait always runs its full fifteen
-    // seconds. Overwriting _login then would erase a live flow — the dialog
-    // would flip to "failed" while the newer child is still waiting for a code
-    // that can no longer be delivered, and with its handle gone not even
-    // cancelLogin could reach it.
-    if (flow === _login) {
-      _login = { state: "failed", error: "the claude CLI did not print a sign-in link" };
-    }
-    return { ok: false, reason: "no_url", ...loginState() };
-  }
-  return { ok: true, ...loginState() };
+  return flow;
 }
 
 /**
