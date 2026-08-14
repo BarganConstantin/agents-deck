@@ -22,7 +22,7 @@ import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, restartEndedInFailure, shouldReloadBundle, upgradeFailureId } from "./restart";
-import { isBrowserChord } from "./shortcuts";
+import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from "./shortcuts";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
@@ -1781,13 +1781,26 @@ function Inner() {
   // keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const inInput = (e.target as HTMLElement)?.tagName === "INPUT";
+      // The listener is on window in the bubble phase, so it sees every
+      // keystroke aimed at every focused control on the page. Read the four
+      // things the rules need off the target — getAttribute rather than the
+      // reflected .role property, which older browsers do not expose.
+      const el = e.target as (HTMLElement & { type?: string }) | null;
+      const target: FocusTarget = {
+        tagName: el?.tagName,
+        isContentEditable: el?.isContentEditable,
+        role: el?.getAttribute?.("role"),
+        type: el?.type,
+      };
       if (e.key === "Escape") {
-        if (inInput) (e.target as HTMLInputElement).blur();
+        if (isTypingTarget(target)) el?.blur();
         else clearSelection();
         return;
       }
-      if (inInput) return;
+      // A focused control owns its own keys: Space presses a button, letters
+      // run a <select>'s type-ahead. Answering them stole the button's
+      // activation key and let a bare "c" from a dropdown wipe the event log.
+      if (ownsKeystroke(target)) return;
       // Ctrl/Cmd/Alt chords are the browser's, not ours — Ctrl+C is copy and
       // Ctrl+R is reload, and both arrive here as the bare letter.
       if (isBrowserChord(e)) return;
