@@ -37,6 +37,13 @@ const MIME = {
 const MAX_BUFFER = 2000;            // recent events kept for late SSE subscribers
 const events = [];                  // ring buffer
 let nextSeq = 1;
+// Identity of *this* process's seq numbering. nextSeq restarts at 1 on every
+// boot and is re-derived by replaying events.jsonl, so it is monotonic only
+// within one process: rotation (50MB) or /api/clear shortens that log and the
+// next boot starts numbering well below what an already-open tab saw. Stamped
+// on every envelope so a client can tell "counter restarted" apart from "old
+// duplicate" instead of silently dropping the live stream.
+const SEQ_EPOCH = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const sseClients = new Set();       // res handles
 
 let persistPath = null;             // absolute path to events.jsonl, or null
@@ -862,6 +869,7 @@ function pushEvent(raw, source, opts = {}) {
   const seq = nextSeq++;
   const evt = {
     seq,
+    epoch: SEQ_EPOCH,
     receivedAt: opts.receivedAt ?? Date.now(),
     source,
     payload: raw,
