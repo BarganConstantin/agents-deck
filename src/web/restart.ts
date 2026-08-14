@@ -35,6 +35,53 @@ export function shouldReloadBundle(
   return lastTried !== running;
 }
 
+/** What /api/version says about the last upgrade attempt, as far as this file
+ *  cares. `at` and `error` are the note the supervisor leaves behind when
+ *  `npx -y <spec>@latest` fails; the in-process installer fills the same shape. */
+export type UpgradeReport = {
+  state?: string | null;
+  error?: string | null;
+  at?: number | null;
+} | null | undefined;
+
+/**
+ * A reported upgrade failure reduced to something two polls can be compared on,
+ * or null when no failure is being reported.
+ *
+ * Deliberately not the state alone: a retry that fails the same way reports the
+ * same command and the same error text, and the only thing separating it from
+ * the failure before it is when it happened. The supervisor stamps `at` as it
+ * writes the note, so a note with a different stamp is a different failure.
+ */
+export function upgradeFailureId(upgrade: UpgradeReport): string | null {
+  if (!upgrade || upgrade.state !== "failed") return null;
+  return `${typeof upgrade.at === "number" ? upgrade.at : 0}:${upgrade.error ?? ""}`;
+}
+
+/**
+ * Whether the restart being waited on has already ended, badly.
+ *
+ * A failed npx upgrade is the one ending nothing else reports. npx cannot
+ * fetch, the supervisor relaunches the copy on disk on the same port, and the
+ * tab's only completion check — `running` moving to the version it was promised
+ * — waits for a version that is never coming. Left to itself the button stayed
+ * disabled and labelled "fetching…" for the full three minutes of askRestart's
+ * timeout, beside a banner already saying the update failed.
+ *
+ * `asked` is the failure the server was reporting when the click went out,
+ * `reported` what it says now; only a failure we had not already seen ends this
+ * attempt. Trusting `state === "failed"` on its own would end the retry the
+ * instant it began: the previous note stays on disk until the supervisor clears
+ * it at the top of the next attempt, and while npx is fetching the tab cannot
+ * reach a server to hear about it.
+ */
+export function restartEndedInFailure(
+  { asked, reported }: { asked: string | null; reported: string | null },
+): boolean {
+  if (!reported) return false;
+  return reported !== asked;
+}
+
 export type RestartGate = {
   /** The user's preference. Off means the button is the only path. */
   enabled: boolean;
