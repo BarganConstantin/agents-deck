@@ -50,6 +50,45 @@ const sseClients = new Set();       // res handles
 
 let persistPath = null;             // absolute path to events.jsonl, or null
 
+// ─── Which deck records which session ─────────────────────────────────────
+// The hook posts an event to every deck whose workspace matches, and by
+// default all of them append to one events.jsonl — so each event landed in
+// that file once per running deck, and every later replay of it ingested each
+// tool call that many times. The hook now elects one writer per log file and
+// marks the request to the rest `?persist=0`. That flag covers the hook event
+// itself; this map carries it to the ModelObserved/UsageObserved/
+// ContextObserved events a deck derives from the same session's transcript,
+// which every deck reads for itself and would otherwise duplicate exactly the
+// same way. A session is recorded unless we have been told someone else owns
+// it, so a lone deck — and a deck the hook is too old to flag — still writes
+// everything.
+const foreignSessions = new Set();  // session ids another deck is logging
+const MAX_FOREIGN_SESSIONS = 512;   // bound: insertion order = oldest first
+
+function noteLogWriter(payload, mine) {
+  const sid = payload && typeof payload === "object" ? payload.session_id : null;
+  if (typeof sid !== "string" || sid === "") return;
+  // Delete either way: on re-add it moves the id back to the young end, so the
+  // eviction below drops sessions that stopped being posted, not busy ones.
+  foreignSessions.delete(sid);
+  if (mine) return;
+  foreignSessions.add(sid);
+  if (foreignSessions.size > MAX_FOREIGN_SESSIONS) {
+    foreignSessions.delete(foreignSessions.values().next().value);
+  }
+}
+
+/**
+ * Is this deck the one that writes this payload's session to the log? Every
+ * event goes through here on its way to disk, including the ones this deck
+ * derives from a transcript on its own — that is the point of remembering the
+ * session rather than only honouring the flag on the event that carried it.
+ */
+export function writesLogFor(payload) {
+  const sid = payload && typeof payload === "object" ? payload.session_id : null;
+  return typeof sid !== "string" || sid === "" || !foreignSessions.has(sid);
+}
+
 // ─── Persistence rotation ─────────────────────────────────────────────────
 // 24/7 dev servers used to grow events.jsonl unbounded — saw it hit GBs
 // across weeks. We rotate when the file passes ROTATE_AT_BYTES, archiving
@@ -444,14 +483,38 @@ export async function readContextFromTranscript(path) {
   return { ...state.ctx };
 }
 
+/** Longest slug CC will store verbatim. Anything longer is truncated here and
+ *  given a hash suffix, so two deep paths sharing a 200-character prefix still
+ *  get separate directories. */
+const CC_SLUG_MAX = 200;
+
+/** CC's hash of the *unencoded* path, used only for the truncation suffix:
+ *  the classic h*31 + c string hash, kept in a signed 32-bit int. */
+function ccPathHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
 /** Encode an absolute path the way CC stores it under
- *  ~/.claude/projects/<slug>/. Drive letters, colons, and path separators
- *  are flattened to "-" so the slug survives as a single directory name. */
-function ccProjectSlug(cwd) {
+ *  ~/.claude/projects/<slug>/, so the auto-memory scan below looks in the
+ *  directory CC actually wrote.
+ *
+ *  CC flattens *every* non-alphanumeric character to "-", not just the path
+ *  separators and the Windows drive colon this used to replace. Dots are the
+ *  ones that bite: a worktree under .claude/worktrees/, or any folder named
+ *  like my.app, produced a slug with a literal dot in it, the readdir below
+ *  missed, and the project's auto-memory files were quietly left out of the
+ *  context panel. Underscores and spaces were wrong the same way. */
+export function ccProjectSlug(cwd) {
   if (!cwd) return "";
-  // Replace path separators and the Windows drive colon. Match CC's own
-  // encoding: every \\ /  :  →  -  (no collapsing of adjacent dashes).
-  return resolve(cwd).replace(/[\\/:]/g, "-");
+  // resolve() gives the platform's own absolute form — "/Users/…" on
+  // macOS/Linux, "C:\Users\…" on Windows — and this class covers both, so the
+  // drive colon and the backslashes fall out of the general rule.
+  const abs = resolve(cwd);
+  const slug = abs.replace(/[^a-zA-Z0-9]/g, "-");
+  if (slug.length <= CC_SLUG_MAX) return slug;
+  return `${slug.slice(0, CC_SLUG_MAX)}-${Math.abs(ccPathHash(abs)).toString(36)}`;
 }
 
 async function scanClaudeMdFiles(cwd) {
@@ -945,13 +1008,12 @@ export function eventsSince(seq) {
 // removed an entry: a deck left up for weeks — the 24/7 use this thing is
 // built for — kept a model string, a subagent signature and four read-throttle
 // stamps for every session it had ever seen, plus the Codex rollout path and
-// model of each. SessionEnd is not a usable eviction signal
-// (a killed CLI never sends one, and Codex has no such hook at all), so
-// entries expire by least-recent use against a cap instead — the same shape
-// pruneTranscriptScans already uses for its per-path state. The cap sits far
-// above any plausible number of concurrent sessions, so a live session is
-// never evicted; and an evicted one that speaks again simply re-reads its
-// transcript.
+// model of each. SessionEnd is not a usable eviction signal (a killed CLI
+// never sends one, and Codex has no such hook at all), so entries expire by
+// least-recent use against a cap instead — the same shape pruneTranscriptScans
+// already uses for its per-path state. The cap sits far above any plausible
+// number of concurrent sessions, so a live session is never evicted; and an
+// evicted one that speaks again simply re-reads its transcript.
 const sessionTouchedAt = new Map();   // sid -> ms of the last event seen
 const MAX_TRACKED_SESSIONS = 256;
 
@@ -1033,14 +1095,20 @@ function pushEvent(raw, source, opts = {}) {
   events.push(evt);
   if (events.length > MAX_BUFFER) events.splice(0, events.length - MAX_BUFFER);
 
+  // Does this event reach the log at all? Not on a replay (it came from
+  // there), not when the hook told us another deck owns this session's log,
+  // and not when we have no log. Decided before serializing because it is half
+  // of the answer to whether serializing is worth doing.
+  const persisting = persistPath && !opts.replay && opts.persist !== false && writesLogFor(raw);
+
   // One serialization, shared by both consumers — and skipped entirely when
   // neither wants it. This used to stringify the whole envelope twice on the
   // hottest path in the process (once for the SSE frame, once for the persist
   // line), and built the frame even with nobody subscribed: a headless deck
   // paid a full stringify per event for a string no one read, and boot replay
   // — which runs before the listener exists and never broadcasts — paid one
-  // for every line of a log that rotates at 50MB.
-  const persisting = persistPath && !opts.replay;
+  // for every line of a log that rotates at 50MB. An event this deck is not
+  // logging is still broadcast, so a subscriber alone is reason enough.
   const json = (sseClients.size > 0 || persisting) ? JSON.stringify(evt) : null;
 
   if (sseClients.size > 0) {
@@ -1155,7 +1223,11 @@ function readBody(req, limit = 64_000) {
   });
 }
 
-function handleEventIngest(req, res) {
+// `persist` is false when the hook posted this event to another deck as well
+// and elected that one to write it to the log they share. The event is still
+// buffered and broadcast here — every matching deck draws it — it is only the
+// second copy on disk that is dropped.
+function handleEventIngest(req, res, persist = true) {
   let body = "";
   req.setEncoding("utf8");
   req.on("data", c => {
@@ -1168,7 +1240,8 @@ function handleEventIngest(req, res) {
     let parsed;
     try { parsed = JSON.parse(body); }
     catch { return send(res, 400, { error: "invalid json" }); }
-    const evt = pushEvent(parsed, "hook");
+    noteLogWriter(parsed, persist);
+    const evt = pushEvent(parsed, "hook", { persist });
     send(res, 200, { ok: true, seq: evt.seq });
   });
   req.on("error", () => send(res, 400, { error: "bad request" }));
@@ -1664,7 +1737,9 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
       return send(res, 403, { error: "cross-site request blocked" });
     }
 
-    if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
+    // `?persist=0` — another deck was elected to write this event to the log
+    // the two of them share. Absent, this deck writes it.
+    if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res, url.searchParams.get("persist") !== "0"), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
     if (req.method === "GET"  && url.pathname === "/api/hook-challenge") return handleHookChallenge(req, res, url);
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);

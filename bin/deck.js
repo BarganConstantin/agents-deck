@@ -73,11 +73,16 @@ const openBrowser = flags.noOpen !== true;
 // config dir rather than assuming ~/.claude — see src/server/claude-dir.mjs.
 const { claudeConfigDir } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-dir.mjs")).href);
+// Resolved here rather than left as typed: the discovery file publishes this
+// path so the hook can tell which decks share one log and elect a single
+// writer for it, and two spellings of one file would read as two files.
+// startServer resolves it the same way, from this same process, so the two
+// always name the same file.
 const persist = flags.noPersist
   ? null
-  : (flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
+  : resolve(flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
 
-const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
+const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
 const { startServer, hookToken } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
@@ -328,9 +333,35 @@ if (RESPAWN) {
   else process.stdout.write("\n");
 }
 
+// The discovery file is the whole of how a hook finds this deck: hook.js
+// enumerates that directory and nothing else. Writing it once at boot meant
+// anything that later took it away left a deck that listened, served, and
+// received not one event — with nothing on screen to say so. So it is checked
+// on a timer, put back when it goes missing, and its absence is stated out loud
+// rather than left to look like an idle afternoon.
+//
 // The token goes in with the port: it is what lets a hook tell this deck from
 // whatever else may later be listening on the same number. See hookToken().
-const discoveryFile = await writeDiscovery({ port: realPort, workspace, token: hookToken() });
+//
+// The log path goes in with them, so a hook can see which decks share one events
+// log and elect a single writer for it. See electWriters in hook/hook.js.
+let registered = null;
+const discovery = keepDiscovery({
+  port: realPort,
+  workspace,
+  token: hookToken(),
+  persist,
+  onState: (state) => {
+    const first = registered === null;
+    registered = state.ok;
+    if (!state.ok) reportUnregistered(state);
+    else if (!first) reportReregistered(state);
+  },
+});
+const discoveryFile = discovery.file;
+// Now, not in five seconds: nothing should reach the pulse line below without
+// the deck knowing whether the hooks can see it.
+await discovery.check();
 
 // Never on a respawn: the tab that asked for the restart is still open and
 // reconnecting on its own. A second one would be the deck talking over itself.
@@ -344,9 +375,19 @@ if (openBrowser && !RESPAWN) {
 // ── Pulse indicator ───────────────────────────────────────────────────────────
 if (tty) {
   const pulseFrames = [`${C.green}●${C.reset}`, `${C.dim}●${C.reset}`];
+  const LISTENING = "listening — Ctrl+C to stop";
+  // A deck no hook can find is not listening in any sense the user cares
+  // about, and the pulse is the one line that stays on screen for hours — so
+  // it is where this has to be said.
+  const UNREGISTERED = "listening, but not registered — hooks cannot find this deck";
+  // Padded on the plain text, before any colour: the line is redrawn over
+  // itself with \r, so the shorter message has to cover the longer one.
+  const width = UNREGISTERED.length + 3;
   let pi = 0;
   setInterval(() => {
-    process.stdout.write(`\r  ${pulseFrames[pi++ % 2]}  ${C.dim}listening — Ctrl+C to stop${C.reset}   `);
+    const text = (registered ? LISTENING : UNREGISTERED).padEnd(width);
+    const colour = registered ? C.dim : C.yellow;
+    process.stdout.write(`\r  ${pulseFrames[pi++ % 2]}  ${colour}${text}${C.reset}`);
   }, 800).unref();
 }
 
@@ -358,6 +399,10 @@ const shutdown = async (code = 0) => {
   if (tty && code !== RESTART_CODE && code !== UPGRADE_CODE) {
     process.stdout.write(`\n\n  ${C.yellow}◉  shutting down…${C.reset}\n`);
   }
+  // Stopped first, always: a tick landing after the unlink would re-register a
+  // deck that is on its way out, and leave the file behind for the hooks to
+  // find once nothing is listening.
+  discovery.stop();
   await removeDiscovery(discoveryFile);
   server.close(() => process.exit(code));
   // SSE connections never end by themselves, so close() alone would sit out the
@@ -369,9 +414,24 @@ const shutdown = async (code = 0) => {
 };
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
-process.on("beforeExit", () => removeDiscovery(discoveryFile));
+process.on("beforeExit", () => { discovery.stop(); removeDiscovery(discoveryFile); });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// The deck is up and the hooks cannot see it. Said in full — the path, the
+// reason — because the alternative is what this replaced: an ordinary-looking
+// deck that simply never shows a session.
+function reportUnregistered({ file, error }) {
+  const why = error?.message ? ` — ${error.message}` : "";
+  process.stdout.write(
+    `\n  ${C.yellow}⚠${C.reset}  ${C.bold}not registered${C.reset}${C.dim}${why}${C.reset}\n` +
+    `     ${C.dim}hooks find this deck through ${file}, so until that file exists no events arrive.${C.reset}\n`,
+  );
+}
+
+function reportReregistered({ file }) {
+  process.stdout.write(`\n  ${C.green}✓${C.reset}  ${C.dim}registered again → ${file}${C.reset}\n`);
+}
 
 function parseArgs(args) {
   const out = {};

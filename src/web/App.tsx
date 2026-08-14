@@ -27,10 +27,11 @@ import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
 import UsageHistoryModal from "./components/UsageHistoryModal";
-import { autoLayout, bubblePush, fillGapsWithNewSessions, separateOverlaps } from "./layout";
+import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
+import { versionChipLabel, versionChipTitle } from "./version-chip";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -506,14 +507,26 @@ function snapshotToFlow(
   // How much room each agent's bubbles need. ToolBursts keeps the last four
   // tools as a permanent trail — no time-based culling — so an agent that has
   // called a tool occupies its lane for as long as it is on the canvas, and
-  // dagre has to be told. Without it the next rank is placed 160px away and
-  // lands on top of bubbles that reach 420px out.
+  // every pass that places a box has to be told. Without it the next rank is
+  // placed 160px away and lands on top of bubbles that reach 420px out, and
+  // the repair passes — which run far more often than dagre does — pack the
+  // neighbours straight back over the chips.
   const lanes = new Map<string, number>();
   for (const a of state.agents.values()) {
     if (a.tools.length > 0) lanes.set(a.id, Math.min(4, a.tools.length));
   }
+  // A lane appearing is a structural change, so it invalidates the cached
+  // arrangement the way a new node or a re-measured card does.
+  //
+  // Without this the reservation was applied on exactly one frame per node —
+  // the frame it first appears, which is the frame it has just been created by
+  // SessionStart and has called nothing, so its lane is zero. It then made
+  // forty tool calls, grew 420px sideways, and nothing ever reconsidered its
+  // neighbours. Clamping at four bubbles is what keeps this cheap: the string
+  // stops changing after an agent's fourth tool call.
+  const sig = `${layoutSig}#lanes:${laneSignature(lanes)}`;
   const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
-  if (missing.length > 0 || layoutSig !== lastLayoutSigRef.current) {
+  if (missing.length > 0 || sig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
       const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight, lanes });
       for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
@@ -523,11 +536,11 @@ function snapshotToFlow(
       // bands that hold nothing.
       fillGapsWithNewSessions(
         nodes, positions, pinned, measured,
-        new Set(missing.map(n => n.id)),
+        new Set(missing.map(n => n.id)), lanes,
       );
     }
-    separateOverlaps(nodes, positions, pinned, measured);
-    lastLayoutSigRef.current = layoutSig;
+    separateOverlaps(nodes, positions, pinned, measured, lanes);
+    lastLayoutSigRef.current = sig;
   }
   // A session that just fanned out subagents is wider and taller than it was a
   // frame ago, and is now sitting on whatever was beside it. separateOverlaps
@@ -535,7 +548,7 @@ function snapshotToFlow(
   // block; this nudges the neighbours aside by the least that works, which is
   // both shorter and legible as a cause — the box grew, so the others moved.
   // Self-gating: returns immediately unless something actually grew.
-  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled || dragging);
+  const bubbled = bubblePush(nodes, positions, pinned, measured, prevSessionSize, !settled || dragging, lanes);
   if (bubbled.length > 0) onBubble(bubbled);
   // Evict cached positions for agents that aren't in state.agents anymore.
   // Stale positions for invisible-but-still-tracked agents are KEPT so a
@@ -716,12 +729,19 @@ function Inner() {
   // `force` asks npm now instead of reusing the answer cached on disk. Used by
   // the chip, because "no banner" and "no check ran" look identical from here.
   const lastForcedRef = useRef(0);
+  // A forced check is a round-trip to the registry, and on a slow line that is
+  // seconds during which the chip would otherwise not move at all — clicking it
+  // felt like clicking nothing. Only forced checks are shown: the unforced
+  // polls are answered from a marker on disk and would just make the chip
+  // flicker for no reason the user could act on.
+  const [versionChecking, setVersionChecking] = useState(false);
   const loadVersion = useCallback((force = false) => {
-    if (force) lastForcedRef.current = Date.now();
+    if (force) { lastForcedRef.current = Date.now(); setVersionChecking(true); }
     fetch(force ? "/api/version?refresh=1" : "/api/version")
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setVersion(d as VersionInfo); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (force) setVersionChecking(false); });
   }, []);
   // Every unforced poll is answered from the server's on-disk marker, so once a
   // deck had checked, nothing it could do would ever learn about a release
@@ -1679,19 +1699,34 @@ function Inner() {
   // Same anchoring as relayout — F and the fit button land where it does.
   const handleFit = useCallback(() => fitLeft(500), [fitLeft]);
 
+  // `nodes` is rebuilt by the snapshotToFlow memo on every 250ms tick, so a
+  // callback that closes over it is a new function four times a second — and
+  // the keydown effect below, which lists that callback in its deps, would
+  // unsubscribe and resubscribe the window listener at the same rate. Read
+  // both the node array and the current selection through refs (the pattern
+  // stateRef already uses) so stepAgent is created once and the listener is
+  // registered once. Assigned during render so a keystroke in the same commit
+  // sees the array that was just drawn.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const primarySelectedIdRef = useRef(primarySelectedId);
+  primarySelectedIdRef.current = primarySelectedId;
+
   /** Step through visible agents in render order. `direction` is +1 for
    *  next (j) or -1 for previous (k). Selecting moves the canvas to keep
    *  the chosen agent in view. */
   const stepAgent = useCallback((direction: 1 | -1) => {
-    if (nodes.length === 0) return;
+    const current = nodesRef.current;
+    if (current.length === 0) return;
     // Use the same order ReactFlow's nodes prop has — left-to-right by
     // worldspace position then top-to-bottom. That matches what the eye
     // expects when pressing j.
-    const ordered = nodes
+    const ordered = current
       .slice()
       .sort((a, b) => (a.position.y - b.position.y) || (a.position.x - b.position.x));
-    const currentIdx = primarySelectedId
-      ? ordered.findIndex(n => n.id === primarySelectedId)
+    const selectedId = primarySelectedIdRef.current;
+    const currentIdx = selectedId
+      ? ordered.findIndex(n => n.id === selectedId)
       : -1;
     let next: number;
     if (currentIdx === -1) {
@@ -1708,7 +1743,7 @@ function Inner() {
       try { rf.fitView({ padding: 0.35, duration: 350, nodes: [target] }); } catch {}
       lastFitTimeRef.current = Date.now();
     }, 30);
-  }, [nodes, primarySelectedId, selectAgent, rf]);
+  }, [selectAgent, rf]);
 
   // keyboard shortcuts
   useEffect(() => {
@@ -1786,19 +1821,30 @@ function Inner() {
             // Not decoration: "no banner" and "the check never ran" look the
             // same from a chair, and on a machine that only ever runs
             // `npx ccdeck` the difference is the whole feature. Clicking asks
-            // npm now.
-            <button
-              type="button"
-              className="v"
-              onClick={() => loadVersion(true)}
-              title={version?.checkDisabled
-                ? "Update checks are off (AGENTS_DECK_NO_UPDATE_CHECK=1)."
-                : `${version?.latest ? `npm has v${version.latest}` : "npm not reached yet"}${
-                    version?.checkedAt ? ` · checked ${shortAgo(now - version.checkedAt)}` : ""
-                  } · click to check now`}
-            >
-              v{version?.running ?? __APP_VERSION__}
-            </button>
+            // npm now, ahead of the poll — so it has to look like a control and
+            // say so out loud, which a dim version number does neither of.
+            (() => {
+              const copy = {
+                running: version?.running ?? __APP_VERSION__,
+                latest: version?.latest,
+                latestPending: version?.latestPending,
+                checkedAgo: version?.checkedAt ? shortAgo(now - version.checkedAt) : null,
+                checkDisabled: version?.checkDisabled,
+                checking: versionChecking,
+              };
+              return (
+                <button
+                  type="button"
+                  className={versionChecking ? "v checking" : "v"}
+                  onClick={() => loadVersion(true)}
+                  aria-busy={versionChecking || undefined}
+                  aria-label={versionChipLabel(copy)}
+                  title={versionChipTitle(copy)}
+                >
+                  v{copy.running}
+                </button>
+              );
+            })()
           )}
         </div>
         {selected && (() => {

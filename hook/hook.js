@@ -92,6 +92,51 @@ function isAlive(pid) {
 }
 
 /**
+ * Of the decks about to be posted this event, which ones should also write it
+ * to disk? Returns the subset that should; every other target is asked to
+ * display the event and keep no record of it.
+ *
+ * The fan-out itself is deliberate — several decks can match one session and
+ * they should all draw it. Persisting is not: they all default to the same
+ * <claude config dir>/agent-dag/events.jsonl, so each of them appending its own
+ * copy wrote every event once per running deck. The file then grew N times as
+ * fast, rotated N times as often, and every replay of it ingested each tool
+ * call N times, which is what put duplicate tools and duplicate bubbles on the
+ * canvas after a restart.
+ *
+ * Decks are therefore grouped by the log file each one names in its discovery
+ * record, and one deck per group is elected. Grouping by the file rather than
+ * counting decks is what keeps the overrides honest: a deck run with
+ * `--history` sits alone in its own group and always writes, a deck run with
+ * `--no-persist` reports no file and can never be elected to write for one that
+ * does, and a deck too old to report either keeps the behaviour it had before
+ * this rule existed. Within a group the lowest port wins — a fixed rule, so the
+ * same deck holds the file for as long as it is up and the next one inherits it
+ * as soon as that deck is gone.
+ *
+ * The platform is a parameter, like cwdInWorkspace's, so the case-folding half
+ * is testable from any machine.
+ */
+function electWriters(decks, platform = process.platform) {
+  const byLog = new Map();
+  for (const d of decks) {
+    const log = typeof d.persist === "string" ? d.persist : "";
+    // Two namespaces, so a deck with no log to share — and a deck too old to
+    // report one — is alone in its group and cannot collide with a real path.
+    const key = log
+      ? `log:${foldsCase(platform) ? log.toLowerCase() : log}`
+      : `deck:${d.pid}:${d.port}`;
+    const held = byLog.get(key);
+    // Ports are unique among live decks; pid only breaks a tie a stale
+    // discovery file could invent, so the answer stays deterministic.
+    if (!held || d.port < held.port || (d.port === held.port && d.pid < held.pid)) {
+      byLog.set(key, d);
+    }
+  }
+  return new Set(byLog.values());
+}
+
+/**
  * The answer a deck must give to be handed a session payload.
  *
  * Liveness of the recorded pid is not evidence that the thing listening on the
@@ -168,12 +213,15 @@ const POST_TIMEOUT_MS = 1000;
  * this target is finished.
  *
  * A deck that advertised no token is posted to directly: see requiresProof.
+ *
+ * `persists` is this deck's answer from electWriters: true for the one deck
+ * that logs the event, false for every other one it is also drawn on.
  */
-function deliver(d, body, done) {
+function deliver(d, body, persists, done) {
   let settled = false;
   const finish = () => { if (settled) return; settled = true; done(); };
 
-  if (!requiresProof(d)) return post(d, body, finish);
+  if (!requiresProof(d)) return post(d, body, persists, finish);
 
   const nonce = crypto.randomBytes(16).toString("hex");
   const want = challengeProof(d.token, nonce);
@@ -201,7 +249,7 @@ function deliver(d, body, done) {
       let proof;
       try { proof = JSON.parse(answer).proof; } catch { return finish(); }
       if (!sameProof(proof, want)) return finish();
-      post(d, body, finish);
+      post(d, body, persists, finish);
     });
   });
   req.on("error", finish);
@@ -209,11 +257,13 @@ function deliver(d, body, done) {
   req.end();
 }
 
-function post(d, body, finish) {
+function post(d, body, persists, finish) {
   const req = http.request({
     hostname: "127.0.0.1",
     port: d.port,
-    path: "/api/event",
+    // Only the elected deck records the event; the rest are asked to draw it
+    // and keep no copy, so one log file ends up with one copy of it.
+    path: persists ? "/api/event" : "/api/event?persist=0",
     method: "POST",
     headers: { "Content-Type": "application/json" },
     timeout: POST_TIMEOUT_MS,
@@ -289,16 +339,20 @@ function main() {
     const bestLen = matches[0].wsLen;
     const targets = matches.filter(m => m.wsLen === bestLen);
 
+    // One deck per events log records this event; the others only draw it.
+    const writers = electWriters(targets.map(m => m.d));
+
     let pending = targets.length;
     const done = () => { if (--pending <= 0) process.exit(0); };
 
-    for (const { d } of targets) deliver(d, taggedInput, done);
+    for (const { d } of targets) deliver(d, taggedInput, writers.has(d), done);
   });
 }
 
 // The host CLI always runs this file as the process entry point — the command
 // the installer writes is `"<node>" "<...>/hook.js" --provider <name>`. Under a
-// require() it exports the matching rule and starts nothing, which is what lets
-// the rule be tested without a 1.5s exit timer in the test runner.
-module.exports = { cwdInWorkspace, foldsCase, challengeProof, requiresProof };
+// require() it exports the rules it decides by — matching, election, the
+// handshake — and starts nothing, which is what lets them be tested without a
+// 1.5s exit timer in the test runner.
+module.exports = { cwdInWorkspace, foldsCase, electWriters, challengeProof, requiresProof };
 if (require.main === module) main();

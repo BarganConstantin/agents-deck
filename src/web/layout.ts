@@ -101,6 +101,43 @@ function laneHeight(id: string, lanes: Lanes | undefined): number {
 }
 
 /**
+ * The ground an agent actually covers: its card PLUS its burst lane.
+ *
+ * `measured` is what React Flow measured, and React Flow measures nodes —
+ * bursts are an overlay, so a card with four chips streaming off its right edge
+ * measures exactly as wide as one with none. Every pass that places or pushes a
+ * box has to add the lane back itself, or it packs neighbours into space the
+ * chips are already using and quietly undoes the reservation `layoutSession`
+ * made — which is what a screenshot of tool chips drawn across the cards beside
+ * them was. Sizing from `measured` alone is the bug; this is the size to use.
+ */
+function footprint(
+  id: string,
+  measured: Map<string, { width: number; height: number }>,
+  lanes: Lanes | undefined,
+): { w: number; h: number } {
+  const m = measured.get(id);
+  return {
+    w: (m?.width ?? NODE_W) + laneWidth(id, lanes),
+    h: Math.max(m?.height ?? NODE_H, laneHeight(id, lanes)),
+  };
+}
+
+/**
+ * Canonical string for a lane map, so a caller that caches its layout can tell
+ * when the lanes have moved.
+ *
+ * An agent gaining its first bubble is as real a change in size as its card
+ * being measured wider, and it has to invalidate a cached arrangement the same
+ * way. The count is clamped by the caller at the four bubbles ToolBursts keeps,
+ * so this settles after an agent's fourth tool call however many thousand it
+ * goes on to make.
+ */
+export function laneSignature(lanes: Lanes): string {
+  return [...lanes.keys()].sort().map(id => `${id}:${lanes.get(id)}`).join("|");
+}
+
+/**
  * Where a session's dragged members sit, in CANVAS coordinates.
  *
  * Deliberately kept apart from the session's own width/height, which are
@@ -140,7 +177,6 @@ function layoutSession(
   const free = ids.filter(id => !pinned.has(id));
   const idSet = new Set(free);
   for (const id of free) {
-    const m = measured.get(id);
     // The box handed to dagre is the card PLUS the burst lane beside it.
     //
     // Bursts are an overlay, not React Flow nodes, so dagre cannot see them —
@@ -148,10 +184,8 @@ function layoutSession(
     // therefore lands on top of this agent's tool bubbles, which is exactly
     // what a screenshot of five Chrome bubbles piled on each other showed.
     // Reserving the lane here moves the children clear of it instead.
-    g.setNode(id, {
-      width: (m?.width ?? NODE_W) + laneWidth(id, lanes),
-      height: Math.max(m?.height ?? NODE_H, laneHeight(id, lanes)),
-    });
+    const { w, h } = footprint(id, measured, lanes);
+    g.setNode(id, { width: w, height: h });
   }
   for (const e of edges) {
     if (idSet.has(e.source) && idSet.has(e.target)) g.setEdge(e.source, e.target);
@@ -168,10 +202,9 @@ function layoutSession(
     const h = m?.height ?? NODE_H;
     // dagre centred the card+lane box; the CARD sits at its left edge, so the
     // reserved space ends up where the bubbles actually are.
-    const boxW = w + laneWidth(id, lanes);
-    const boxH = Math.max(h, laneHeight(id, lanes));
-    const x = p.x - boxW / 2;
-    const y = p.y - boxH / 2;
+    const box = footprint(id, measured, lanes);
+    const x = p.x - box.w / 2;
+    const y = p.y - box.h / 2;
     positions.set(id, { x, y });
     if (x < minX) minX = x;
     if (y < minY) minY = y;
@@ -328,12 +361,20 @@ export function autoLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions = {
  *
  * Pinned nodes are obstacles but never move — the user put them there. Mutates
  * `positions`; returns the ids it had to move.
+ *
+ * `lanes` is the same map `autoLayout` gets. It has to be, because this runs on
+ * every structural change and dagre runs once: reserving the lane there and
+ * omitting it here means the repair packs the cards back to card clearance and
+ * a 420px lane runs straight through the neighbour. Resolution is still on Y
+ * alone, so a lane overhanging to the right is cleared by sliding the node it
+ * covers below it rather than further out.
  */
 export function separateOverlaps(
   nodes: Node[],
   positions: Map<string, { x: number; y: number }>,
   pinned: Map<string, { x: number; y: number }>,
   measured: Map<string, { width: number; height: number }>,
+  lanes?: Lanes,
 ): string[] {
   const MARGIN = 24;
   // Two cards in DIFFERENT sessions need more than card clearance: each is
@@ -343,10 +384,7 @@ export function separateOverlaps(
   const CROSS_SESSION_Y = SESSION_CHROME + SESSION_VISIBLE_GAP;
   const CROSS_SESSION_X = 18 * 2 + MARGIN;
 
-  const sizeOf = (id: string) => {
-    const m = measured.get(id);
-    return { w: m?.width ?? NODE_W, h: m?.height ?? NODE_H };
-  };
+  const sizeOf = (id: string) => footprint(id, measured, lanes);
 
   // Stable order: by y, then x, then id. Same input always yields the same
   // result, so a re-render cannot make nodes drift.
@@ -399,6 +437,11 @@ export function separateOverlaps(
  * fits it outright. Anything that does not fit stays where the layout put it,
  * below everything else.
  *
+ * A gap is measured against real footprints, lanes included — a band that looks
+ * empty because the session above it has been pruned may still be covered by
+ * the chips of the session beside it, and dropping an arrival into it would
+ * land it under them.
+ *
  * Mutates `positions`; returns the session ids it relocated.
  */
 export function fillGapsWithNewSessions(
@@ -407,11 +450,9 @@ export function fillGapsWithNewSessions(
   pinned: Map<string, { x: number; y: number }>,
   measured: Map<string, { width: number; height: number }>,
   newIds: Set<string>,
+  lanes?: Lanes,
 ): string[] {
-  const sizeOf = (id: string) => {
-    const m = measured.get(id);
-    return { w: m?.width ?? NODE_W, h: m?.height ?? NODE_H };
-  };
+  const sizeOf = (id: string) => footprint(id, measured, lanes);
   const posOf = (id: string) => pinned.get(id) ?? positions.get(id);
 
   // Only a session that arrived WHOLE may be relocated.
@@ -553,6 +594,18 @@ export function bubblePush(
    * across refresh.
    */
   recordOnly = false,
+  /**
+   * Bubbles beside each agent, as `autoLayout` gets them.
+   *
+   * A session's size is read from `measured`, which holds cards only, so the
+   * single most common way a session on this canvas grows — an agent gaining a
+   * lane, 420px wide and up to 150px tall — used to register as no growth at
+   * all, and the push that exists for exactly that never fired. With the lane
+   * in the size both the growth test and the area-based mass follow from it:
+   * the session whose chips are doing the covering is the heavy one, and it is
+   * its neighbours that yield.
+   */
+  lanes?: Lanes,
 ): string[] {
   // Clearance between two session boxes — the same numbers separateOverlaps
   // uses, so the two agree on what "overlapping" means.
@@ -584,10 +637,7 @@ export function bubblePush(
   const DAMPING = 0.7;
   const SETTLED = 0.01;     // px of total movement below which we stop
 
-  const sizeOf = (id: string) => {
-    const m = measured.get(id);
-    return { w: m?.width ?? NODE_W, h: m?.height ?? NODE_H };
-  };
+  const sizeOf = (id: string) => footprint(id, measured, lanes);
   const posOf = (id: string) => pinned.get(id) ?? positions.get(id);
 
   interface Box {

@@ -9,7 +9,7 @@
 // subscriber nor a persistence file, and when there is, the envelope is
 // serialized exactly once no matter how many consumers share it.
 import { describe, it, expect, afterAll } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { get, request, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -99,18 +99,31 @@ function event(n: number) {
   return { hook_event_name: "UserPromptSubmit", session_id: `sid-${n}`, cwd: DIR, prompt: `p${n}` };
 }
 
-/** An SSE client that actually reads, connected and registered server-side. */
+async function waitForClients(n: number): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    if ((await getJson("/api/health")).clients === n) return;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  throw new Error(`expected ${n} subscriber(s), server still reports ${(await getJson("/api/health")).clients}`);
+}
+
+/** An SSE client that actually reads, connected and registered server-side.
+ *  The server adds it to its set after the response head is already on the
+ *  wire, so "registered" has to be read back from the server, not assumed. */
 async function subscribe(): Promise<IncomingMessage> {
   const res = await new Promise<IncomingMessage>((resolve, reject) => {
     get({ host: "127.0.0.1", port, path: "/events" }, resolve).on("error", reject);
   });
   res.setEncoding("utf8");
   res.on("data", () => {});
-  for (let i = 0; i < 200; i++) {
-    if ((await getJson("/api/health")).clients === 1) return res;
-    await new Promise(r => setTimeout(r, 10));
-  }
-  throw new Error("subscriber never registered");
+  await waitForClients(1);
+  return res;
+}
+
+/** Drop a subscriber and wait until the server has noticed. */
+async function unsubscribe(res: IncomingMessage): Promise<void> {
+  res.destroy();
+  await waitForClients(0);
 }
 
 // The tests below run in order and hand the module from one server to the
@@ -140,7 +153,32 @@ describe("SSE envelope serialization", () => {
       const n = await countEnvelopeStringifies(async () => { await post("/api/event", event(2)); });
       expect(n).toBe(1);
     } finally {
-      sub.destroy();
+      await unsubscribe(sub);
+    }
+  });
+
+  // An event another deck was elected to log (`?persist=0`) skips the log line
+  // but is still broadcast, so a subscriber alone is reason enough to serialize
+  // it. Getting that backwards would leave watching tabs blind to every session
+  // this deck does not happen to own the log for.
+  it("still serializes an event it is not logging when someone is watching", async () => {
+    const sub = await subscribe();
+    try {
+      const n = await countEnvelopeStringifies(async () => { await post("/api/event?persist=0", event(3)); });
+      expect(n).toBe(1);
+
+      // The log append is fire-and-forget, so read the file only once an event
+      // posted after the suppressed one has landed in it.
+      await post("/api/event", event(4));
+      let log = "";
+      for (let i = 0; i < 400 && !log.includes("p4"); i++) {
+        log = readFileSync(join(DIR, "events.jsonl"), "utf8");
+        if (!log.includes("p4")) await new Promise(r => setTimeout(r, 10));
+      }
+      expect(log).toContain("p4");
+      expect(log).not.toContain("p3");
+    } finally {
+      await unsubscribe(sub);
     }
   });
 });
