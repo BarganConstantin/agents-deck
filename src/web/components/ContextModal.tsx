@@ -72,7 +72,7 @@ export default function ContextModal({ agent, onClose }: Props) {
           </div>
           <div className="ctx-window-meta">
             <span className="ctx-window-pct">{pct.toFixed(1)}%</span>
-            <span className="ctx-window-num">{fmtN(current)} / {fmtN(window)} tok (current turn)</span>
+            <span>{fmtN(current)} / {fmtN(window)} tok (current turn)</span>
           </div>
         </section>
 

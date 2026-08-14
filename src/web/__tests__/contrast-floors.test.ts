@@ -178,7 +178,9 @@ describe("--text-dim, the token the annotation rules now read from (#262)", () =
     // `border-color:` keeps it; a bare `color:` is the regression.
     const offenders = [...css.matchAll(/(^|[^-\w])color:\s*var\(--muted-dim\)/g)];
     expect(offenders.map(m => m[0].trim())).toEqual([]);
-    expect([...css.matchAll(/color:\s*var\(--text-dim\)/g)].length).toBeGreaterThanOrEqual(17);
+    // Sixteen, not the seventeen #262 converted: .chips-empty was one of them and
+    // #243 deleted it as unreachable.
+    expect([...css.matchAll(/color:\s*var\(--text-dim\)/g)].length).toBeGreaterThanOrEqual(16);
   });
 });
 
