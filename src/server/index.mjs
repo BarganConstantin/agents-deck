@@ -339,11 +339,14 @@ function scanTranscript(path) {
 // ─── Model enrichment ────────────────────────────────────────────────────
 // CC's hook payloads never carry the `model` field — but every hook
 // references a `transcript_path` JSONL that contains lines like
-// `"model":"claude-opus-4-7"`. We read the tail of that file once per
-// session, cache the result, and (a) inject `model` into subsequent
+// `"model":"claude-opus-4-7"`. We re-read the tail of that file on every
+// event for the session (throttled to MODEL_READ_THROTTLE_MS), cache the
+// resolved root + subagent models, and (a) inject `model` into subsequent
 // payloads for that session before broadcasting, (b) emit a synthetic
-// `ModelObserved` event so the client backfills agents created before
-// the model was resolved.
+// `ModelObserved` event whenever that set CHANGES, so the client backfills
+// agents created before the model was resolved. The cache is the emit
+// filter, not a read filter: reading once per session meant a subagent
+// model that only appears after the root is known was never picked up.
 const modelBySession = new Map();         // sessionId -> { rootModel, subsSig }
 const pendingTranscriptReads = new Set(); // sessionId currently being read
 const modelLastReadAt = new Map();        // sessionId -> ms timestamp (re-read throttle)
@@ -489,8 +492,11 @@ function maybeResolveUsage(payload) {
 // Approximation of `/context` since CC doesn't expose its breakdown via
 // hooks. We scan the transcript JSONL for message counts (user / assistant
 // / tool_use / tool_result / system-reminders) and walk up from cwd for
-// any CLAUDE.md files in scope. Token totals come from UsageObserved; this
-// scan is purely structural ("what does the context contain").
+// any CLAUDE.md files in scope. Cumulative token totals come from
+// UsageObserved; this scan produces the structural counts ("what does the
+// context contain") plus the current window size — currentContextTokens, the
+// last usage block after the most recent /clear or /compact, which is what
+// the context donut and the modal's percentage are drawn from.
 const lastContextReadAt = new Map();
 const pendingContextReads = new Set();
 const CONTEXT_READ_THROTTLE_MS = 4000;
@@ -1192,10 +1198,11 @@ function pushEvent(raw, source, opts = {}) {
   // dead session ids before the first live event even arrives.
   if (!opts.replay && raw && typeof raw === "object") touchSession(raw.session_id);
 
-  // Kick off async transcript scans. Model arrives as a one-shot
-  // ModelObserved; usage is re-read periodically (throttled to 2.5s per
-  // session) so the cost columns track running totals as the session
-  // progresses. Both result in synthetic events.
+  // Kick off async transcript scans. Model and usage are both re-read
+  // periodically (throttled to 2.5s per session) so the cost columns track
+  // running totals as the session progresses and late subagent models still
+  // land; ModelObserved is only emitted when the resolved set changes. Both
+  // result in synthetic events.
   // Provider gates the path: Claude reads transcript_path; Codex reads its
   // rollout JSONL under ~/.codex/sessions/. The Claude scanners short-circuit
   // when transcript_path is absent (always the case for Codex hooks).

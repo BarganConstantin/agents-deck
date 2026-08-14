@@ -515,8 +515,10 @@ export function fillGapsWithNewSessions(
       y < r.y + r.h + PADDING        && r.y < y + h + PADDING);
 
   const moved: string[] = [];
-  // Oldest session first, so arrival order still reads top-to-bottom among
-  // the ones that land in gaps.
+  // Id order, the same order autoLayout packs sessions in, so gap placement is
+  // deterministic across renders. Not arrival order: session ids are random
+  // UUIDs and no timestamp reaches this function, so which arrival gets first
+  // pick of the gaps is arbitrary-but-stable rather than oldest-first.
   for (const sid of [...arriving.keys()].sort()) {
     const members = arriving.get(sid)!;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

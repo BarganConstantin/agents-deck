@@ -69,22 +69,6 @@ const FRESH_MIN_AGE_MS = 190_000;
 const RECENT_429_MS = 3_600_000;
 
 /**
- * Ask claude-swap to collect, if its own schedule says anything is due.
- *
- * Without this the panel is only as live as whatever else is running: if the
- * user has no `cswap watch`/`auto`/TUI open, nothing ever writes the store and
- * the panel shows frozen numbers while looking current.
- *
- * `cswap list` is the safe way to ask. It runs the same on-demand pass every
- * claude-swap surface uses, and the store — not us — decides which accounts,
- * if any, may actually hit the network. So this cannot outrun the request
- * budget no matter how often the panel polls: when nothing is due, it is a
- * local read that fetches nothing.
- *
- * Fire-and-forget. The result lands in the store for the next poll to pick up;
- * making the caller wait would just delay the numbers it already has.
- */
-/**
  * Whether anything is waiting to be collected.
  *
  * Judged per account that actually exists, and an account counts as waiting in
@@ -173,6 +157,10 @@ export function nextReadAt(row, matches, fetchedAtMs, isActive, now) {
 
 /**
  * Keep the store moving while someone is looking at it.
+ *
+ * Without this the panel is only as live as whatever else is running: with no
+ * `cswap watch`/`auto`/TUI open, nothing ever writes the store and the panel
+ * shows frozen numbers while looking current.
  *
  * Two ways to ask, and the cheaper one is preferred:
  *   - something is due by claude-swap's own plan → `cswap list`, the ordinary

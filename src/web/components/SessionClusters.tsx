@@ -18,8 +18,15 @@ export interface ClusterNode {
   data?: AgentNodeData;
 }
 
-// Must match GROUP_PAD / GROUP_HEADER in App.tsx so the decorative card lines
-// up with the invisible draggable group-handle node sitting under it.
+// PAD must match GROUP_PAD in App.tsx so the decorative card's rim lines up
+// with the invisible draggable group-handle node sitting under it — the handle
+// is the cards' box plus GROUP_PAD on every side.
+//
+// HEADER_H and LABEL_LIFT are this file's own and are deliberately NOT part of
+// the handle: the header strip is where the clickable fit-view label lives, so
+// extending the handle over it would swallow the click (see the group-node
+// builder in App.tsx). layout.ts folds all three into SESSION_CHROME when it
+// budgets the space between two stacked sessions.
 const PAD = 18;
 const HEADER_H = 26;
 const LABEL_LIFT = 12; // px the label tab sits above the box's top edge
