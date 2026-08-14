@@ -67,6 +67,26 @@ export const tryNext = (err) =>
                    err.code === "EINVAL" || err.code === "UNKNOWN");
 
 /**
+ * cmd.exe's way of saying ENOENT.
+ *
+ * A .cmd or .bat candidate is launched THROUGH cmd.exe, and cmd.exe exists — so
+ * a missing tool is not a spawn error at all. It is a healthy shell exiting 1
+ * after printing two lines:
+ *
+ *     'cswap' is not recognized as an internal or external command,
+ *     operable program or batch file.
+ *
+ * Read as a real failure, that stops the candidate loop early AND puts the
+ * second line — on its own, meaningless — in front of the user. Reported from
+ * Windows on 2026-08-14: the accounts panel said only "operable program or
+ * batch file." when sharing an account.
+ */
+export const looksMissing = (text) =>
+  /is not recognized as an internal or external command/i.test(String(text ?? "")) ||
+  /operable program or batch file/i.test(String(text ?? "")) ||
+  /The system cannot find the (?:path|file) specified/i.test(String(text ?? ""));
+
+/**
  * Run a command and collect its output. Never rejects, and never throws —
  * failures come back as `{ ok: false }`, because every caller here is a poll or
  * a UI action where a missing tool is an expected state rather than an
@@ -86,11 +106,16 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
         : { file: raw, args, opts: {} };
 
       const done = (err, stdout, stderr) => {
-        if (err && tryNext(err) && i + 1 < tries.length) return attempt(i + 1);
+        // cmd.exe's "is not recognized" counts as "not this spelling" too, and
+        // it arrives as a normal non-zero exit rather than a spawn error.
+        const missing = Boolean(err) && looksMissing(`${stderr ?? ""}\n${stdout ?? ""}`);
+        if (err && (tryNext(err) || missing) && i + 1 < tries.length) return attempt(i + 1);
         if (!err) resolved.set(cmd, raw);
         resolve({
           ok: !err,
-          code: err?.code ?? 0,
+          // A tool cmd.exe could not find is missing, not "exited 1" — callers
+          // key their message off this.
+          code: missing ? "ENOENT" : (err?.code ?? 0),
           killed: Boolean(err?.killed),
           stdout: String(stdout ?? ""),
           stderr: String(stderr ?? ""),
@@ -191,7 +216,19 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
     const keep = (buf, text) => (buf + text).slice(-maxOutput);
     child.stdout?.on("data", (d) => { const t = String(d); stdout = keep(stdout, t); emitLines(t); });
     child.stderr?.on("data", (d) => { const t = String(d); stderr = keep(stderr, t); emitLines(t); });
-    child.on("close", (code) => finish(code ?? -1, null));
+    child.on("close", (code) => {
+      // Same cmd.exe case as in `run`: exit 1 with "is not recognized" means
+      // this spelling does not exist, not that the tool failed.
+      if (code !== 0 && looksMissing(`${stderr}\n${stdout}`)) {
+        if (i + 1 < tries.length) {
+          stdout = ""; stderr = ""; pending = "";
+          child = null;
+          return attempt(i + 1);
+        }
+        return finish(-1, { code: "ENOENT" });
+      }
+      finish(code ?? -1, null);
+    });
   };
   attempt(0);
 

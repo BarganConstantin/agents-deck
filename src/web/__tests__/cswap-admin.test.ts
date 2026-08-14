@@ -6,7 +6,11 @@
 // live credential that has to stop working on its own.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+import { stripTerminalEscapes, extractLoginUrl, newSlot, wrapShare, unwrapShare, removePromptMatches, firstUseful, addFailureText, failureText, SHARE_TTL_MS } from "../../server/cswap-admin.mjs";
+// @ts-expect-error — plain JS module, no types
+import { looksMissing } from "../../server/exec.mjs";
+// @ts-expect-error — plain JS module, no types
+import { cswapCandidates } from "../../server/cswap-install.mjs";
 
 const AUTHORIZE =
   "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e" +
@@ -162,5 +166,79 @@ describe("firstUseful / addFailureText", () => {
 
   it("falls back to the exit code when the CLI said nothing at all", () => {
     expect(addFailureText({ stderr: "", stdout: "", code: 2 })).toBe("cswap add exited 2");
+  });
+});
+
+// Reported from Windows on 2026-08-14: pressing "share…" showed one line —
+// "operable program or batch file." — and nothing else. Two separate faults met
+// there. The panel's mutations asked for the bare name `cswap`, which is on
+// PATH on a Mac and usually is not on Windows; and cmd.exe reports a missing
+// command as a healthy exit 1 over two lines, of which the LAST — the one a
+// "show the final line" helper picks — carries no information at all.
+const NOT_RECOGNIZED =
+  "'cswap' is not recognized as an internal or external command,\noperable program or batch file.\n";
+
+describe("looksMissing", () => {
+  it("recognises cmd.exe's version of ENOENT", () => {
+    expect(looksMissing(NOT_RECOGNIZED)).toBe(true);
+    expect(looksMissing("The system cannot find the path specified.")).toBe(true);
+  });
+
+  it("does not fire on a real failure from the tool itself", () => {
+    // The distinction that matters: this one must keep its own message.
+    expect(looksMissing("Error: No active Claude account found.")).toBe(false);
+    expect(looksMissing("")).toBe(false);
+    expect(looksMissing(null)).toBe(false);
+  });
+});
+
+describe("failureText", () => {
+  it("replaces the Windows fragment with something actionable", () => {
+    const out = failureText({ ok: false, code: 1, stderr: NOT_RECOGNIZED, stdout: "" }, "cswap export");
+    expect(out).toMatch(/not on PATH/);
+    expect(out).toMatch(/AGENTS_DECK_CSWAP/);
+    expect(out).not.toMatch(/operable program/);
+  });
+
+  it("says so about the claude CLI when that is what went missing", () => {
+    const out = failureText({ ok: false, code: "ENOENT", stderr: "", stdout: "" }, "claude auth login");
+    expect(out).toMatch(/claude CLI/);
+    expect(out).toMatch(/AGENTS_DECK_CLAUDE/);
+  });
+
+  it("keeps the tool's own message when the tool did run", () => {
+    const out = failureText({ ok: false, code: 1, stderr: "Error: Account-9 does not exist\n" }, "cswap remove");
+    expect(out).toBe("Account-9 does not exist");
+  });
+
+  it("falls back to the exit code rather than an empty banner", () => {
+    expect(failureText({ ok: false, code: 2, stderr: "", stdout: "" }, "cswap move")).toBe("cswap move exited 2");
+  });
+});
+
+describe("cswapCandidates", () => {
+  const HOME_WIN = "C:\\Users\\dorin";
+  const HOME_NIX = "/home/dorin";
+
+  it("looks where uv and pipx put it on Windows", () => {
+    const list = cswapCandidates("win32", {}, HOME_WIN);
+    expect(list.every((p: string) => p.endsWith("cswap.exe"))).toBe(true);
+    expect(list.some((p: string) => p.includes("\\.local\\bin\\"))).toBe(true);
+    expect(list.some((p: string) => p.includes("Python\\Scripts"))).toBe(true);
+  });
+
+  it("respects a roaming profile's APPDATA rather than assuming the home dir", () => {
+    const list = cswapCandidates("win32", { APPDATA: "\\\\server\\profiles\\dorin\\AppData\\Roaming" }, HOME_WIN);
+    expect(list.some((p: string) => p.startsWith("\\\\server\\profiles\\"))).toBe(true);
+  });
+
+  it("puts explicit configuration first, on every platform", () => {
+    expect(cswapCandidates("linux", { UV_TOOL_BIN_DIR: "/opt/uvbin" }, HOME_NIX)[0]).toBe("/opt/uvbin/cswap");
+    expect(cswapCandidates("win32", { UV_TOOL_BIN_DIR: "D:\\bin" }, HOME_WIN)[0]).toBe("D:\\bin\\cswap.exe");
+  });
+
+  it("includes uv's own tool venv, which exists even when the symlink was never made", () => {
+    expect(cswapCandidates("darwin", {}, HOME_NIX))
+      .toContain("/home/dorin/.local/share/uv/tools/claude-swap/bin/cswap");
   });
 });

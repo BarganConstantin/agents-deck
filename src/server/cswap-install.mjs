@@ -10,7 +10,7 @@
 import { run, runDetached } from "./exec.mjs";
 import { bootstrapUv, existingBootstrappedUv } from "./uv-bootstrap.mjs";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix as posixPath, win32 as winPath } from "node:path";
 import { homedir } from "node:os";
 
 const INSTALL_TIMEOUT_MS = 180_000; // uv resolves + builds a Python env
@@ -34,20 +34,49 @@ const MARKER = join(homedir(), ".agents-deck", ".cswap-update-check");
  * Re-resolved when a lookup fails so an install during this process is picked
  * up without a restart.
  */
+/**
+ * Every place an installer is known to leave cswap. Pure, and the platform is a
+ * parameter, so the Windows list can be checked from a Mac — which is the only
+ * way this list stays right, since it exists entirely for machines the author is
+ * not sitting at.
+ */
+export function cswapCandidates(platform = process.platform, env = process.env, home = homedir()) {
+  // The path flavour follows the PLATFORM ARGUMENT, not the host: node's `join`
+  // would emit forward slashes when this is exercised from a Mac, which is both
+  // wrong for the caller and invisible in a test.
+  const { join } = platform === "win32" ? winPath : posixPath;
+  const exe = platform === "win32" ? "cswap.exe" : "cswap";
+  const dirs = [];
+  // Explicit configuration first: someone who set these means them.
+  if (env.UV_TOOL_BIN_DIR) dirs.push(env.UV_TOOL_BIN_DIR);
+  if (env.XDG_BIN_HOME) dirs.push(env.XDG_BIN_HOME);
+  // Where `uv tool install` and `pipx install` put executables, everywhere.
+  dirs.push(join(home, ".local", "bin"));
+  if (platform === "win32") {
+    // pipx before 1.5, and any `pip install --user`. APPDATA is respected when
+    // set because a roaming profile moves it off the home directory.
+    dirs.push(join(env.APPDATA || join(home, "AppData", "Roaming"), "Python", "Scripts"));
+    dirs.push(join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "Programs", "Python", "Scripts"));
+    dirs.push(join(home, "scoop", "shims"));
+  } else {
+    dirs.push(join(home, ".pyenv", "shims"));
+    // uv keeps the tool's own venv here and only symlinks into ~/.local/bin; if
+    // that link was never made, this is still a working executable.
+    dirs.push(join(home, ".local", "share", "uv", "tools", "claude-swap", "bin"));
+    dirs.push("/opt/homebrew/bin", "/usr/local/bin");
+  }
+  return dirs.map(d => join(d, exe));
+}
+
 let _bin = null;
 export async function cswapBin() {
+  // An explicit path wins over everything and is never cached away — someone
+  // debugging a bad resolution needs it to take effect immediately.
+  if (process.env.AGENTS_DECK_CSWAP) return process.env.AGENTS_DECK_CSWAP;
   if (_bin) return _bin;
   if ((await run("cswap", ["--version"], { timeout: 8_000 })).ok) return (_bin = "cswap");
 
-  const exe = process.platform === "win32" ? "cswap.exe" : "cswap";
-  const candidates = [
-    join(homedir(), ".local", "bin", exe),
-    // pipx before 1.5 on Windows, and any pip --user install.
-    process.platform === "win32"
-      ? join(homedir(), "AppData", "Roaming", "Python", "Scripts", exe)
-      : join(homedir(), ".pyenv", "shims", exe),
-  ];
-  for (const c of candidates) {
+  for (const c of cswapCandidates()) {
     if (existsSync(c) && (await run(c, ["--version"], { timeout: 8_000 })).ok) return (_bin = c);
   }
   return "cswap";   // not found; leave the bare name so errors read sensibly
