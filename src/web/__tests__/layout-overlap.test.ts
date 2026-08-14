@@ -394,6 +394,24 @@ describe("fillGapsWithNewSessions — reuse the space finished sessions left", (
     expect(positions.get("n1")!.y).toBeLessThan(5000);
   });
 
+  it("leaves a subagent beside the parent that spawned it", () => {
+    // The caller passes every node without a stored position, which for a
+    // session already on screen that spawns a subagent is just that child.
+    // It is not a new session, so it must stay in the slot dagre gave it next
+    // to its parent — not be teleported into the gap a pruned session left.
+    const nodes = [agent("a", "sa"), agent("c", "sc"), agent("child", "sc")];
+    const measured = sizes(["a", "c", "child"]);
+    const positions = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["c", { x: 0, y: PITCH * 2 }],              // a session already running
+      ["child", { x: 640, y: PITCH * 2 + 40 }],   // its brand-new subagent
+    ]);
+
+    const moved = fillGapsWithNewSessions(nodes, positions, new Map(), measured, new Set(["child"]));
+    expect(moved).toEqual([]);
+    expect(positions.get("child")).toEqual({ x: 640, y: PITCH * 2 + 40 });
+  });
+
   it("never relocates a dragged node", () => {
     const nodes = [agent("a", "sa"), agent("p", "snew")];
     const measured = sizes(["a", "p"]);
