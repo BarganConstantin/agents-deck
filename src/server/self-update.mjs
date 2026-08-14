@@ -21,7 +21,7 @@
 // it by name and only where it can actually work: a global install, on a
 // directory we can write, outside a git checkout and outside an npx cache.
 // Everywhere else this stays what it has always been — a printed command.
-import { accessSync, constants as FS, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants as FS, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -533,22 +533,68 @@ export function upgradeBlock(pkgRoot) {
 //
 // A file is the only channel between the two processes: the supervisor writes
 // one when the relaunch fails, and the worker it starts instead reads it here.
-// Same directory and same per-package naming as the update markers, for the
-// same reason — several decks share a home directory and must not answer for
-// each other.
+// Same directory as the update markers, and named after the package for the
+// same reason they are.
+//
+// The package name alone was not enough, and one release was enough to show it.
+// Two `npx ccdeck` decks resolve into the same content-addressed _npx directory,
+// so they run the same package at the same version out of the same home: when
+// one user's upgrade failed, the other deck — which had never asked for
+// anything — read that note as its own, reported `upgrade: {state:"failed"}`
+// and labelled its first ever click "Retry update". The version-staleness rule
+// below cannot catch it, because both decks are the same version.
+//
+// So the name carries WHOSE failure it is as well as which package's: the pid
+// of the supervisor that wrote it. That is unique among the decks alive on the
+// machine, and it crosses the process boundary on its own — the worker that
+// reads the note is a child the supervisor spawns after the failure, and
+// inherits the pid through AGENTS_DECK_SUPERVISOR_PID. A worker with no
+// supervisor to answer for reads nothing rather than falling back to a shared
+// file, which is the bug this whole naming exists to avoid.
+const NOTE_PREFIX = ".restart-failed-";
 
-export function restartFailureFileName(name = "agents-deck") {
-  return `.restart-failed-${safeNamePart(name)}`;
+/** Which supervisor a note belongs to, as the file name may spell it. Digits
+ *  and nothing else: legal on every filesystem, and readable back as the pid
+ *  the sweep below asks about. Anything else is refused rather than scrubbed
+ *  into digits, since two keys must never collapse into one file name. */
+function safeOwner(key) {
+  const raw = String(key ?? "").trim();
+  return /^\d{1,12}$/.test(raw) && Number(raw) > 0 ? raw : null;
 }
 
-function restartFailurePath(name) {
-  return join(MARKER_DIR, restartFailureFileName(name));
+/** This process's own key, set by the supervisor on itself and inherited by
+ *  every worker it launches. */
+export function restartFailureKey(env = process.env) {
+  return safeOwner(env?.AGENTS_DECK_SUPERVISOR_PID);
+}
+
+/** Called once by the supervisor, on its own environment, which every worker it
+ *  spawns then inherits. Assigned rather than defaulted: a deck launched by
+ *  another deck's npx relaunch inherits that supervisor's key and must answer
+ *  for itself, not for the parent whose upgrade it is the result of. */
+export function claimRestartFailureKey(env = process.env, pid = process.pid) {
+  env.AGENTS_DECK_SUPERVISOR_PID = String(pid);
+  return safeOwner(pid);
+}
+
+/** `ccdeck` under supervisor 4821 → `.restart-failed-ccdeck-4821`, or null when
+ *  there is no supervisor, which is not a deck any note can be about. */
+export function restartFailureFileName(name = "agents-deck", key = restartFailureKey()) {
+  const owner = safeOwner(key);
+  return owner ? `${NOTE_PREFIX}${safeNamePart(name)}-${owner}` : null;
+}
+
+function restartFailurePath(name, key) {
+  const file = restartFailureFileName(name, key);
+  return file ? join(MARKER_DIR, file) : null;
 }
 
 /** Called by the supervisor, in the moment between "npx failed" and "relaunch
  *  the old copy". Best-effort: a read-only home costs the report, not the deck. */
-export function recordRestartFailure({ name = "agents-deck", command = null, error = null, version = null, at = Date.now() } = {}) {
-  const path = restartFailurePath(name);
+export function recordRestartFailure({ name = "agents-deck", command = null, error = null, version = null, at = Date.now(), key = restartFailureKey() } = {}) {
+  const file = restartFailureFileName(name, key);
+  if (!file) return;
+  const path = join(MARKER_DIR, file);
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({
@@ -558,27 +604,59 @@ export function recordRestartFailure({ name = "agents-deck", command = null, err
       version,
       at,
     }));
+    sweepOrphanedNotes(file);
   } catch { /* ignore */ }
 }
 
 /** Called before each attempt, so a retry is answered by its own outcome rather
  *  than by the last one's. */
-export function clearRestartFailure(name = "agents-deck") {
-  try { rmSync(restartFailurePath(name), { force: true }); } catch { /* ignore */ }
+export function clearRestartFailure(name = "agents-deck", key = restartFailureKey()) {
+  const path = restartFailurePath(name, key);
+  if (!path) return;
+  try { rmSync(path, { force: true }); } catch { /* ignore */ }
 }
 
-export function readRestartFailure(name = "agents-deck") {
+export function readRestartFailure(name = "agents-deck", key = restartFailureKey()) {
+  const path = restartFailurePath(name, key);
+  if (!path) return null;
   try {
-    const m = JSON.parse(readFileSync(restartFailurePath(name), "utf8"));
+    const m = JSON.parse(readFileSync(path, "utf8"));
     return m && typeof m === "object" ? m : null;
   } catch {
     return null;
   }
 }
 
+// A note is named after a process, so it outlives its deck whenever that
+// supervisor is killed before anyone reads the tab, and nothing would ever
+// delete it: the retry that clears one is exactly the thing that never happened.
+// Swept from the only path that creates notes, and only where the owner is
+// provably gone — another deck's note is another deck's to clear. Names without
+// a pid are the single shared file of v1.33.82, which nothing reads any more.
+function sweepOrphanedNotes(keep) {
+  let files;
+  try { files = readdirSync(MARKER_DIR); } catch { return; }
+  for (const f of files) {
+    if (f === keep || !f.startsWith(NOTE_PREFIX)) continue;
+    const owner = Number(f.slice(f.lastIndexOf("-") + 1));
+    if (Number.isInteger(owner) && owner > 0 && processAlive(owner)) continue;
+    try { rmSync(join(MARKER_DIR, f), { force: true }); } catch { /* ignore */ }
+  }
+}
+
+// Signal 0 delivers nothing; it only asks whether the pid could be signalled.
+// EPERM is someone else's process answering, which is still a process — the
+// same test sweepStaleDiscovery makes of the discovery files.
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e?.code === "EPERM"; }
+}
+
 /**
  * The note as the version report should carry it, or null when it no longer
  * describes this deck. Pure, because the staleness rule is the whole subtlety.
+ * WHOSE failure it is was settled by the file name; this decides only whether
+ * it is still current.
  *
  * The note names the version that was running when the upgrade failed. While
  * that is still the version on disk, the failure is current: the deck really is
@@ -730,6 +808,9 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
   // by construction, and a running one must not be reported as a past failure.
   // The note is read whatever the registry is doing — it is a local event, not
   // a lookup — so an offline deck still explains why its update did nothing.
+  // Only the note addressed to this deck's own supervisor is read: the decks
+  // sharing this home directory are usually the same package at the same
+  // version, and none of them may answer for another's failed upgrade.
   const live = upgradeStatus();
   const upgrade = live.state === "idle"
     ? (restartFailureNotice(readRestartFailure(target), installed) ?? live)
