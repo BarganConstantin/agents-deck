@@ -1288,6 +1288,22 @@ function randomPort(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+// Parse a request target into a URL, or null when it cannot be parsed.
+//
+// The base is the constant "http://localhost", never the Host header. Node's
+// HTTP parser hands the header through verbatim, so a client sending
+// `Host: bad host` used to produce `new URL("/", "http://bad host")`, which
+// throws ERR_INVALID_URL synchronously inside the request listener. Nothing
+// catches that — it becomes an uncaughtException, the worker exits 1 and the
+// supervisor tears the whole deck down for a single malformed request. Only
+// the path and the query are ever read from this URL, so the authority half
+// is free to be a constant — which is what every other new URL call site in
+// this file already does. Anything else unparseable answers 400 instead.
+export function requestUrl(rawUrl) {
+  try { return new URL(rawUrl ?? "/", "http://localhost"); }
+  catch { return null; }
+}
+
 async function tryListen(server, port, host) {
   return new Promise((res, rej) => {
     server.once("error", rej);
@@ -1340,7 +1356,10 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
   });
 
   const server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? host}`);
+    const url = requestUrl(req.url);
+    // Unparseable request target. Nothing below can route it, and throwing here
+    // would be an uncaughtException inside the listener — i.e. the whole deck.
+    if (!url) return send(res, 400, { error: "bad request target" });
 
     if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
