@@ -6,7 +6,7 @@
 // These tests pin the three-way comparison that makes that state visible.
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine } from "../../server/self-update.mjs";
+import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode } from "../../server/self-update.mjs";
 
 describe("isOlder", () => {
   it("compares numerically, not lexically", () => {
@@ -164,6 +164,8 @@ describe("upgradeCommand — the command must match how this copy was installed"
   });
 
   it("still names npx for an npx cache", () => {
+    // No metadata to read at that path, so it falls back to the package name
+    // rather than inventing a spec.
     expect(upgradeCommand("/Users/x/.npm/_npx/9a1c/node_modules/agents-deck"))
       .toBe("npx -y agents-deck@latest");
   });
@@ -171,5 +173,83 @@ describe("upgradeCommand — the command must match how this copy was installed"
   it("still names the global install otherwise", () => {
     expect(upgradeCommand("/usr/local/lib/node_modules/agents-deck"))
       .toBe("npm i -g agents-deck@latest");
+  });
+});
+
+// An npx run cannot be upgraded in place — npx hashes the SPEC and unpacks into
+// its own directory, so `npm i -g` would upgrade something this process can
+// never reach. Re-running the spec is the only path, and these pin the two
+// things that have to be right for it: which directory holds the metadata, and
+// which of the three published names the user actually typed.
+describe("npxRoot", () => {
+  it("stops at the hash directory, not at the package", () => {
+    expect(npxRoot("/Users/x/.npm/_npx/007bf1a1643dbf9a/node_modules/agents-deck"))
+      .toBe("/Users/x/.npm/_npx/007bf1a1643dbf9a");
+  });
+
+  it("keeps Windows separators, because the path has to be usable there", () => {
+    expect(npxRoot("C:\\Users\\x\\AppData\\Local\\npm-cache\\_npx\\9a1c\\node_modules\\ccdeck"))
+      .toBe("C:\\Users\\x\\AppData\\Local\\npm-cache\\_npx\\9a1c");
+  });
+
+  it("is null outside an npx cache", () => {
+    expect(npxRoot("/usr/local/lib/node_modules/agents-deck")).toBeNull();
+    expect(npxRoot("/Users/x/.npm/_npx")).toBeNull(); // no hash directory
+    expect(npxRoot(null)).toBeNull();
+  });
+});
+
+describe("bareSpecName", () => {
+  it("drops the version but keeps the scope", () => {
+    expect(bareSpecName("ccdeck@1.33.1")).toBe("ccdeck");
+    expect(bareSpecName("ccdeck")).toBe("ccdeck");
+    expect(bareSpecName("@scope/pkg")).toBe("@scope/pkg");
+    expect(bareSpecName("@scope/pkg@2.0.0")).toBe("@scope/pkg");
+  });
+
+  it("refuses anything that is not a plain name", () => {
+    // A tarball or git spec cannot have "@latest" appended to it, and running
+    // whatever it points at would be running something the user never chose.
+    expect(bareSpecName("https://example.com/pkg.tgz")).toBeNull();
+    expect(bareSpecName("file:../local")).toBeNull();
+    expect(bareSpecName("")).toBeNull();
+    expect(bareSpecName(null)).toBeNull();
+  });
+});
+
+describe("npxSpecFromMeta", () => {
+  it("re-runs the name the user typed, not the package it resolved to", () => {
+    // `npx ccdeck` lands in a directory whose node_modules holds agents-deck —
+    // re-running "agents-deck" would work, but would quietly move them off the
+    // name they chose.
+    expect(npxSpecFromMeta({ _npx: { packages: ["ccdeck"] } })).toBe("ccdeck@latest");
+    expect(npxSpecFromMeta({ _npx: { packages: ["agent-dag@1.33.1"] } })).toBe("agent-dag@latest");
+  });
+
+  it("falls back to the package name when the metadata is missing or unusable", () => {
+    expect(npxSpecFromMeta(null)).toBe("agents-deck@latest");
+    expect(npxSpecFromMeta({})).toBe("agents-deck@latest");
+    expect(npxSpecFromMeta({ _npx: { packages: ["file:../local"] } })).toBe("agents-deck@latest");
+  });
+});
+
+describe("upgradeMode", () => {
+  it("installs where an install is allowed", () => {
+    expect(upgradeMode(null)).toBe("install");
+  });
+
+  it("treats npx as a different route, not as a refusal", () => {
+    // The distinction the UI hangs on: "npx" blocks `npm i -g` while still
+    // leaving a way to update, so the banner shows a button rather than only a
+    // command to paste.
+    expect(upgradeMode("npx")).toBe("npx");
+  });
+
+  it("has no route for a checkout, an unwritable prefix, or an opt-out", () => {
+    expect(upgradeMode("git_checkout")).toBeNull();
+    expect(upgradeMode("not_writable")).toBeNull();
+    // AGENTS_DECK_NO_INSTALL=1 is checked first, so opting out also turns off
+    // the npx route — one switch, not two.
+    expect(upgradeMode("opted_out")).toBeNull();
   });
 });

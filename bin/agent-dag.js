@@ -23,13 +23,22 @@
 // Everything else the deck does still lives in bin/deck.js. This file must stay
 // boring: it is the one process that is never replaced.
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installedVersion, npxRestartSpec } from "../src/server/self-update.mjs";
 
-// Chosen because it means nothing else here: the worker exits 0 normally and
+// Chosen because they mean nothing else here: the worker exits 0 normally and
 // non-zero on failure, both of which must pass straight through.
-const RESTART_CODE = 75;
-const WORKER = join(dirname(fileURLToPath(import.meta.url)), "deck.js");
+const RESTART_CODE = 75; // come back running the files on disk
+const UPGRADE_CODE = 76; // come back through npx, which fetches newer files
+const BIN_DIR = dirname(fileURLToPath(import.meta.url));
+const WORKER = join(BIN_DIR, "deck.js");
+const PKG_ROOT = dirname(BIN_DIR);
+
+// npx is a .cmd shim on Windows, which spawn can only launch through a shell.
+const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
+const VERSION = installedVersion(PKG_ROOT) ?? "?";
 
 // The port the worker actually bound, which is not necessarily the one it was
 // asked for — the first launch falls back to a random port when 4317 is taken.
@@ -38,6 +47,10 @@ const WORKER = join(dirname(fileURLToPath(import.meta.url)), "deck.js");
 let boundPort = null;
 let restarts = 0;
 let child = null;
+// Set by the signal handlers. Without it, Ctrl+C during an npx fetch looks
+// exactly like a failed fetch, and the fallback below would resurrect the deck
+// the user just stopped.
+let stopping = false;
 
 function launch(respawn) {
   const args = [WORKER, ...process.argv.slice(2)];
@@ -71,6 +84,11 @@ function launch(respawn) {
       launch(true);
       return;
     }
+    if (code === UPGRADE_CODE) {
+      restarts++;
+      launchNpx();
+      return;
+    }
     // Anything else is the worker's own verdict and belongs to whoever started
     // us — including the ccdeck wrapper, which exits with our code in turn.
     if (signal) process.kill(process.pid, signal);
@@ -83,6 +101,85 @@ function launch(respawn) {
   });
 }
 
+/** Drop the two flags launchNpx sets itself. `--port` takes a value, and both
+ *  spellings npm's parser accepts (`--port 4317`, `--port=4317`) have to go. */
+function withoutPortAndOpen(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--no-open") continue;
+    if (a === "--port") { i++; continue; } // and its value
+    if (a.startsWith("--port=")) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * Come back on a newer version, for a deck that npx started.
+ *
+ * There is nothing to install here: npx unpacks each spec into its own
+ * content-addressed directory under _npx, so `npm i -g` would upgrade something
+ * this process could never reach. `npx -y <spec>@latest` resolves fresh, gets a
+ * DIFFERENT directory, and starts the deck there — on the port we hand it, so
+ * the tab that asked for the update reconnects to the same URL.
+ *
+ * This process stays as the parent rather than exec-ing, for the same reasons
+ * the file's header gives, plus one more: a fetch can fail (offline, registry
+ * down), and someone has to bring the working copy back when it does.
+ */
+function launchNpx() {
+  const spec = npxRestartSpec(PKG_ROOT);
+  if (!spec) { launch(true); return; } // not an npx run after all
+  // Our two are appended, so the originals are dropped rather than left to be
+  // overridden — `--port 4317 --no-open --port 4317 --no-open` works, but it is
+  // what the next person reads in `ps`.
+  const args = ["-y", spec, ...withoutPortAndOpen(process.argv.slice(2))];
+  if (boundPort != null) args.push("--port", String(boundPort));
+  // The tab that asked for this is open and reconnecting; a second one would be
+  // the deck talking over itself.
+  args.push("--no-open");
+
+  process.stdout.write(`\n  ↻  fetching ${spec}…\n`);
+  const started = spawn(NPX, args, { stdio: "inherit", shell: process.platform === "win32" });
+  child = started;
+
+  // Whether the replacement ever got as far as serving. An npx that cannot
+  // resolve exits in seconds having bound nothing; a deck the user stops with
+  // Ctrl+C exits non-zero too, and only this tells the two apart.
+  let served = false;
+  const probe = setInterval(() => {
+    if (boundPort == null || served) return;
+    const sock = connect({ port: boundPort, host: "127.0.0.1" });
+    sock.setTimeout(1000);
+    sock.on("connect", () => { served = true; sock.destroy(); });
+    sock.on("timeout", () => sock.destroy());
+    sock.on("error", () => { /* not up yet */ });
+  }, 1000);
+  probe.unref?.();
+
+  const giveUp = (why) => {
+    clearInterval(probe);
+    child = null;
+    if (stopping || served) return; // the user stopped it, or it ran and ended
+    console.error(`agents-deck: ${why} — staying on v${VERSION}`);
+    restarts++;
+    launch(true);
+  };
+
+  started.on("exit", (code, signal) => {
+    clearInterval(probe);
+    child = null;
+    if (stopping || served) {
+      if (signal) process.kill(process.pid, signal);
+      else process.exit(code ?? 0);
+      return;
+    }
+    giveUp(`${NPX} ${spec} exited ${code ?? signal}`);
+  });
+  started.on("error", (err) => giveUp(`could not run ${NPX}: ${err.message}`));
+}
+
 // Ctrl+C already reaches the child directly — it shares this process group — so
 // forwarding would deliver it twice. These handlers exist only to keep the
 // supervisor alive long enough for the child's own graceful shutdown to run and
@@ -92,8 +189,18 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     // On Windows none of these are delivered to a Node process, which is fine:
     // there the console kills the whole tree and sweepStaleDiscovery cleans up
     // on the next boot.
-    if (child) { try { child.kill(sig); } catch { /* already gone */ } }
-    else process.exit(0);
+    const second = stopping; // an impatient user pressing Ctrl+C again
+    stopping = true;
+    if (!child) { process.exit(0); return; }
+    try { child.kill(second ? "SIGKILL" : sig); } catch { /* already gone */ }
+    // The npx step is a shell that exec's the new deck, and a signal can land in
+    // the gap: the shell dies, the process replacing it never saw it. One more
+    // attempt a moment later catches that; it is a no-op when the first worked.
+    if (!second) {
+      setTimeout(() => {
+        if (stopping && child) { try { child.kill("SIGTERM"); } catch { /* gone */ } }
+      }, 2500).unref();
+    }
   });
 }
 

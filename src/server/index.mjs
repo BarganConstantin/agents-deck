@@ -938,7 +938,11 @@ async function serveStatic(req, res, url) {
     // SPA fallback to index.html for client-side routes
     try {
       const idx = await readFile(join(WEB_DIST, "index.html"));
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      // Same no-cache as the normal path above, which this used to omit. It
+      // matters more since the deck upgrades itself: index.html is the file
+      // naming the hashed bundle, so a heuristically-cached copy sends the tab
+      // back to the OLD assets after an update and the reload achieves nothing.
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" });
       res.end(idx);
     } catch {
       send(res, 404, { error: "ui not built. run `pnpm build` or `npm run build`." });
@@ -1041,17 +1045,39 @@ async function handleUpgrade(_req, res) {
 
 // Restart is a two-party act: this half answers before it stops listening, so
 // the caller learns it was accepted rather than losing the socket mid-reply.
-function handleRestart(_req, res) {
+//
+// `{ upgrade: true }` asks for the npx variant: come back through
+// `npx -y <spec>@latest` instead of re-running the files already here. Granted
+// only where that is genuinely how this copy updates — the mode is decided from
+// the install on disk, never from the request.
+async function handleRestart(req, res) {
   if (!_onRestart) return send(res, 501, { ok: false, reason: "unsupervised" });
   // Enforced here and not only in the UI. Under --no-persist a restart destroys
   // the whole canvas — replayLog has no file to read — and a destructive act
   // must not be prevented by a hidden button alone.
   if (!_canRestart) return send(res, 409, { ok: false, reason: "no_persist" });
+
+  let wantUpgrade = false;
+  if (req.method === "POST") {
+    const body = await readBody(req).catch(() => null);
+    try { wantUpgrade = JSON.parse(body ?? "")?.upgrade === true; } catch { /* a plain restart */ }
+  }
+  let mode = null;
+  if (wantUpgrade) {
+    const { upgradeBlock, upgradeMode, npxRestartSpec } = await import(
+      pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href
+    );
+    if (upgradeMode(upgradeBlock(PKG_ROOT)) !== "npx" || !npxRestartSpec(PKG_ROOT)) {
+      return send(res, 409, { ok: false, reason: "not_npx" });
+    }
+    mode = "npx";
+  }
+
   if (_restarting) return send(res, 202, { ok: true, already: true });
   _restarting = true;
-  send(res, 200, { ok: true });
+  send(res, 200, { ok: true, mode });
   // Let the response flush before the listener goes away.
-  setTimeout(() => { try { _onRestart(); } catch { _restarting = false; } }, 120).unref();
+  setTimeout(() => { try { _onRestart(mode); } catch { _restarting = false; } }, 120).unref();
 }
 
 async function handleQuota(req, res) {
@@ -1311,7 +1337,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "GET"  && url.pathname === "/events")     return handleSse(req, res);
     if (req.method === "GET"  && url.pathname === "/api/version")     return guard(handleVersion(req, res), res);
     if (req.method === "POST" && url.pathname === "/api/upgrade")     return guard(handleUpgrade(req, res), res);
-    if (req.method === "POST" && url.pathname === "/api/restart")     return handleRestart(req, res);
+    if (req.method === "POST" && url.pathname === "/api/restart")     return guard(handleRestart(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/quota")       return guard(handleQuota(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-usage")  return guard(handleCodexUsage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/codex-quota") return guard(handleCodexQuota(req, res), res);

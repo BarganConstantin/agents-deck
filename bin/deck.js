@@ -19,8 +19,12 @@ const PKG_VERSION = (() => {
 const argv = process.argv.slice(2);
 const flags = parseArgs(argv);
 
-// Exit code the supervisor reads as "bring me back". Anything else it forwards.
+// Exit codes the supervisor reads as "bring me back": 75 from the files on
+// disk, 76 through npx — which is the only way an npx run reaches a newer
+// version, since its directory is never upgraded in place. Anything else it
+// forwards.
 const RESTART_CODE = 75;
+const UPGRADE_CODE = 76;
 const RESPAWN = process.env.AGENTS_DECK_RESPAWN === "1";
 const SUPERVISED = typeof process.send === "function";
 
@@ -241,14 +245,19 @@ if (upgrade) {
 // only after this process is gone — which is precisely what keeps the
 // replacement from racing this listener onto a random fallback port.
 let restarting = false;
-const requestRestart = () => {
+const requestRestart = (mode) => {
   if (restarting) return;
   restarting = true;
-  const to = restartTarget();
+  // "npx" means the newer code is not on this disk at all — the supervisor has
+  // to fetch it — so there is no target version to name yet.
+  const viaNpx = mode === "npx";
+  const to = viaNpx ? null : restartTarget();
   process.stdout.write(
-    `\n  ${C.yellow}↻${C.reset}  ${C.dim}restarting${to ? ` → v${to}` : ""}…${C.reset}\n`,
+    viaNpx
+      ? `\n  ${C.yellow}↻${C.reset}  ${C.dim}updating via npx…${C.reset}\n`
+      : `\n  ${C.yellow}↻${C.reset}  ${C.dim}restarting${to ? ` → v${to}` : ""}…${C.reset}\n`,
   );
-  shutdown(RESTART_CODE);
+  shutdown(viaNpx ? UPGRADE_CODE : RESTART_CODE);
 };
 // What a restart would land on. Read from disk now rather than remembered from
 // boot, because the whole point is that the two differ.
@@ -283,7 +292,11 @@ if (RESPAWN) {
 } else {
   sp.stop(true, `server ready     ${C.dim}→ ${C.reset}${C.bCyan}${C.bold}${url}${C.reset}`);
   if (persist) process.stdout.write(`  ${C.dim}log       : ${persist}${C.reset}\n`);
-  process.stdout.write(`\n  ${C.green}${C.bold}▶  opening browser…${C.reset}\n\n`);
+  // Only when one is actually being opened. Under --no-open — which is how an
+  // npx update relaunches, with a tab already waiting — this was announcing
+  // something that never happened.
+  if (openBrowser) process.stdout.write(`\n  ${C.green}${C.bold}▶  opening browser…${C.reset}\n\n`);
+  else process.stdout.write("\n");
 }
 
 const discoveryFile = await writeDiscovery({ port: realPort, workspace });
@@ -311,7 +324,9 @@ const shutdown = async (code = 0) => {
   // on its own before either timer runs, Node would otherwise exit 0 and the
   // supervisor would take that as "done" instead of "bring me back".
   process.exitCode = code;
-  if (tty && code !== RESTART_CODE) process.stdout.write(`\n\n  ${C.yellow}◉  shutting down…${C.reset}\n`);
+  if (tty && code !== RESTART_CODE && code !== UPGRADE_CODE) {
+    process.stdout.write(`\n\n  ${C.yellow}◉  shutting down…${C.reset}\n`);
+  }
   await removeDiscovery(discoveryFile);
   server.close(() => process.exit(code));
   // SSE connections never end by themselves, so close() alone would sit out the
