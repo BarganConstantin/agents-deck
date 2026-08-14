@@ -89,6 +89,51 @@ function isAlive(pid) {
   catch (e) { return e && e.code === "EPERM"; }
 }
 
+/**
+ * Of the decks about to be posted this event, which ones should also write it
+ * to disk? Returns the subset that should; every other target is asked to
+ * display the event and keep no record of it.
+ *
+ * The fan-out itself is deliberate — several decks can match one session and
+ * they should all draw it. Persisting is not: they all default to the same
+ * <claude config dir>/agent-dag/events.jsonl, so each of them appending its own
+ * copy wrote every event once per running deck. The file then grew N times as
+ * fast, rotated N times as often, and every replay of it ingested each tool
+ * call N times, which is what put duplicate tools and duplicate bubbles on the
+ * canvas after a restart.
+ *
+ * Decks are therefore grouped by the log file each one names in its discovery
+ * record, and one deck per group is elected. Grouping by the file rather than
+ * counting decks is what keeps the overrides honest: a deck run with
+ * `--history` sits alone in its own group and always writes, a deck run with
+ * `--no-persist` reports no file and can never be elected to write for one that
+ * does, and a deck too old to report either keeps the behaviour it had before
+ * this rule existed. Within a group the lowest port wins — a fixed rule, so the
+ * same deck holds the file for as long as it is up and the next one inherits it
+ * as soon as that deck is gone.
+ *
+ * The platform is a parameter, like cwdInWorkspace's, so the case-folding half
+ * is testable from any machine.
+ */
+function electWriters(decks, platform = process.platform) {
+  const byLog = new Map();
+  for (const d of decks) {
+    const log = typeof d.persist === "string" ? d.persist : "";
+    // Two namespaces, so a deck with no log to share — and a deck too old to
+    // report one — is alone in its group and cannot collide with a real path.
+    const key = log
+      ? `log:${foldsCase(platform) ? log.toLowerCase() : log}`
+      : `deck:${d.pid}:${d.port}`;
+    const held = byLog.get(key);
+    // Ports are unique among live decks; pid only breaks a tie a stale
+    // discovery file could invent, so the answer stays deterministic.
+    if (!held || d.port < held.port || (d.port === held.port && d.pid < held.pid)) {
+      byLog.set(key, d);
+    }
+  }
+  return new Set(byLog.values());
+}
+
 function main() {
   // Hard cap so a stuck server can never wedge the host CLI.
   setTimeout(() => process.exit(0), 1500);
@@ -151,6 +196,9 @@ function main() {
     const bestLen = matches[0].wsLen;
     const targets = matches.filter(m => m.wsLen === bestLen);
 
+    // One deck per events log records this event; the others only draw it.
+    const writers = electWriters(targets.map(m => m.d));
+
     let pending = targets.length;
     const done = () => { if (--pending <= 0) process.exit(0); };
 
@@ -160,7 +208,7 @@ function main() {
       const req = http.request({
         hostname: "127.0.0.1",
         port: d.port,
-        path: "/api/event",
+        path: writers.has(d) ? "/api/event" : "/api/event?persist=0",
         method: "POST",
         headers: { "Content-Type": "application/json" },
         timeout: 1000,
@@ -175,7 +223,8 @@ function main() {
 
 // The host CLI always runs this file as the process entry point — the command
 // the installer writes is `"<node>" "<...>/hook.js" --provider <name>`. Under a
-// require() it exports the matching rule and starts nothing, which is what lets
-// the rule be tested without a 1.5s exit timer in the test runner.
-module.exports = { cwdInWorkspace, foldsCase };
+// require() it exports the matching and election rules and starts nothing,
+// which is what lets them be tested without a 1.5s exit timer in the test
+// runner.
+module.exports = { cwdInWorkspace, foldsCase, electWriters };
 if (require.main === module) main();

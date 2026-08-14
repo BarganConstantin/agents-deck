@@ -73,9 +73,14 @@ const openBrowser = flags.noOpen !== true;
 // config dir rather than assuming ~/.claude — see src/server/claude-dir.mjs.
 const { claudeConfigDir } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-dir.mjs")).href);
+// Resolved here rather than left as typed: the discovery file publishes this
+// path so the hook can tell which decks share one log and elect a single
+// writer for it, and two spellings of one file would read as two files.
+// startServer resolves it the same way, from this same process, so the two
+// always name the same file.
 const persist = flags.noPersist
   ? null
-  : (flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
+  : resolve(flags.history ?? join(claudeConfigDir(), "agent-dag", "events.jsonl"));
 
 const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
@@ -328,7 +333,7 @@ if (RESPAWN) {
   else process.stdout.write("\n");
 }
 
-const discoveryFile = await writeDiscovery({ port: realPort, workspace });
+const discoveryFile = await writeDiscovery({ port: realPort, workspace, persist });
 
 // Never on a respawn: the tab that asked for the restart is still open and
 // reconnecting on its own. A second one would be the deck talking over itself.

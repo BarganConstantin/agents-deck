@@ -300,13 +300,19 @@ export function hasCodexInstalled() {
   return existsSync(CODEX_DIR);
 }
 
-export async function writeDiscovery({ port, workspace }) {
+export async function writeDiscovery({ port, workspace, persist = null }) {
   await ensureDir(AGENT_DAG_DIR);
   const file = join(AGENT_DAG_DIR, `${process.pid}.json`);
   const data = {
     pid: process.pid,
     port,
     workspace: workspace ?? "",
+    // Absolute path of the events log this deck appends to, or null under
+    // --no-persist. The hook reads it to elect a single writer per file:
+    // several decks receive the same event by design, and without this they
+    // each appended their own copy to the one log they share. See
+    // electWriters in hook/hook.js.
+    persist: typeof persist === "string" && persist !== "" ? persist : null,
     startedAt: new Date().toISOString(),
   };
   await writeFile(file, JSON.stringify(data, null, 2) + "\n", "utf8");
