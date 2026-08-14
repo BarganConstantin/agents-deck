@@ -9,7 +9,13 @@
 // the server between the two steps here. That is why this is a dialog with
 // state rather than a single form — and why closing it has to cancel, not just
 // disappear.
+//
+// And nothing starts until asked. This used to launch the sign-in the moment
+// the dialog opened, which threw a browser tab at anyone who came here to paste
+// a share — an irreversible side effect as the greeting. Opening a dialog is
+// not consent to open a browser.
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import Confetti from "./Confetti";
 
 /** Server-side login progress, polled while the dialog is open. */
 type LoginState = {
@@ -64,6 +70,17 @@ const REASONS: Record<string, string> = {
 const say = (out: { reason?: string; detail?: string; error?: string } | null, fallback: string) =>
   out?.detail || (out?.reason ? REASONS[out.reason] ?? out.reason : null) || out?.error || fallback;
 
+/** The check mark, drawn rather than shown. 340ms, ease-out, once. */
+const SuccessMark = React.forwardRef<SVGSVGElement>((_props, ref) => {
+  return (
+    <svg className="aa-mark" viewBox="0 0 44 44" aria-hidden ref={ref}>
+      <circle className="aa-mark-ring" cx="22" cy="22" r="20" />
+      <path className="aa-mark-tick" d="M13.5 22.5 L19.5 28.5 L31 17" />
+    </svg>
+  );
+});
+SuccessMark.displayName = "SuccessMark";
+
 export default function AddAccountDialog({ onClose, onChanged }: Props) {
   const [tab, setTab] = useState<"login" | "paste">("login");
   const [login, setLogin] = useState<LoginState | null>(null);
@@ -71,9 +88,12 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
   const [blob, setBlob] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [imported, setImported] = useState<{ added: boolean; num: string | null } | null>(null);
+  const [imported, setImported] = useState<{ added: boolean; num: string | null; email: string | null } | null>(null);
   const startedRef = useRef(false);
   const codeRef = useRef<HTMLInputElement | null>(null);
+  const blobRef = useRef<HTMLInputElement | null>(null);
+  // The burst needs a point on screen to come from, and the mark is it.
+  const markRef = useRef<SVGSVGElement | null>(null);
 
   const close = useCallback(() => {
     // A live `claude auth login` on the server outlives this component, and an
@@ -89,8 +109,9 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [close]);
 
-  // Start the sign-in as soon as that tab is chosen: the URL is the first thing
-  // the user needs, and asking them to press "begin" first buys nothing.
+  // Started by the button, never by arriving. `claude auth login` opens a
+  // browser tab as its first act, and a dialog that does that before being
+  // asked is a dialog nobody trusts to open again.
   const start = useCallback(async () => {
     setBusy(true);
     setError(null);
@@ -100,11 +121,6 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     if (!out?.ok) { setError(say(out, "could not start the sign-in")); return; }
     setLogin(out as LoginState);
   }, []);
-
-  useEffect(() => {
-    if (tab !== "login" || startedRef.current) return;
-    start();
-  }, [tab, start]);
 
   // Poll only while something is actually moving on the server.
   useEffect(() => {
@@ -122,6 +138,10 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     if (login?.state === "awaiting_code") codeRef.current?.focus();
     if (login?.state === "done") onChanged();
   }, [login?.state, onChanged]);
+
+  // The share tab's field is the only thing on it; focusing it saves a click
+  // and makes ⌘V the obvious next move.
+  useEffect(() => { if (tab === "paste") blobRef.current?.focus(); }, [tab]);
 
   const submitCode = useCallback(async () => {
     setBusy(true);
@@ -147,7 +167,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     setBusy(false);
     if (!out?.ok) { setError(say(out, "the import failed")); return; }
     setBlob("");
-    setImported({ added: out.added === true, num: out.num ?? null });
+    setImported({ added: out.added === true, num: out.num ?? null, email: out.email ?? null });
     onChanged();
   }, [blob, onChanged]);
 
@@ -173,12 +193,14 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
         <section className="modal-body aa-body">
           {tab === "login" ? (
             done ? (
-              <div className="aa-step">
-                <h4>{done.added ? `Added account ${done.num}` : "Credentials refreshed"}</h4>
+              <div className="aa-done">
+                <SuccessMark ref={markRef} />
+                <Confetti anchor={markRef} />
+                <h4>{done.added ? `Account ${done.num} added` : "Credentials refreshed"}</h4>
                 <p className="aa-note">
-                  {done.email}
+                  <strong>{done.email}</strong>
                   {done.added
-                    ? " is now in the rotation. The account you were using is still active."
+                    ? " is in the rotation. The account you were using is still active."
                     : " was already managed, so its stored credentials were replaced."}
                 </p>
                 <button type="button" className="btn primary" onClick={onClose}>Done</button>
@@ -220,7 +242,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
                   </p>
                 </div>
               </>
-            ) : login?.state === "failed" || error ? (
+            ) : login?.state === "failed" || (error && startedRef.current && !busy) ? (
               <div className="aa-step">
                 <h4>Sign-in failed</h4>
                 <p className="aa-err">{error ?? login?.error}</p>
@@ -228,14 +250,53 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
                   Try again
                 </button>
               </div>
-            ) : (
+            ) : busy || startedRef.current ? (
               <div className="aa-step"><p className="aa-note">Asking the claude CLI for a sign-in link…</p></div>
+            ) : (
+              // The primer. Says what the button will do before it does it —
+              // this one opens a browser tab, which is not something to spring
+              // on someone who wanted the other tab.
+              <div className="aa-step aa-primer">
+                <h4>Sign in to Anthropic</h4>
+                <p className="aa-note">
+                  Opens a browser tab where you approve the sign-in, then asks for the code it shows you.
+                  claude-swap records the account when it completes, and the account you are using now stays active.
+                </p>
+                <div className="aa-actions">
+                  <button type="button" className="btn primary" onClick={start} disabled={busy}>
+                    Open the sign-in page
+                  </button>
+                </div>
+              </div>
             )
+          ) : imported ? (
+            <div className="aa-done">
+              <SuccessMark ref={markRef} />
+              {/* Only when something actually arrived: celebrating a no-op is
+                  how a celebration stops meaning anything. */}
+              {imported.added && <Confetti anchor={markRef} />}
+              <h4>{imported.added ? `Account ${imported.num} imported` : "Already here"}</h4>
+              <p className="aa-note">
+                {imported.added ? (
+                  <>
+                    {imported.email ? <strong>{imported.email}</strong> : "That account"} is in the rotation now.
+                    Nothing changed on the deck you copied it from.
+                  </>
+                ) : (
+                  "This deck already holds that account, so nothing changed."
+                )}
+              </p>
+              <div className="aa-actions">
+                <button type="button" className="btn primary" onClick={onClose}>Done</button>
+                <button type="button" className="btn" onClick={() => setImported(null)}>Import another</button>
+              </div>
+            </div>
           ) : (
             <div className="aa-step">
               <h4>Paste an account shared from another deck</h4>
               <div className="aa-field">
                 <input
+                  ref={blobRef}
                   type="text"
                   value={blob}
                   onChange={e => setBlob(e.target.value)}
@@ -249,13 +310,6 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
                   {busy ? "importing…" : "Import"}
                 </button>
               </div>
-              {imported && (
-                <p className="aa-note">
-                  {imported.added
-                    ? `Added account ${imported.num}.`
-                    : "That account was already here, so nothing changed."}
-                </p>
-              )}
               {error && <p className="aa-err">{error}</p>}
               <p className="aa-note">
                 Use <strong>share</strong> on an account in the other deck. A share carries a live login and expires ten minutes after it is made.

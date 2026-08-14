@@ -3529,3 +3529,119 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .aa-field input::placeholder { color: var(--muted-dim); }
 .aa-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .aa-field input:disabled { opacity: 0.55; }
+
+/* ── add-account: the primer and the success state ──────────────────────────
+   Adding an account happens a handful of times in a deck's life, which is the
+   only reason anything here is allowed to celebrate. The rule elsewhere in this
+   app still holds: what you see hundreds of times a day does not animate. */
+.aa-primer .aa-note { max-width: 46ch; }
+.aa-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+
+.aa-done {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 2px;
+  text-align: center;
+  /* From 0.97, never from 0 — nothing in the real world appears from nothing. */
+  animation: aa-done-in 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+.aa-done h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.aa-done .aa-note { max-width: 44ch; }
+
+@keyframes aa-done-in {
+  from { opacity: 0; transform: scale(0.97) translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The mark draws itself: the ring sweeps, then the tick follows it. Drawing is
+   what makes it read as "this just happened" rather than "this was always so". */
+.aa-mark { width: 44px; height: 44px; overflow: visible; }
+.aa-mark-ring, .aa-mark-tick {
+  fill: none;
+  stroke: var(--ok);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.aa-mark-ring {
+  opacity: 0.45;
+  stroke-dasharray: 126;
+  stroke-dashoffset: 126;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  animation: aa-draw 380ms cubic-bezier(0.23, 1, 0.32, 1) 40ms forwards;
+}
+.aa-mark-tick {
+  stroke-dasharray: 30;
+  stroke-dashoffset: 30;
+  animation: aa-draw 260ms cubic-bezier(0.23, 1, 0.32, 1) 200ms forwards;
+}
+@keyframes aa-draw { to { stroke-dashoffset: 0; } }
+
+/* ── confetti ───────────────────────────────────────────────────────────────
+   Fixed and portalled to <body>, because the dialog clips: .modal is
+   overflow:hidden and .modal-body is overflow:auto, so a burst rendered inside
+   them is either invisible or the reason a scrollbar appears. Pointer-events
+   off, and the component unmounts it when the burst ends. transform and opacity
+   only, both GPU properties. */
+.confetti {
+  position: fixed;
+  width: 0;
+  height: 0;
+  z-index: 101;         /* one above .modal-backdrop */
+  pointer-events: none;
+}
+.confetti-bit {
+  position: absolute;
+  top: 0; left: 0;
+  width: 6px;
+  height: 9px;
+  margin: -4px 0 0 -3px;
+  border-radius: 1.5px;
+  background: var(--accent);
+  opacity: 0;
+  /* Two animations, not one: a single timing function governs every property
+     in a keyframe set, so the strong ease-out that makes the throw feel thrown
+     also raced the opacity ramp to zero — measured 0.05 at the halfway frame,
+     which is why the first version looked like nothing happened. Movement keeps
+     the ease-out; the fade runs linear on its own clock. */
+  animation:
+    aa-burst-move 900ms cubic-bezier(0.16, 0.9, 0.3, 1) both,
+    aa-burst-fade 900ms linear both;
+}
+.confetti-bit.round { width: 6px; height: 6px; border-radius: 50%; }
+.confetti-bit[data-hue="1"] { background: var(--ok); }
+.confetti-bit[data-hue="2"] { background: var(--warn); }
+.confetti-bit[data-hue="3"] { background: color-mix(in srgb, var(--accent) 55%, var(--ok)); }
+
+@keyframes aa-burst-move {
+  0%   { transform: translate3d(0, 0, 0) scale(calc(var(--s, 1) * 0.6)) rotate(0deg); }
+  /* Out to the full throw, then a little fall back: a burst that stops dead
+     reads as a sprite sheet rather than something thrown. */
+  70%  { transform: translate3d(var(--dx), var(--dy), 0) scale(var(--s, 1)) rotate(var(--rot)); }
+  100% { transform: translate3d(calc(var(--dx) * 1.08), calc(var(--dy) * 0.82 + 16px), 0) scale(calc(var(--s, 1) * 0.9)) rotate(var(--rot)); }
+}
+@keyframes aa-burst-fade {
+  0%   { opacity: 0; }
+  10%  { opacity: 1; }
+  62%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Comprehension stays, movement goes: the mark still appears, it just does
+     not draw, and the panel does not travel. Confetti is removed in JS. */
+  .aa-done { animation: aa-done-fade 160ms ease both; }
+  .aa-mark-ring, .aa-mark-tick { animation: none; stroke-dashoffset: 0; }
+  @keyframes aa-done-fade { from { opacity: 0; } to { opacity: 1; } }
+}
