@@ -898,15 +898,30 @@ async function codexScanOnce(firstRun) {
   }
 }
 
-function startCodexWatcher(workspace) {
+export function startCodexWatcher(workspace) {
   codexWorkspace = workspace ?? "";
-  if (!existsSync(CODEX_SESSIONS_DIR)) return null;
+  // Deliberately not gated on CODEX_SESSIONS_DIR existing. `codex login`
+  // creates ~/.codex, but sessions/ only appears when the first session
+  // starts — and rollout tailing is the only Codex capture path there is, so
+  // bailing out here meant a fresh install had to restart the deck before any
+  // Codex agent ever showed up, while the banner claimed to be watching.
+  // listRecentCodexRollouts returns [] while the directory is missing, so the
+  // poll below is a cheap no-op that doubles as the existence re-check. A
+  // filesystem watch is no help: fs.watch on a missing path throws, and
+  // watching the parent recursively is macOS/Windows-only.
+  //
   // Initial catalog: create roots for in-progress sessions, skip their
   // history, then poll for new lines.
   codexScanOnce(true).catch(() => {});
   codexWatchTimer = setInterval(() => { codexScanOnce(false).catch(() => {}); }, 1500);
   if (codexWatchTimer.unref) codexWatchTimer.unref();
   return codexWatchTimer;
+}
+
+/** Envelopes newer than `seq` from the ring buffer, oldest first. */
+export function eventsSince(seq) {
+  const after = Number(seq) || 0;
+  return events.filter(e => e.seq > after);
 }
 
 function pushEvent(raw, source, opts = {}) {
@@ -1513,8 +1528,7 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     if (req.method === "POST" && url.pathname === "/api/cswap-auto")  return guard(handleCswapAutoAction(req, res), res);
 
     if (req.method === "GET" && url.pathname === "/api/events") {
-      const since = Number(url.searchParams.get("since") ?? 0);
-      return send(res, 200, events.filter(e => e.seq > since));
+      return send(res, 200, eventsSince(url.searchParams.get("since") ?? 0));
     }
 
     // POST /api/clear — wipe in-memory buffer + persistence file (UI reset)
