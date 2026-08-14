@@ -2981,6 +2981,10 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .ap-header-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .ap-refresh { padding: 1px 6px; font-size: 11px; }
+/* The one moment this button does nothing. A reload can ask claude-swap to
+   collect over the network, so it is not instant, and without a dimmed state a
+   click that landed looks exactly like a click that missed. */
+.ap-refresh:disabled { opacity: 0.6; cursor: default; }
 
 .ap-account {
   padding: 9px 14px 8px;
@@ -3867,3 +3871,8 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .ap-fix:hover { background: color-mix(in srgb, var(--warn) 22%, transparent); border-color: var(--warn); }
 .ap-fix:active { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) { .ap-fix:active { transform: none; } }
+/* The same pill retries a reload that never landed — one failure, one thing to
+   do about it. The empty state is a flex column, which would otherwise stretch
+   a button across the whole panel and make it read as a banner. */
+.ap-empty .ap-fix { align-self: flex-start; margin: 5px 0 0; }
+.ap-empty .ap-fix:disabled { opacity: 0.6; cursor: default; }
