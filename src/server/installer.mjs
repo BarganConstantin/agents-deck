@@ -314,7 +314,7 @@ function persistField(persist) {
 // ignores the mode (NTFS ACLs inherit from the profile directory, which is
 // already per-user), and a file left over from an earlier run under a recycled
 // pid keeps its old mode through writeFile, hence the explicit chmod.
-export async function writeDiscovery({ port, workspace, token, persist = null }) {
+export async function writeDiscovery({ port, workspace, token, persist = null, codex = true }) {
   await ensureDir(AGENT_DAG_DIR);
   const file = discoveryPath();
   const data = {
@@ -330,6 +330,12 @@ export async function writeDiscovery({ port, workspace, token, persist = null })
     // each appended their own copy to the one log they share. See
     // electWriters in hook/hook.js.
     persist: persistField(persist),
+    // Is this deck tailing Codex's rollout files? Those events never pass
+    // through a hook, so the decks elect a writer for them among themselves —
+    // and a deck running --no-codex must be left out of that election rather
+    // than win it and record a rollout it is not even reading. See
+    // writesCodexLog in src/server/log-writer.mjs.
+    codex: codex !== false,
     startedAt: new Date().toISOString(),
   };
   await writeFile(file, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
@@ -357,13 +363,13 @@ export function discoveryPath() {
  * is cheap (one small read), so the deck checks rather than assumes.
  *
  * A file this process wrote is left alone, mode included. Anything else — no
- * file, unreadable, another pid, a stale port, token or events log — is
- * replaced. Every field the hooks read is compared, the log path included:
- * leave one out and a record missing it would pass as ours forever, which for
- * the log path means the hook cannot tell which decks share a file and they all
- * write their own copy of every event again.
+ * file, unreadable, another pid, a stale port, token, events log or Codex
+ * setting — is replaced. Every field another deck decides by is compared, the
+ * log path included: leave one out and a record missing it would pass as ours
+ * forever, which for the log path means no deck can tell which of them share a
+ * file and they all write their own copy of every event again.
  */
-export async function ensureDiscovery({ port, workspace, token, persist = null }) {
+export async function ensureDiscovery({ port, workspace, token, persist = null, codex = true }) {
   const file = discoveryPath();
   try {
     const d = JSON.parse(stripBom(await readFile(file, "utf8")));
@@ -372,11 +378,12 @@ export async function ensureDiscovery({ port, workspace, token, persist = null }
       && d.port === port
       && (d.workspace ?? "") === (workspace ?? "")
       && (d.token ?? "") === (token ?? "")
-      && (d.persist ?? null) === persistField(persist)) {
+      && (d.persist ?? null) === persistField(persist)
+      && d.codex === (codex !== false)) {
       return { file, rewritten: false };
     }
   } catch { /* missing, unreadable or corrupt — rewritten below */ }
-  await writeDiscovery({ port, workspace, token, persist });
+  await writeDiscovery({ port, workspace, token, persist, codex });
   return { file, rewritten: true };
 }
 
@@ -393,7 +400,7 @@ export async function ensureDiscovery({ port, workspace, token, persist = null }
  * `stop()` must be called before the file is removed on shutdown — otherwise
  * the next tick would put it straight back.
  */
-export function keepDiscovery({ port, workspace, token, persist = null, intervalMs = 5000, onState = null } = {}) {
+export function keepDiscovery({ port, workspace, token, persist = null, codex = true, intervalMs = 5000, onState = null } = {}) {
   // null until the first outcome, which therefore always differs and is always
   // reported — the caller learns where it stands before anything else happens.
   let healthy = null;
@@ -401,7 +408,7 @@ export function keepDiscovery({ port, workspace, token, persist = null, interval
   const check = async () => {
     let state;
     try {
-      const { rewritten } = await ensureDiscovery({ port, workspace, token, persist });
+      const { rewritten } = await ensureDiscovery({ port, workspace, token, persist, codex });
       state = { ok: true, rewritten, file: discoveryPath(), error: null };
     } catch (err) {
       state = { ok: false, rewritten: false, file: discoveryPath(), error: err };

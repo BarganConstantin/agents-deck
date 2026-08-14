@@ -344,13 +344,17 @@ if (RESPAWN) {
 // whatever else may later be listening on the same number. See hookToken().
 //
 // The log path goes in with them, so a hook can see which decks share one events
-// log and elect a single writer for it. See electWriters in hook/hook.js.
+// log and elect a single writer for it. See electWriters in hook/hook.js. The
+// Codex setting goes in for the half of that election no hook is part of: the
+// rollout files this deck tails itself, which a --no-codex deck must never be
+// elected to record. See writesCodexLog in src/server/log-writer.mjs.
 let registered = null;
 const discovery = keepDiscovery({
   port: realPort,
   workspace,
   token: hookToken(),
   persist,
+  codex: wantCodex,
   onState: (state) => {
     const first = registered === null;
     registered = state.ok;
