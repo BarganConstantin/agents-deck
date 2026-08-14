@@ -35,6 +35,49 @@ export function shouldReloadBundle(
   return lastTried !== running;
 }
 
+/** What a tab does with the version the server just reported: reload into the
+ *  new bundle, confirm the restart it was waiting on, or neither. */
+export type LandingStep = "wait" | "reload" | "confirm";
+
+/**
+ * The single decision a tab makes when `running` moves.
+ *
+ * One function rather than two, because the two halves have to agree on who
+ * consumes the pending marker and they cannot when they are separate effects on
+ * the same dependency: React flushes those in one synchronous pass, and
+ * `location.reload()` merely schedules a navigation — the task runs to
+ * completion. So the reload was asked for, and then the confirmation half went
+ * on to delete the marker meant to survive it, synchronously, into a
+ * sessionStorage that outlives the navigation. The new bundle came up, found
+ * nothing pending, and the "Restarted — now running vX" banner never showed for
+ * the one case it exists for: a restart that actually changed the version.
+ *
+ * `lastTried` is what separates "a reload is coming, leave the marker for the
+ * bundle that will be able to show it" from "a reload already happened and the
+ * bundle is STILL behind" — `npm version` without a rebuild, every checkout
+ * mid-release. In that second case no further reload is coming, so this page is
+ * the last one that can confirm, and it does.
+ */
+export function restartLandingStep(
+  { bundle, running, pending, lastTried }: {
+    bundle: string | null | undefined;
+    running: string | null | undefined;
+    /** The version the restart was promised to land on, "" when it was a plain
+     *  restart with no notice, or null when no restart is being waited on. */
+    pending: string | null;
+    lastTried: string | null;
+  },
+): LandingStep {
+  if (!running) return "wait";
+  // Ahead of the pending check on purpose: a restart from a terminal moves
+  // `running` with nothing pending in this tab, and that stale bundle still has
+  // to reload.
+  if (shouldReloadBundle({ bundle, running, lastTried })) return "reload";
+  if (pending == null) return "wait";
+  if (pending && pending !== running) return "wait"; // still the old process
+  return "confirm";
+}
+
 /** What /api/version says about the last upgrade attempt, as far as this file
  *  cares. `at` and `error` are the note the supervisor leaves behind when
  *  `npx -y <spec>@latest` fails; the in-process installer fills the same shape. */
