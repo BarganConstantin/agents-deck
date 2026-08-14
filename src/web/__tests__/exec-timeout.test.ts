@@ -86,7 +86,13 @@ describe("a run its own deadline stopped", () => {
         ].join("\n") + "\n");
         chmodSync(`${base}.exe`, 0o755);
 
-        const first = await run(base, [], { timeout: 700 });
+        // Generous, because the deadline has to outlast the child's STARTUP on
+        // a loaded machine, not just its first write: at 700ms this asserted an
+        // empty stdout whenever the whole suite ran in parallel, since /bin/sh
+        // had not reached `echo` before the clock ran out. The child sleeps 30s,
+        // so a larger deadline still times out — it only stops the test from
+        // measuring how busy the machine is.
+        const first = await run(base, [], { timeout: 3_000 });
         expect(first.ok).toBe(false);
         expect(first.timedOut).toBe(true);
         // What it printed before it hung survives the deadline: the callback
