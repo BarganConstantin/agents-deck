@@ -69,12 +69,14 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
 
   const inflight = data.tools.filter(t => !t.endedAt).length;
   const hue = sessionHue(data.sessionId);
-  const accent = `hsl(${hue} 70% 60%)`;
   const currentContextTokens = data.context?.currentContextTokens ?? 0;
   const hasContextSignal = data.kind === "root" && currentContextTokens > 0;
 
   return (
-    <div className={cls} style={{ "--accent": accent } as React.CSSProperties}>
+    // --accent itself is built in styles.css from this hue: the token that
+    // reads well on a #14161b node is not the one that reads on a white one,
+    // and .tokens-meta / .spawn-badge are text.
+    <div className={cls} style={{ "--session-hue": hue } as React.CSSProperties}>
       <span className="accent-stripe" />
       <Handle type="target" position={Position.Left} style={{ background: "transparent", border: "none" }} />
 

@@ -29,6 +29,22 @@
   --bg-grid-2: rgba(240,171,252,0.05);
   --grid-line: #1a1d24;
   --minimap-mask: rgba(11,12,16,0.85);
+  /* Per-session and per-MCP-server hues are hashed in JS (reducer.sessionHue,
+     ToolBursts.hashHue) and were, until #330, painted in JS at a lightness
+     hard-coded for this canvas. That put the colour on the wrong side of the
+     theme boundary: JS knows the hue, the cascade knows the theme, and one
+     number decided both — so eight colours were the only ones in the app that
+     could not answer to data-theme, and on white they were its worst readings
+     (a cluster label at 1.21:1 across the hue circle). JS now emits the hue
+     alone as --session-hue / --mcp-hue and the lightness comes from here, one
+     tier per job. These dark values ARE the shipped ones; #330 changed the
+     light theme only, so anything that moves here changes the dark canvas. */
+  --session-label-l: 78%;      /* .cluster-label — text, 4.5:1 */
+  --session-accent-l: 60%;     /* .agent-node --accent — text + the node's own chrome */
+  --session-rim-l: 55%;        /* both alpha-carrying cluster rims — decoration */
+  --session-edge-l: 72%;       /* live parent→child edge — a 2px stroke, 3:1 */
+  --session-edge-idle-l: 55%;  /* settled edge — 1.5px, same floor */
+  --mcp-dot-l: 65%;            /* topbar legend dot + the unknown-server burst stripe */
   color-scheme: dark;
 }
 
@@ -56,6 +72,23 @@
   --bg-grid-2: rgba(126,34,206,0.08);
   --grid-line: #d0d5dd;
   --minimap-mask: rgba(238,241,246,0.85);
+  /* The same six jobs, re-tuned for a white canvas — the whole point of #330.
+     Polarity inverts: on this bed a hue reads by being DARKER than what it
+     sits on, so the live edge (30%) is now darker than the settled one (36%)
+     where in dark it was brighter. Every value is the worst case over all 360
+     hues against the strictest surface it can land on (--bg #eef1f6 for the
+     opaque ones), which is always a yellow near h=60. The two rims cannot
+     clear 1.4.11 at any lightness — 32% of pure black on white is 2.19:1, a
+     ceiling below the floor — so they are tuned to the visual weight the same
+     rules carry in dark (1.53:1 and 1.31:1 here against 1.50:1 and 1.25:1
+     there) and stay decoration, which is what a wash behind a named, focusable
+     label is. session-hue.test.ts sweeps every one of them, every hue. */
+  --session-label-l: 26%;      /* 4.57:1 worst hue */
+  --session-accent-l: 26%;     /* 4.57:1 worst hue */
+  --session-rim-l: 38%;        /* dark-parity, not a floor — see above */
+  --session-edge-l: 30%;       /* 3.25:1 worst hue on the canvas */
+  --session-edge-idle-l: 36%;  /* 3.24:1 */
+  --mcp-dot-l: 32%;            /* 3.38:1 */
   color-scheme: light;
 }
 
@@ -363,6 +396,10 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  /* 8px of pure hue with nothing but a tooltip to name it — the fill IS the
+     identity here, which is why it gets the graphics floor rather than the
+     decoration treatment the cluster rims get. --mcp-hue comes from App. */
+  background: hsl(var(--mcp-hue, 200) 65% var(--mcp-dot-l));
   border: 1px solid rgba(0,0,0,0.35);
   box-shadow: 0 0 4px rgba(0,0,0,0.25);
 }
@@ -980,6 +1017,24 @@ button.btn.icon-btn {
   stroke-dasharray: 5;
   animation: dashflow 0.8s linear infinite;
 }
+/* Parent→child edges, in the session's hue. Two classes deep on purpose: this
+   has to outrank .animated above and the light-theme .react-flow__edge-path
+   further down, both of which land on 0-3-0, and an inline stroke is what used
+   to do that. It cannot go back to being inline — App would then be choosing
+   the lightness again, which is the whole defect #330 names.
+   A stroke is not text. 1.4.11 asks 3:1 of a graphic that carries meaning, and
+   these carry the one thing no label repeats — which agent spawned which — so
+   3:1 is the floor they are tuned to, not 4.5:1. Chasing 4.5 would have cost
+   ~24.5% lightness at S=80, a near-black hairline that reads as ink rather
+   than as a session's colour, and the hue is the only thing telling two
+   overlapping trees apart. The canvas is the only bed they are measured on:
+   nodes paint over edges, so an edge is never read against a node's panel. */
+.react-flow__edge.sess-edge.sess-live .react-flow__edge-path {
+  stroke: hsl(var(--session-hue, 200) 80% var(--session-edge-l));
+}
+.react-flow__edge.sess-edge.sess-idle .react-flow__edge-path {
+  stroke: hsl(var(--session-hue, 200) 50% var(--session-edge-idle-l));
+}
 @keyframes dashflow { to { stroke-dashoffset: -10; } }
 .react-flow__attribution { display: none; }
 .react-flow__controls {
@@ -999,7 +1054,14 @@ button.btn.icon-btn {
 
 /* ---------------- agent node ---------------- */
 
+/* The node's --accent is the session's hue, so everything inside it that reads
+   var(--accent) — the stripe, the selected ring, the active spark bar, the
+   token and spawn counts — recolours per session. AgentNode used to hand the
+   whole colour down; it hands down --session-hue now and the tier is the
+   cascade's. The rest of the app keeps the palette's own --accent: this
+   declaration is scoped to the node and inherits no further than its subtree. */
 .agent-node {
+  --accent: hsl(var(--session-hue, 200) 70% var(--session-accent-l));
   position: relative;
   min-width: 220px;
   max-width: 260px;
@@ -1395,10 +1457,17 @@ button.btn.icon-btn {
   pointer-events: none;
   z-index: 0;
 }
+/* --session-hue is the only thing SessionClusters still sets on these two: the
+   fallback exists so a card that somehow renders without one paints a colour
+   rather than dropping the declaration on the floor as invalid-at-computed-
+   value-time. The 4% wash keeps a single lightness in both themes on purpose —
+   at that alpha it composites to 1.01:1 either way, so a light tier would be
+   arithmetic with nothing on the other side of it. */
 .cluster-card {
   position: absolute;
   border-radius: 16px;
-  border: 1px solid transparent;
+  border: 1px solid hsl(var(--session-hue, 200) 65% var(--session-rim-l) / 0.32);
+  background: hsl(var(--session-hue, 200) 70% 50% / 0.04);
   transition: opacity 200ms ease, left 320ms cubic-bezier(0.22,1,0.36,1),
               top 320ms cubic-bezier(0.22,1,0.36,1),
               width 320ms cubic-bezier(0.22,1,0.36,1),
@@ -1425,7 +1494,8 @@ button.btn.icon-btn {
   padding: 3px 10px;
   border-radius: 999px;
   background: var(--bg);
-  border: 1px solid var(--line);
+  color: hsl(var(--session-hue, 200) 70% var(--session-label-l));
+  border: 1px solid hsl(var(--session-hue, 200) 65% var(--session-rim-l) / 0.5);
   box-shadow: 0 2px 6px rgba(0,0,0,0.25);
   white-space: nowrap;
   line-height: 1;
@@ -1463,6 +1533,15 @@ button.btn.icon-btn {
   background: var(--bg-soft);
   box-shadow: 0 1px 4px rgba(15,23,42,0.08);
 }
+/* brightness() above 1 is what "emphasis" means on a dark canvas and the exact
+   opposite of it here: the pill is already white so its background cannot
+   brighten, while the label — dark since #330 — walks toward the paper it sits
+   on. brightness(1.25) took the worst hue from 5.18:1 to 3.53:1, so a hover
+   would have dropped the only text in this layer under AA. Same gesture,
+   mirrored: the pill deepens instead, and the ratio goes up rather than down.
+   A hover that lowers a contrast is not a hover. */
+:root[data-theme="light"] .cluster-label:hover { filter: brightness(0.9); }
+:root[data-theme="light"] .cluster-label.dragging { filter: brightness(0.85); }
 
 /* ---------------- floating tool bursts ---------------- */
 
@@ -1611,6 +1690,13 @@ button.btn.icon-btn {
 .tool-burst.cat-plan  { --cat-accent: #c4b5fd; }
 .tool-burst.cat-mcp   { --cat-accent: #5eead4; }
 .tool-burst.cat-other { --cat-accent: #94a3b8; }
+/* An MCP server with no entry in MCP_SERVERS still has to look like itself, so
+   ToolBursts hashes its name to a hue and this pairs it with the tier the
+   topbar's legend dot uses — the same server, the same colour, two places.
+   Both classes are in the selector because .cat-mcp above would otherwise tie
+   on specificity and win on source order; a bubble only ever carries .mcp-hue
+   when parseMcpName matched, which is exactly when categoryFor returned mcp. */
+.tool-burst.cat-mcp.mcp-hue { --cat-accent: hsl(var(--mcp-hue, 170) 65% var(--mcp-dot-l)); }
 
 /* Dimmed bursts — matches the rf-dim treatment on agent nodes when /-search
    has an active query that doesn't include this bubble's agent. */
