@@ -231,6 +231,17 @@ function ensureSubagent(state: GraphState, sessionId: string, key: string, p: Ho
 
 function pushActive(state: GraphState, sessionId: string, key: string): void {
   const arr = state.activeSubagentStack.get(sessionId) ?? [];
+  // A SubagentStart can be delivered more than once — several live decks
+  // appending to one events.jsonl, a hook retry, a replay of a log region whose
+  // Stop only ever arrived live — and every copy carries a fresh seq, so the
+  // epoch guard lets it through. Pushing unconditionally then stranded the
+  // surplus copies: popActive removes exactly one, and each leftover kept
+  // resolveOwner handing the root's own traffic (its UserPromptSubmit and all
+  // its Pre/PostToolUse, none of which carries an agent_id) to a subagent that
+  // had already finished — which UserPromptSubmit flipped back to 'active' with
+  // endedAt cleared, past the reach of pruneOldAgents forever. A key already on
+  // the stack is a re-delivery, never depth: one subagent runs once.
+  if (arr.includes(key)) return;
   arr.push(key);
   state.activeSubagentStack.set(sessionId, arr);
 }
