@@ -402,3 +402,54 @@ describe("fillGapsWithNewSessions — reuse the space finished sessions left", (
     expect(fillGapsWithNewSessions(nodes, positions, pinned, measured, new Set(["p"]))).toEqual([]);
   });
 });
+
+// Reported with a screenshot: five Chrome bubbles piled on top of each other,
+// unreadable. Bursts are an overlay rather than React Flow nodes, so dagre
+// cannot see them — and ranksep is 160 while a lane reaches 420 out. The next
+// rank was therefore placed straight through the previous agent's bubbles.
+describe("burst lanes are reserved in the layout", () => {
+  const agent = (id: string, sessionId = "s1") => ({
+    id,
+    position: { x: 0, y: 0 },
+    data: { sessionId, kind: "agent" },
+  }) as any;
+
+  const measured = (ids: string[]) =>
+    new Map(ids.map(id => [id, { width: 240, height: 130 }]));
+
+  it("puts a child clear of its parent's bubbles", () => {
+    const nodes = [agent("a"), agent("b")];
+    const edges = [{ id: "e", source: "a", target: "b" }] as any;
+    const withLane = autoLayout(nodes, edges, {
+      measured: measured(["a", "b"]),
+      lanes: new Map([["a", 4]]),
+    });
+    const a = withLane.find(n => n.id === "a")!.position.x;
+    const b = withLane.find(n => n.id === "b")!.position.x;
+    // Card is 240 wide, bubbles start 60 past it and run to ~420 — so the
+    // child has to begin beyond that, not 160px after the card.
+    expect(b - a).toBeGreaterThan(240 + 420);
+  });
+
+  it("leaves an agent without tools exactly where it was", () => {
+    const nodes = [agent("a"), agent("b")];
+    const edges = [{ id: "e", source: "a", target: "b" }] as any;
+    const bare = autoLayout(nodes, edges, { measured: measured(["a", "b"]) });
+    const b = bare.find(n => n.id === "b")!.position.x;
+    const a = bare.find(n => n.id === "a")!.position.x;
+    // No lanes passed: the old spacing, so a quiet graph stays compact.
+    expect(b - a).toBeLessThan(240 + 420);
+  });
+
+  it("gives a tall trail vertical room too", () => {
+    // Four bubbles at 36px each start 6px below the card's top: 150px, which
+    // is more than the 130px card that dagre would otherwise reserve.
+    const nodes = [agent("a"), agent("b")];
+    const withLane = autoLayout(nodes, [] as any, {
+      measured: measured(["a", "b"]),
+      lanes: new Map([["a", 4], ["b", 4]]),
+    });
+    const ys = withLane.map(n => n.position.y).sort((x, y) => x - y);
+    expect(ys[1] - ys[0]).toBeGreaterThanOrEqual(150);
+  });
+});
