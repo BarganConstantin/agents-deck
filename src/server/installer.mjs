@@ -324,5 +324,7 @@ export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS, CODEX_EVENTS };
 // parse is never treated as an empty one, and the replacement is a single
 // rename rather than a truncate a reader can land inside. installScript carries
 // the same guarantee to the hook scripts themselves, which are the files live
-// sessions are actually executing.
-export { readSettingsForWrite, writeFileAtomic, installScript };
+// sessions are actually executing, and renameWithRetry goes out on its own for
+// the files writeFileAtomic cannot write — the fetched uv binary in
+// uv-bootstrap.mjs — which still need the Windows retry.
+export { readSettingsForWrite, writeFileAtomic, installScript, renameWithRetry };
