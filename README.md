@@ -1,50 +1,103 @@
+<div align="center">
+
 # agents-deck
+
+**A live canvas for your AI agents.** Watch Claude Code and OpenAI Codex fork subagents, call tools, and finish — all on one calm graph, in real time.
 
 [![npm](https://img.shields.io/npm/v/agents-deck?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/agents-deck)
 [![npm downloads](https://img.shields.io/npm/dm/agents-deck?color=blue)](https://www.npmjs.com/package/agents-deck)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js >=18](https://img.shields.io/badge/node-%3E%3D18-brightgreen?logo=node.js&logoColor=white)](https://nodejs.org)
+[![macOS · Linux · Windows](https://img.shields.io/badge/macOS%20·%20Linux%20·%20Windows-supported-6aa9f7)](#requirements)
 
-Live canvas for **Claude Code** and **OpenAI Codex** agents. Watch parallel subagents fork, call tools, and finish — all on one calm graph.
+```bash
+npx ccdeck
+```
 
 ![agents-deck — live agent DAG](image_2026-06-16_08-58-42.png)
+
+</div>
+
+---
+
+## Why
+
+An agent session is a tree, but a terminal shows it as a scroll. Five subagents working in parallel arrive as one interleaved column of text, and the questions you actually have — *what is running right now, what did that subagent do, which one is stuck, what is this costing* — are the ones the scroll answers worst.
+
+agents-deck draws the tree instead. It is read-only, local, and needs no configuration: it registers a hook, listens, and paints.
 
 ## Quick start
 
 ```bash
-npx agents-deck
+npx ccdeck          # or: npx agents-deck · npx agent-dag — same package
 ```
 
-Opens **http://127.0.0.1:4317** and auto-registers the Claude Code hook. Start any Claude Code or Codex session and the graph fills in live.
+Opens **http://127.0.0.1:4317** and registers the Claude Code hook on first run. Start any Claude Code or Codex session and the graph fills in live. `Ctrl+C` stops it.
 
-No config. No install step. Ctrl+C to stop.
+No config file. No account. No telemetry. Nothing leaves your machine except one ~20-byte version check against the npm registry, which you can turn off.
 
-## Features
+## What you get
 
-- **Live DAG** — nodes are agents, edges are spawns and tool calls; in-flight edges animate, settled edges fade
-- **Dual provider** — Claude Code via hooks, Codex via log-tail; both appear on the same canvas; the model chip (`Opus 4.8`, `GPT-5.5`) tells them apart
-- **Click-to-inspect** — click any node for prompt, tool calls, token usage, and timing
-- **Persistent replay** — events survive restarts; the log at `~/.claude/agent-dag/events.jsonl` replays the last session on open
-- **Workspace filter** — `--scope` limits capture to the current directory; `--workspace <path>` for any subtree
-- **Zero trust step for Codex** — no hook install, no `/hooks` trust prompt; the server tails `~/.codex/sessions/` directly
-- **Version drift warning** — Node caches modules at startup, so a deck upgraded while running keeps executing the old code. The topbar says so, and points at the restart or the upgrade command
-- **One-click update** — when a newer release is on npm, `Update now` installs it in the background and the deck restarts itself as soon as nothing is running. Never runs behind your back, and declines outright where it could do harm
-- **Accounts without a terminal** — sign a new Claude account in from the panel, share one to another machine, rename, reorder or remove. No `claude auth login`, no `cswap add`
+| | |
+|---|---|
+| **Live DAG** | Nodes are agents, edges are spawns and tool calls. In-flight edges animate, settled ones fade. |
+| **Both providers, one canvas** | Claude Code through hooks, Codex through its rollout log. The model chip (`Opus 5`, `GPT-5.5`) tells them apart. |
+| **Click to inspect** | Any node opens its prompt, tool calls, token usage and timing. |
+| **Cost and quota, live** | Spend per model and per session, plus Claude and Codex quota windows as they refill. |
+| **Survives restarts** | Events are appended to `~/.claude/agent-dag/events.jsonl` and replayed on open. |
+| **Accounts without a terminal** | Sign a new Claude account in, share one to another machine, rename, reorder, remove — from the panel. |
+| **Knows when it is stale** | Node caches modules at startup, so an upgraded-while-running deck keeps executing old code. This one says so, and can restart itself when nothing is running. |
+| **Workspace scoping** | `--scope` for the current directory, `--workspace <path>` for any subtree. |
 
 ## How it works
 
-Two capture paths feed one SSE stream → one browser canvas.
+Two capture paths feed one SSE stream, which feeds one canvas.
 
-**Claude Code** — on first run `agents-deck` injects a hook entry into `~/.claude/settings.json` for every relevant event:
+**Claude Code** — on first run, agents-deck adds a hook entry to `~/.claude/settings.json` for every relevant event:
 
 ```
 SessionStart · UserPromptSubmit · PreToolUse · PostToolUse · PostToolUseFailure
 SubagentStart · SubagentStop · Stop · SessionEnd · Notification
 ```
 
-Each hook fires the bundled `hook.js`, which POSTs the event JSON to the running server.
+Each one fires the bundled `hook.js`, which POSTs the event JSON to the running server. The hook is fire-and-forget with a 1-second timeout: if the deck is not running, your session is not slowed down and nothing fails.
 
-**OpenAI Codex** — Codex CLI hooks don't fire reliably on Windows (the sandbox refuses to spawn them). Instead, the server tails Codex's rollout files at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and reconstructs an equivalent event stream — session start, prompts, tool calls, token usage, model. No hook install, no trust step needed. Set `CODEX_HOME` to override the default path.
+**OpenAI Codex** — Codex CLI hooks do not fire reliably on Windows, so nothing is installed at all. The server tails Codex's own rollout files at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and reconstructs the equivalent stream — session start, prompts, tool calls, token usage, model. No hook install, no trust prompt. Set `CODEX_HOME` to override the path.
+
+## Accounts
+
+The Accounts panel reads the store [claude-swap](https://pypi.org/project/claude-swap/) keeps, and can drive it.
+
+**`+` → Sign in** runs `claude auth login`, shows you the link, takes the code your browser gives back, and hands the result to `cswap add`. The account you were using **stays active** — signing in replaces the live credentials, so the previous one is switched back the moment the new one is recorded. The code goes straight into the CLI's stdin on this machine; it is never stored, logged, or sent anywhere else.
+
+**`share`** on an account produces a `ccdeck1:…` blob to paste into another deck's **`+` → Paste a share**.
+
+> [!WARNING]
+> A share carries that account's **live login in the clear** — claude-swap's export format has no encryption. It expires ten minutes after it is made and imports refuse it after that. While it lives, treat it like a password: anything that can read your clipboard can read the account.
+
+Renaming, reordering and removing are on the same row menu. Removal takes two clicks and cannot be undone.
+
+## Updating
+
+The deck checks npm for a newer release at most once an hour, plus once when it starts — the request is a ~20-byte GET to `registry.npmjs.org`. Click the version chip in the topbar to ask immediately.
+
+What the banner offers depends on how this copy was installed:
+
+| Installed as | Offer |
+|---|---|
+| global npm install | **Update now** — runs `npm install -g agents-deck@latest`, then restarts once nothing is running |
+| `npx` | **Update & restart** — re-runs the spec through npx, which fetches a fresh copy and takes over the same port |
+| git checkout | the command, because your working copy leads npm: `git pull && npm run build` |
+| directory not writable | the command — a root-owned prefix is declined up front rather than failing inside npm |
+| `AGENTS_DECK_NO_INSTALL=1` | the command only; you asked for no installs |
+
+Nothing is ever installed unless you click, the argument vector is fixed in the server rather than taken from the request, and the command is always on screen — button or no button. If npm fails, the banner shows npm's own last line.
+
+### Restarting
+
+agents-deck runs as a two-process pair: a supervisor that owns nothing but the lifecycle, and the deck itself. When newer code is found, the deck exits with code 75 and the supervisor brings it back **on the port it actually bound**, which is not always the one it asked for. Ctrl+C, stdout and exit codes behave exactly as before — same terminal, same process group.
+
+It restarts on its own only after 30 seconds with nothing running, because hook events are fire-and-forget and anything fired during the gap is lost. The toggle in the banner turns that off; the preference is per-browser. Under `--no-persist` a restart is refused outright — with no event log there is nothing to replay, and the canvas would be gone.
 
 ## Options
 
@@ -67,73 +120,17 @@ agents-deck [options]
 
 Environment:
 
-```
-AGENT_DAG_PORT               Default port, same as -p
-CODEX_HOME                   Override ~/.codex
-AGENTS_DECK_NO_INSTALL=1     Never install or update claude-swap / ccusage,
-                             and don't ask npm about newer agents-deck releases
-AGENTS_DECK_NO_UPDATE_CHECK=1  Don't ask npm about releases, but keep everything else
-AGENTS_DECK_NO_FRESHEN=1     Never nudge claude-swap to collect usage early
-```
-
-The update check is one ~20-byte GET to `registry.npmjs.org`, at most once a day.
-Being told to restart after an upgrade is local only — no network involved — and
-cannot be turned off, because a deck running superseded code is a bug you cannot
-see any other way.
-
-### Updating
-
-`Update now` runs `npm install -g agents-deck@latest` and nothing else — the
-argument vector is fixed in the server, not taken from the request. When it
-finishes, the newer files on disk trigger the ordinary restart path below.
-
-Nothing is ever installed unless you click. The button is replaced by the reason
-when installing would be wrong:
-
-| | |
+| Variable | Effect |
 |---|---|
-| git checkout | your working copy leads npm; pull instead |
-| npx | its cache directory is never upgraded in place |
-| directory not writable | a root-owned global prefix — declined up front rather than failing inside npm |
-| `AGENTS_DECK_NO_INSTALL=1` | you asked for no installs |
+| `AGENT_DAG_PORT` | Default port, same as `-p` |
+| `CODEX_HOME` | Override `~/.codex` |
+| `AGENTS_DECK_NO_INSTALL=1` | Never install or update claude-swap / ccusage, and never ask npm about releases |
+| `AGENTS_DECK_NO_UPDATE_CHECK=1` | Don't ask npm about releases, but keep everything else |
+| `AGENTS_DECK_NO_FRESHEN=1` | Never nudge claude-swap to collect usage early |
+| `AGENTS_DECK_CSWAP` | Full path to `cswap`, when it lives somewhere unusual |
+| `AGENTS_DECK_CLAUDE` | Full path to the `claude` CLI |
 
-If npm fails anyway, the banner shows npm's own last line and the command to run
-by hand. The command is always on screen, button or no button.
-
-### Accounts
-
-`+` in the Accounts panel signs a new account in: the deck runs `claude auth login`,
-shows you the link, takes the code the browser gives you, and hands the result to
-`cswap add`. **The account you were using stays active** — signing in replaces the
-live credentials, so the previous one is switched back the moment the new one is
-recorded.
-
-The code goes straight into the CLI's stdin on this machine. It is never stored,
-logged, or sent anywhere else.
-
-`share` on an account produces a `ccdeck1:…` blob to paste into another deck's
-`+ → Paste a share`. **It carries that account's live login in the clear** —
-claude-swap's export format has no encryption — so it expires ten minutes after it
-is made and imports refuse it after that. Treat it like a password while it lives:
-anything that reads your clipboard reads the account.
-
-Renaming, reordering and removing are on the same row menu. Removal takes two
-clicks and cannot be undone.
-
-### Restarting
-
-`agents-deck` runs as a two-process pair: a supervisor that owns nothing but the
-lifecycle, and the deck itself. When newer code is found on disk, the deck exits
-with code 75 and the supervisor brings it back **on the port it actually bound**,
-which is not always the one it asked for. Ctrl+C, stdout and exit codes behave
-exactly as before — same terminal, same process group.
-
-It restarts on its own only once nothing has been running for 30 seconds: hook
-events are fire-and-forget, so anything fired during the gap is lost. Turn that
-off with the toggle in the banner and use the button instead; the preference is
-per-browser. Under `--no-persist` restarting is refused outright, by the server
-and not just by the UI — with no event log there is nothing to replay, and the
-canvas would be gone.
+Being told to restart after an upgrade is local only — no network involved — and cannot be turned off, because a deck running superseded code is a bug you cannot see any other way.
 
 ## Uninstall
 
@@ -141,31 +138,32 @@ canvas would be gone.
 npx agents-deck --uninstall
 ```
 
-Removes all hook entries injected by agents-deck from `~/.claude/settings.json` (and `~/.codex/hooks.json` if present).
-
-## Legacy name
-
-Formerly **agent-dag**. Both names publish the same package and the `agent-dag` command is a built-in alias — existing installs and scripts keep working.
-
-```bash
-# both work identically
-npx agents-deck
-npx agent-dag
-```
+Removes every hook entry agents-deck injected from `~/.claude/settings.json`, and `~/.codex/hooks.json` if present.
 
 ## Design
 
 One canvas. No tabs. No kanban.
 
 - Node = agent (root session or subagent)
-- Edge = parent → child (spawn) or agent → tool (call)
-- In-flight = animated; settled = dimmed
-- Click a node for full details
+- Edge = parent → child (spawn), or agent → tool (call)
+- In-flight animates; settled dims
+- Click a node for the full story
+
+## Names
+
+One package, three commands — use whichever you can remember.
+
+```bash
+npx ccdeck        # short
+npx agents-deck   # canonical
+npx agent-dag     # the original name; existing installs and scripts keep working
+```
 
 ## Requirements
 
-- Node.js ≥ 18
+- Node.js ≥ 18 — macOS, Linux and Windows
 - Claude Code CLI or OpenAI Codex CLI (or both)
+- Optional: [claude-swap](https://pypi.org/project/claude-swap/) for the Accounts panel; the deck can install it for you
 
 ## License
 

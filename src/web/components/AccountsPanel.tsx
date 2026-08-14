@@ -129,12 +129,43 @@ function slotOptions(accounts: Account[]): number[] {
   return [...new Set([...used, max + 1])].sort((a, b) => a - b);
 }
 
-/** How long a share stays importable, said as a countdown. */
-function shareExpiry(expiresAt: number, nowSec: number): string {
+/**
+ * Copy text, and say whether it worked.
+ *
+ * navigator.clipboard is undefined outside a secure context and can sit
+ * unresolved while the browser decides on permission — which leaves a Copy
+ * button silently dead. Race it, then fall back to the old selection trick.
+ * Same shape as the version banner's copy, for the same reason.
+ */
+async function copyText(text: string): Promise<boolean> {
+  let ok = false;
+  try {
+    ok = await Promise.race([
+      navigator.clipboard?.writeText(text).then(() => true) ?? Promise.resolve(false),
+      new Promise<boolean>(r => window.setTimeout(() => r(false), 500)),
+    ]);
+  } catch { ok = false; }
+  if (ok) return true;
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    ok = document.execCommand("copy");
+    ta.remove();
+  } catch { ok = false; }
+  return ok;
+}
+
+/** How long a share stays importable, said as a countdown. `tone` drives the
+ *  colour: a share is a live credential, so running out is worth noticing. */
+export function shareExpiry(expiresAt: number, nowSec: number): { text: string; tone: "ok" | "soon" | "gone" } {
   const left = Math.round(expiresAt / 1000) - nowSec;
-  if (left <= 0) return "expired";
-  if (left < 60) return `expires in ${left}s`;
-  return `expires in ${Math.round(left / 60)}m`;
+  if (left <= 0) return { text: "expired", tone: "gone" };
+  if (left < 60) return { text: `expires in ${left}s`, tone: "soon" };
+  return { text: `expires in ${Math.round(left / 60)}m`, tone: "ok" };
 }
 
 interface Props { onClose: () => void }
@@ -432,19 +463,37 @@ export default function AccountsPanel({ onClose }: Props) {
                     >{confirmRemove === a.num ? "confirm remove" : "remove"}</button>
                   </div>
 
-                  {share?.num === a.num && (
-                    <div className="ap-share">
-                      <code className="ap-share-blob">{share.blob}</code>
-                      <div className="ap-share-foot">
-                        <button type="button" className="ap-manage-btn" onClick={async () => {
-                          try { await navigator.clipboard.writeText(share.blob); setShareCopied(true); } catch { /* select it by hand */ }
-                        }}>{shareCopied ? "copied" : "copy"}</button>
-                        <span className="ap-manage-hint">
-                          carries a live login · {shareExpiry(share.expiresAt, nowSec)}
-                        </span>
+                  {share?.num === a.num && (() => {
+                    const exp = shareExpiry(share.expiresAt, nowSec);
+                    const dead = exp.tone === "gone";
+                    return (
+                      <div className={`ap-share${dead ? " expired" : ""}`}>
+                        <code className="ap-share-blob">{share.blob}</code>
+                        <div className="ap-share-foot">
+                          {/* An expired blob is refused by the other deck, so
+                              offering to copy it is offering a dead end. */}
+                          <button type="button" className="ap-manage-btn" disabled={busy != null}
+                            onClick={async () => {
+                              if (dead) {
+                                setShareCopied(false);
+                                const out = await admin({ action: "share", account: a.num }, `share-${a.num}`);
+                                if (out?.ok) setShare({ num: a.num, blob: out.blob, expiresAt: out.expiresAt });
+                                return;
+                              }
+                              if (await copyText(share.blob)) {
+                                setShareCopied(true);
+                                window.setTimeout(() => setShareCopied(false), 1800);
+                              }
+                            }}>
+                            {dead ? "make a new share" : shareCopied ? "copied" : "copy"}
+                          </button>
+                          <span className="ap-manage-hint">
+                            carries a live login · <span className={`ap-share-expiry ${exp.tone}`}>{exp.text}</span>
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
             </div>
