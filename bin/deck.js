@@ -84,7 +84,7 @@ const persist = flags.noPersist
 
 const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-const { startServer } =
+const { startServer, hookToken } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
 
 // Codex hooks install when ~/.codex/ exists, unless --no-codex was passed.
@@ -333,7 +333,11 @@ if (RESPAWN) {
   else process.stdout.write("\n");
 }
 
-const discoveryFile = await writeDiscovery({ port: realPort, workspace, persist });
+// The token goes in with the port: it is what lets a hook tell this deck from
+// whatever else may later be listening on the same number. See hookToken().
+// The log path goes in too, so the hook can see which decks share one file and
+// elect a single writer for it. See electWriters in hook/hook.js.
+const discoveryFile = await writeDiscovery({ port: realPort, workspace, persist, token: hookToken() });
 
 // Never on a respawn: the tab that asked for the restart is still open and
 // reconnecting on its own. A second one would be the deck talking over itself.
@@ -411,7 +415,8 @@ Options:
       --no-persist         Don't write or replay events log (RAM-only)
       --codex              Force-enable Codex capture even if ~/.codex/ missing
       --no-codex           Skip Codex capture (Claude only)
-      --uninstall          Remove agents-deck Claude hook entries
+      --uninstall          Remove agents-deck's hooks from ~/.claude/settings.json and
+                           ~/.codex/hooks.json, and restore any sound hooks of yours it parked
   -h, --help               Show this help
 `);
 }

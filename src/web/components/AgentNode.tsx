@@ -66,6 +66,7 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
             <ContextDonut
               currentContextTokens={currentContextTokens}
               modelId={data.model}
+              contextWindow={data.contextWindow}
               onClick={() => data.onOpenContext!(data.sessionId)}
             />
           )}

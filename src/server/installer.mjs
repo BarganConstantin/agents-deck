@@ -300,13 +300,21 @@ export function hasCodexInstalled() {
   return existsSync(CODEX_DIR);
 }
 
-export async function writeDiscovery({ port, workspace, persist = null }) {
+// The token is the deck's proof of identity, so the file holding it is the
+// deck's key material: readable and writable by its owner, nobody else. Windows
+// ignores the mode (NTFS ACLs inherit from the profile directory, which is
+// already per-user), and a file left over from an earlier run under a recycled
+// pid keeps its old mode through writeFile, hence the explicit chmod.
+export async function writeDiscovery({ port, workspace, token, persist = null }) {
   await ensureDir(AGENT_DAG_DIR);
   const file = join(AGENT_DAG_DIR, `${process.pid}.json`);
   const data = {
     pid: process.pid,
     port,
     workspace: workspace ?? "",
+    // Without this the hooks refuse to post: a file naming a port it cannot
+    // authenticate is exactly the stale-file case they now decline to trust.
+    token: token ?? "",
     // Absolute path of the events log this deck appends to, or null under
     // --no-persist. The hook reads it to elect a single writer per file:
     // several decks receive the same event by design, and without this they
@@ -315,7 +323,8 @@ export async function writeDiscovery({ port, workspace, persist = null }) {
     persist: typeof persist === "string" && persist !== "" ? persist : null,
     startedAt: new Date().toISOString(),
   };
-  await writeFile(file, JSON.stringify(data, null, 2) + "\n", "utf8");
+  await writeFile(file, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await chmod(file, 0o600).catch(() => {});
   return file;
 }
 

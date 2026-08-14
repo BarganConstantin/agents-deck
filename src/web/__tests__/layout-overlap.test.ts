@@ -3,7 +3,7 @@
 // of asserting that dagre was called with the right arguments.
 import { describe, it, expect } from "vitest";
 import type { Node, Edge } from "reactflow";
-import { autoLayout, separateOverlaps, fillGapsWithNewSessions } from "../layout";
+import { autoLayout, separateOverlaps, fillGapsWithNewSessions, laneSignature } from "../layout";
 
 const W = 260, H = 120;
 
@@ -504,5 +504,118 @@ describe("burst lanes are reserved in the layout", () => {
     });
     const ys = withLane.map(n => n.position.y).sort((x, y) => x - y);
     expect(ys[1] - ys[0]).toBeGreaterThanOrEqual(150);
+  });
+});
+
+// Reserving the lane in dagre is not enough on its own. dagre runs once per
+// node; the repair passes run on every structural change and every render, and
+// they used to size a card from `measured` — which holds React Flow nodes, and
+// bursts are an overlay. So a card with a 420px lane was packed as if it were
+// 260px wide, one frame after dagre had made room for it.
+describe("the repair passes honour the burst lane", () => {
+  const LANE_W = 420;
+  const CHROME = 18 * 2 + 26 + 12;
+  const CROSS_SESSION_Y = CHROME + 72;
+  const laneH = (n: number) => (n > 0 ? 6 + n * 36 : 0);
+
+  /** What an agent really covers: its card plus its chips. */
+  const foot = (p: { x: number; y: number }, lane: number) => ({
+    x: p.x, y: p.y,
+    w: W + (lane > 0 ? LANE_W : 0),
+    h: Math.max(H, laneH(lane)),
+  });
+  type Rect = ReturnType<typeof foot>;
+  const hit = (a: Rect, b: Rect) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+  it("slides a neighbouring session out of the chips", () => {
+    // 400px apart is clear for two 260px cards, and a lane reaches 420 — so
+    // the neighbour is sitting inside the bubbles while nothing looks wrong to
+    // a pass that only knows about cards.
+    const nodes = [agent("a", "sa"), agent("b", "sb")];
+    const measured = sizes(["a", "b"]);
+    const cardsOnly = new Map([["a", { x: 0, y: 0 }], ["b", { x: 400, y: 0 }]]);
+    expect(separateOverlaps(nodes, cardsOnly, new Map(), measured)).toEqual([]);
+
+    const positions = new Map([["a", { x: 0, y: 0 }], ["b", { x: 400, y: 0 }]]);
+    const moved = separateOverlaps(nodes, positions, new Map(), measured, new Map([["a", 4]]));
+    expect(moved).toEqual(["b"]);
+    expect(hit(foot(positions.get("a")!, 4), foot(positions.get("b")!, 0))).toBe(false);
+    expect(positions.get("b")!.y).toBeGreaterThanOrEqual(laneH(4) + CROSS_SESSION_Y);
+  });
+
+  it("clears a child once its parent starts calling tools", () => {
+    // The #122 case. dagre placed the child one ranksep (160) past a parent
+    // that had just been created and had called nothing — the one frame the
+    // reservation used to be applied on. Forty tool calls later the parent's
+    // chips run straight through it.
+    const nodes = [agent("p", "s"), agent("c", "s")];
+    const measured = sizes(["p", "c"]);
+    const atCreation = new Map([["p", { x: 0, y: 0 }], ["c", { x: W + 160, y: 0 }]]);
+    expect(separateOverlaps(nodes, new Map(atCreation), new Map(), measured)).toEqual([]);
+
+    const positions = new Map(atCreation);
+    const moved = separateOverlaps(nodes, positions, new Map(), measured, new Map([["p", 4]]));
+    expect(moved).toEqual(["c"]);
+    expect(hit(foot(positions.get("p")!, 4), foot(positions.get("c")!, 0))).toBe(false);
+  });
+
+  it("leaves a quiet canvas exactly as it was", () => {
+    // The lane is only ever reserved for an agent that has one. Passing the
+    // map must not shuffle a board where nobody has called anything.
+    const nodes = [agent("a", "sa"), agent("b", "sb")];
+    const positions = new Map([["a", { x: 0, y: 0 }], ["b", { x: 400, y: 0 }]]);
+    expect(separateOverlaps(nodes, positions, new Map(), sizes(["a", "b"]), new Map())).toEqual([]);
+    expect(positions.get("b")).toEqual({ x: 400, y: 0 });
+  });
+
+  it("does not drop a new session into the band a lane is using", () => {
+    // The gap a pruned session left is only a gap if nothing is drawn in it.
+    const nodes = [agent("a", "sa"), agent("new", "snew")];
+    const measured = sizes(["a", "new"]);
+    const PADDING = CHROME + 72;
+
+    const bare = new Map([["a", { x: 0, y: 0 }], ["new", { x: 0, y: 900 }]]);
+    fillGapsWithNewSessions(nodes, bare, new Map(), measured, new Set(["new"]));
+    expect(bare.get("new")!.y).toBe(H + PADDING);
+
+    const withLane = new Map([["a", { x: 0, y: 0 }], ["new", { x: 0, y: 900 }]]);
+    fillGapsWithNewSessions(
+      nodes, withLane, new Map(), measured, new Set(["new"]), new Map([["a", 4]]),
+    );
+    expect(withLane.get("new")!.y).toBe(laneH(4) + PADDING);
+    expect(withLane.get("new")!.y).toBeGreaterThan(bare.get("new")!.y);
+  });
+});
+
+// The lane is rebuilt from the agents' tool counts on every render, but for a
+// long time only autoLayout read it — and autoLayout runs for a node on the
+// frame it appears, which is the frame an agent has just been created and has
+// no tools at all. This is what lets the cached arrangement notice the lane
+// arriving afterwards.
+describe("laneSignature", () => {
+  /** The App's rule: a lane per agent that has called something, capped at 4. */
+  const lanesFor = (tools: Record<string, number>) => {
+    const m = new Map<string, number>();
+    for (const [id, n] of Object.entries(tools)) if (n > 0) m.set(id, Math.min(4, n));
+    return m;
+  };
+
+  it("moves when an agent gains its first bubble", () => {
+    expect(laneSignature(lanesFor({ a: 1 }))).not.toBe(laneSignature(lanesFor({ a: 0 })));
+  });
+
+  it("stops moving once the trail is full", () => {
+    // Tool counts change constantly; re-laying out on every call would be far
+    // worse than the overlap. ToolBursts keeps four bubbles, so does this.
+    expect(laneSignature(lanesFor({ a: 40 }))).toBe(laneSignature(lanesFor({ a: 4 })));
+  });
+
+  it("does not depend on the order agents were added", () => {
+    expect(laneSignature(lanesFor({ a: 1, b: 2 }))).toBe(laneSignature(lanesFor({ b: 2, a: 1 })));
+  });
+
+  it("tells two agents' lanes apart", () => {
+    expect(laneSignature(lanesFor({ a: 1 }))).not.toBe(laneSignature(lanesFor({ b: 1 })));
   });
 });

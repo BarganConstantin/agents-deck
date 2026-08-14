@@ -29,12 +29,12 @@ ccdeck draws the tree instead. It is local and needs no configuration: it regist
 ## Quick start
 
 ```bash
-npx ccdeck          # or: npx agents-deck · npx agent-dag — same package
+npx ccdeck          # or: npx agents-deck · npx agent-dag — same deck
 ```
 
 Opens **http://127.0.0.1:4317** and registers the Claude Code hook on first run. Start any Claude Code or Codex session and the graph fills in live. `Ctrl+C` stops it.
 
-No config file. No account. No telemetry — nothing about your sessions is reported anywhere. What does go out is short and ordinary: a ~20-byte version check against the npm registry, installs and daily version checks for the two tools the deck manages (claude-swap from PyPI, ccusage from npm), and, while the page is open, quota reads to Anthropic and OpenAI signed with your own credentials — that is where those numbers live. `AGENTS_DECK_NO_INSTALL=1` turns off everything but the quota reads.
+No config file. No account. No telemetry — nothing about your sessions is reported anywhere. What does go out is short and ordinary: a ~20-byte version check against the npm registry (plus one small request to confirm a version it has not seen before), installs and daily version checks for the two tools the deck manages (claude-swap from PyPI, ccusage from npm), and, while the page is open, quota reads to Anthropic and OpenAI signed with your own credentials — that is where those numbers live. `AGENTS_DECK_NO_INSTALL=1` turns off everything but the quota reads.
 
 ## What you get
 
@@ -81,7 +81,7 @@ Renaming, reordering and removing are on the same row menu. Removal takes two cl
 
 ## Updating
 
-The deck checks npm for a newer release at most once an hour, plus once when it starts — the request is a ~20-byte GET to `registry.npmjs.org`. Click the version chip in the topbar to ask immediately.
+The deck checks npm for a newer release at most once an hour, plus once when it starts — a ~20-byte GET to `registry.npmjs.org`, asking about the package this copy would actually install (a deck started with `npx ccdeck` asks about `ccdeck`). When that names a version it has not seen before, one more request confirms the version is really there: npm moves the dist-tag before the version itself has propagated, and a banner shown inside that window ends in `ETARGET` instead of an upgrade. So a check is one request, or two when there is something new to confirm — and a version that is tagged but not yet installable is looked at again in five minutes rather than in an hour. Click the version chip in the topbar to ask immediately.
 
 What the banner offers depends on how this copy was installed:
 
@@ -153,15 +153,19 @@ One canvas. No tabs. No kanban.
 
 ## Names
 
-**ccdeck** is the name — of this repo and of the command. On npm the same build
-is published under three names, and all three ship all three commands, so use
-whichever you can remember.
+**ccdeck** is the name — of this repo and of the command. On npm it goes out
+under three, and `npx` runs the same deck from any of them.
 
 ```bash
 npx ccdeck        # this repo's name — the short one
 npx agents-deck   # the canonical npm package (in-app updates install this one)
 npx agent-dag     # the original name; existing installs and scripts keep working
 ```
+
+A global install is the one place the three differ. `agents-deck` and
+`agent-dag` are one build published twice, so `npm i -g` on either puts all
+three commands on your `PATH`. `ccdeck` is a thin package that depends on
+`agents-deck` and ships only the `ccdeck` command.
 
 The repository was previously named `agents-deck`; the old URL redirects here,
 so existing clones, links and bookmarks keep working.

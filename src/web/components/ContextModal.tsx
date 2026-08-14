@@ -5,7 +5,7 @@
 // counts come from a regex scan of the transcript JSONL on the server.
 import React from "react";
 import type { AgentNodeData } from "../types";
-import { fmtCost, costForUsage, contextWindowForModel } from "../pricing";
+import { fmtCost, costForUsage, effectiveContextWindow } from "../pricing";
 
 function fmtN(n: number): string { return n.toLocaleString(); }
 function fmtKB(bytes: number): string {
@@ -23,7 +23,7 @@ export default function ContextModal({ agent, onClose }: Props) {
   const ctx = agent.context;
   const usage = agent.usage;
   const current = ctx?.currentContextTokens ?? 0;
-  const window = contextWindowForModel(agent.model);
+  const window = effectiveContextWindow(agent.contextWindow, agent.model);
   const pct = Math.min(100, (current / window) * 100);
   const cost = costForUsage(usage, agent.model);
   const cumulative = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
@@ -99,12 +99,14 @@ function Row({ label, val, accent }: { label: string; val: string; accent?: bool
 interface DonutProps {
   currentContextTokens: number;
   modelId?: string;
+  /** Live window reported by the CLI, when the provider sends one. */
+  contextWindow?: number;
   size?: number;
   onClick?: () => void;
   title?: string;
 }
-export function ContextDonut({ currentContextTokens, modelId, size = 26, onClick, title }: DonutProps) {
-  const window = contextWindowForModel(modelId);
+export function ContextDonut({ currentContextTokens, modelId, contextWindow, size = 26, onClick, title }: DonutProps) {
+  const window = effectiveContextWindow(contextWindow, modelId);
   const pct = Math.min(1, currentContextTokens / window);
   const r = size / 2 - 3;
   const c = size / 2;

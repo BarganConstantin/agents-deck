@@ -284,3 +284,69 @@ describe("bubblePush — boxes that cross without anything growing", () => {
     expect(pos.get("s1")).toEqual({ x: 300, y: 250 });
   });
 });
+
+// An agent gaining a burst lane is the most common way a session on this canvas
+// gets bigger — 420px wider, up to 150px taller — and it is the one growth the
+// size test could not see, because `measured` holds React Flow nodes and bursts
+// are an overlay. So a session quietly grew a wall of chips over its neighbour
+// and, by its own accounting, nothing had changed size.
+describe("bubblePush — a lane is growth", () => {
+  const LANE_W = 420;
+  const laneH = (n: number) => (n > 0 ? 6 + n * 36 : 0);
+
+  const foot = (p: { x: number; y: number }, lane: number) => ({
+    x: p.x, y: p.y,
+    w: W + (lane > 0 ? LANE_W : 0),
+    h: Math.max(H, laneH(lane)),
+  });
+  type Rect = ReturnType<typeof foot>;
+  const clear = (a: Rect, b: Rect) =>
+    !(a.x < b.x + b.w + GAP_X && b.x < a.x + a.w + GAP_X &&
+      a.y < b.y + b.h + GAP_Y && b.y < a.y + a.h + GAP_Y);
+
+  /** `sb` sits beside `sa`: clear of its card, inside where its chips will be. */
+  const board = () => ({
+    nodes: [agent("a", "sa"), agent("b", "sb")],
+    pos: at([["a", 0, 0], ["b", 400, 200]]),
+    m: sizes(["a", "b"]),
+    prev: new Map<string, { w: number; h: number }>(),
+  });
+
+  it("still does nothing while neither agent has called a tool", () => {
+    const { nodes, pos, m, prev } = board();
+    bubblePush(nodes, pos, new Map(), m, prev);
+    expect(bubblePush(nodes, pos, new Map(), m, prev)).toEqual([]);
+    expect(pos.get("b")).toEqual({ x: 400, y: 200 });
+  });
+
+  it("pushes the neighbour out of the chips when an agent gains a lane", () => {
+    const { nodes, pos, m, prev } = board();
+    bubblePush(nodes, pos, new Map(), m, prev);
+
+    const lanes = new Map([["a", 4]]);
+    const moved = bubblePush(nodes, pos, new Map(), m, prev, false, lanes);
+
+    expect(moved).toEqual(["sb"]);
+    expect(clear(foot(pos.get("a")!, 4), foot(pos.get("b")!, 0))).toBe(true);
+  });
+
+  it("lets the session whose lane grew hold its ground", () => {
+    // The lane is the culprit, so its session is the heavy one — the same rule
+    // that applies when a session fans out subagents.
+    const { nodes, pos, m, prev } = board();
+    bubblePush(nodes, pos, new Map(), m, prev);
+    bubblePush(nodes, pos, new Map(), m, prev, false, new Map([["a", 4]]));
+    expect(pos.get("b")).not.toEqual({ x: 400, y: 200 });   // something did move
+    expect(pos.get("a")).toEqual({ x: 0, y: 0 });
+  });
+
+  it("settles — a second call with the same lanes moves nothing", () => {
+    const { nodes, pos, m, prev } = board();
+    const lanes = new Map([["a", 4]]);
+    bubblePush(nodes, pos, new Map(), m, prev);
+    expect(bubblePush(nodes, pos, new Map(), m, prev, false, lanes)).toEqual(["sb"]);
+    const after = JSON.stringify([...pos]);
+    expect(bubblePush(nodes, pos, new Map(), m, prev, false, lanes)).toEqual([]);
+    expect(JSON.stringify([...pos])).toBe(after);
+  });
+});
