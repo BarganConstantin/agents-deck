@@ -37,6 +37,16 @@ const NPM_SHELL = process.platform === "win32";
 let _installing = null;   // Promise guard so concurrent calls share one install
 let _checkedThisRun = false; // only kick the daily check once per process boot
 
+// AGENTS_DECK_NO_INSTALL=1 is documented as "never install or update
+// claude-swap / ccusage, and never ask npm about releases", so it has to hold
+// on the lazy path too — opening the usage-history modal must not be a way to
+// pull ccusage off the registry behind the user's back. Read per call rather
+// than once at import, because the module is imported lazily and a test (or an
+// embedder) may set it after load.
+function installsDisabled() {
+  return process.env.AGENTS_DECK_NO_INSTALL === "1";
+}
+
 // ── managed install ─────────────────────────────────────────────────────────
 
 // Absolute path to ccusage's CLI entry inside our managed install, or null if
@@ -103,6 +113,7 @@ function touchMarker() {
 
 // Non-blocking: compare installed version to npm `latest`; install if newer.
 function maybeBackgroundUpdate(installedVersion) {
+  if (installsDisabled()) return; // no `npm view`, no upgrade install
   if (_checkedThisRun || !updateCheckDue()) return;
   _checkedThisRun = true;
   touchMarker();
@@ -126,6 +137,13 @@ async function getRunner() {
   if (resolved) {
     maybeBackgroundUpdate(resolved.version);
     return { kind: "node", entry: resolved.entry };
+  }
+  // Nothing installed and installs are forbidden. The npx fallback is not an
+  // escape hatch — `npx -y ccusage@latest` downloads and runs the same package
+  // — so there is no runner to hand back. Fail with the reason, which the
+  // usage-history modal shows, instead of quietly installing.
+  if (installsDisabled()) {
+    throw new Error("ccusage is not installed, and installs are off (AGENTS_DECK_NO_INSTALL=1)");
   }
   // Cold: install once (deduped across concurrent callers).
   if (!_installing) {
@@ -232,6 +250,13 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
  * not hold up the server.
  */
 export function primeCcusage() {
+  // The CLI already skips this call under AGENTS_DECK_NO_INSTALL=1; repeating
+  // the check here keeps the promise a property of the module rather than of
+  // one caller.
+  if (installsDisabled()) {
+    const have = resolveEntry();
+    return have ? { state: "present", version: have.version } : { state: "unavailable" };
+  }
   const resolved = resolveEntry();
   if (resolved) {
     // Already installed: the daily check may still queue a background upgrade.
