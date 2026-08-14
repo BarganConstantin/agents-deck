@@ -16,10 +16,11 @@
 // not consent to open a browser.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Confetti from "./Confetti";
+import { isLoginOver, loginEndNotice, shouldPollLogin, type LoginServerState } from "../login-flow";
 
 /** Server-side login progress, polled while the dialog is open. */
 type LoginState = {
-  state: "idle" | "awaiting_url" | "awaiting_code" | "registering" | "done" | "failed";
+  state: LoginServerState;
   url: string | null;
   error: string | null;
   account: { num: string | null; email: string; added: boolean } | null;
@@ -122,9 +123,10 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
     setLogin(out as LoginState);
   }, []);
 
-  // Poll only while something is actually moving on the server.
+  // Poll only while something is actually moving on the server — see
+  // login-flow.ts for why "idle" ends the loop rather than continuing it.
   useEffect(() => {
-    if (!login || login.state === "done" || login.state === "failed") return;
+    if (!shouldPollLogin(login?.state)) return;
     const iv = window.setInterval(async () => {
       try {
         const res = await fetch("/api/claude-accounts/login");
@@ -172,6 +174,12 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
   }, [blob, onChanged]);
 
   const done = login?.state === "done" ? login.account : null;
+  // A sign-in that is over without having succeeded: the server's own "failed",
+  // or the "idle" it reports once it no longer holds the flow at all. Both end
+  // the same way — no spinner, no poll, and a sentence that says which of the
+  // two happened.
+  const ended = isLoginOver(login?.state) || Boolean(error && startedRef.current && !busy);
+  const notice = loginEndNotice({ state: login?.state, serverError: login?.error, localError: error });
 
   return (
     <div className="modal-backdrop" onClick={close} role="presentation">
@@ -242,10 +250,10 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
                   </p>
                 </div>
               </>
-            ) : login?.state === "failed" || (error && startedRef.current && !busy) ? (
+            ) : ended ? (
               <div className="aa-step">
-                <h4>Sign-in failed</h4>
-                <p className="aa-err">{error ?? login?.error}</p>
+                <h4>{notice.title}</h4>
+                <p className="aa-err">{notice.message}</p>
                 <button type="button" className="btn" onClick={() => { startedRef.current = false; setLogin(null); setError(null); start(); }}>
                   Try again
                 </button>
