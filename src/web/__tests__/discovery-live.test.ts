@@ -11,9 +11,11 @@
 // carrying on quietly.
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 // The installer resolves the Claude config dir at import time: CLAUDE_CONFIG_DIR
 // when set, otherwise ~/.claude via os.homedir(), which reads $HOME on POSIX and
@@ -155,6 +157,85 @@ describe("a discovery file that goes missing under a running deck", () => {
       expect(statSync(FILE).mode & 0o777).toBe(0o600);
     }
   });
+
+  // The write goes through writeFileAtomic, which replaces the file by renaming
+  // a fresh one over it — a fresh inode carries the umask's mode, not the old
+  // file's, unless something pins it. So the mode is checked after an overwrite
+  // too, and from a target deliberately left wider than it should be.
+  it("puts the mode back on a rewrite, not only on the first write", async () => {
+    if (process.platform === "win32") return;
+    await writeDiscovery({ port: PORT, workspace: WORKSPACE, token: TOKEN });
+    chmodSync(FILE, 0o644);
+    await writeDiscovery({ port: PORT, workspace: WORKSPACE, token: TOKEN });
+    expect(statSync(FILE).mode & 0o777).toBe(0o600);
+  });
+
+  // The atomic write's temp file is created beside the target and holds the same
+  // token, and it is born with whatever the umask allows. Nobody but the owner
+  // can reach into a 0700 directory to read it in the moment before the rename.
+  it("keeps the discovery directory closed to other users", async () => {
+    if (process.platform === "win32") return;
+    chmodSync(AGENT_DAG_DIR, 0o755);
+    await writeDiscovery({ port: PORT, workspace: WORKSPACE, token: TOKEN });
+    expect(statSync(AGENT_DAG_DIR).mode & 0o777).toBe(0o700);
+  });
+});
+
+// The bug this pins: registration used a plain writeFile, which truncates the
+// target and then fills it, so the record existed and was empty for a moment on
+// every rewrite. hook.js's electWriters, readLiveDecks and sweepStaleDiscovery
+// all parse each record whole, and one that fails to parse is a deck missing
+// from that cycle — an event logged by nobody, or logged twice by the decks that
+// remain. This reads the directory exactly as they do while the record is
+// rewritten underneath, and the read must never come back as anything but a
+// whole record.
+describe("a discovery file read while it is being rewritten", () => {
+  it("is never seen empty, truncated, or as anything but a finished record", async () => {
+    await writeDiscovery({ port: PORT, workspace: WORKSPACE, token: TOKEN });
+
+    const bad: string[] = [];
+    let reads = 0;
+    let spinning = true;
+
+    // What every reader does: each *.json in the directory, parsed whole. A file
+    // that vanishes between the listing and the read is not the failure under
+    // test — a name that is there and cannot be parsed is.
+    const readLikeAReader = () => {
+      for (const name of readdirSync(AGENT_DAG_DIR).filter(n => n.endsWith(".json"))) {
+        let raw: string;
+        try { raw = readFileSync(join(AGENT_DAG_DIR, name), "utf8"); } catch { continue; }
+        reads++;
+        try {
+          const d = JSON.parse(raw) as Record<string, unknown>;
+          if (d.token !== TOKEN || d.port !== PORT) bad.push(`incomplete record: ${raw.slice(0, 60)}`);
+        } catch (err) {
+          bad.push(`${(err as Error).message} reading ${JSON.stringify(raw.slice(0, 40))}`);
+        }
+      }
+    };
+
+    const spin = () => { if (!spinning) return; readLikeAReader(); setImmediate(spin); };
+    setImmediate(spin);
+    try {
+      // Re-registrations back to back, so the reader is interleaved with the
+      // write hundreds of times rather than by luck once. Bounded by the clock as
+      // well as by the count: an atomic write costs an fsync, and how many of
+      // those fit in a second is the disk's business, not this test's.
+      const until = Date.now() + 2000;
+      for (let i = 0; i < 300 && Date.now() < until; i++) {
+        await writeDiscovery({ port: PORT, workspace: WORKSPACE, token: TOKEN });
+      }
+    } finally {
+      spinning = false;
+    }
+
+    expect(reads).toBeGreaterThan(50);
+    expect(bad).toEqual([]);
+    // And the temp files the atomic write leaves behind are all renamed away —
+    // one that stayed, or that was named *.json, would be a record of its own to
+    // every one of those readers.
+    expect(readdirSync(AGENT_DAG_DIR)).toEqual([basename(FILE)]);
+  }, 15000);
 });
 
 describe("the deck's registration while it runs", () => {
@@ -192,6 +273,20 @@ describe("the deck's registration while it runs", () => {
       await keep.check();
       await sleep(120); // ~12 ticks, none of which has anything to report
       expect(seen).toHaveLength(1);
+    } finally {
+      keep.stop();
+    }
+  });
+
+  // A registration is a write, and two of them on one file at once is two decks'
+  // worth of racing for one deck's benefit — the second reads the file the first
+  // has not finished replacing and re-registers on top of it. The tick and the
+  // boot-time check bin/deck.js runs by hand are exactly that pair.
+  it("never has two registrations in flight at once", async () => {
+    const keep = keepDiscovery({ port: PORT, workspace: WORKSPACE, token: TOKEN, intervalMs: 10 });
+    try {
+      const [a, b] = await Promise.all([keep.check(), keep.check()]);
+      expect(a).toBe(b); // one run, one answer — not two writes and two verdicts
     } finally {
       keep.stop();
     }
