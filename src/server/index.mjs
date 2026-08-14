@@ -1658,16 +1658,55 @@ export function requestUrl(rawUrl) {
 //                   opaque `null` origin (sandboxed iframe, data: URL) fails
 //                   to parse and is refused with it.
 //
-// A request carrying neither header is not a browser request and is allowed:
-// that is hook/hook.js, a plain Node http.request from the user's own machine
-// that sends no Origin at all, plus curl and the deck's own tooling. Ambient
-// browser authority is the whole threat here, and those clients have none — a
-// process that can POST here can already run anything as the user.
+// Agreement between the two is necessary but not sufficient, because both are
+// derived from the URL the page was served from and neither says a word about
+// the address the socket actually landed on — so the Host must also name a
+// loopback identity. See isLoopbackHost for the attack that gets through
+// without it.
+//
+// A request carrying neither header is not a browser request and is allowed
+// whatever Host it names: that is hook/hook.js, a plain Node http.request from
+// the user's own machine that sends no Origin at all, plus curl and the deck's
+// own tooling. Ambient browser authority is the whole threat here, and those
+// clients have none — a process that can POST here can already run anything as
+// the user, and nothing it sends is chosen by a page.
 export function isTrustedMutation({ origin, host, secFetchSite } = {}) {
   const site = typeof secFetchSite === "string" ? secFetchSite.trim().toLowerCase() : "";
   if (site && site !== "same-origin" && site !== "none") return false;
-  if (typeof origin !== "string" || origin === "") return true;
-  return originMatchesHost(origin, host);
+  const hasOrigin = typeof origin === "string" && origin !== "";
+  if (!hasOrigin && !site) return true;
+  // Either header present means a browser sent this, so the rebinding gate
+  // applies even to the shape that carries fetch metadata but no Origin.
+  if (!isLoopbackHost(host)) return false;
+  return hasOrigin ? originMatchesHost(origin, host) : true;
+}
+
+// Was this request addressed to a name that can only ever be this machine?
+//
+// Origin === Host alone is not a defence against DNS rebinding: the page is
+// served from http://attacker.example:4317, the attacker re-points that record
+// at 127.0.0.1, and the browser then sends Host: attacker.example:4317 with a
+// matching Origin and Sec-Fetch-Site: same-origin — every header self-consistent
+// and every one attacker-chosen, because fetch metadata comes from the origin
+// tuple (scheme, host, port), not from the resolved IP. The browser also treats
+// the reply as same-origin, so the page reads the body: that is the account
+// share envelope, with the OAuth token in it. A loopback literal has no DNS
+// record to re-point, and `localhost` is reserved to loopback, so requiring one
+// of them is what separates the deck's own UI from the rebound page.
+function isLoopbackHost(host) {
+  if (typeof host !== "string") return false;
+  const authority = host.trim().toLowerCase();
+  // A real Host header is bare authority. Userinfo or a path would let
+  // `evil.example@127.0.0.1` and `127.0.0.1/…` parse to a loopback hostname
+  // while naming something else, so refuse them rather than reason about them.
+  if (authority === "" || /[/\\?#@\s]/.test(authority)) return false;
+  let name;
+  try { name = new URL(`http://${authority}`).hostname; } catch { return false; }
+  if (name === "localhost" || name === "[::1]") return true;
+  // The whole 127.0.0.0/8 is this machine, not just .0.1 — a second deck parked
+  // on 127.0.0.2 is as local as the first. URL only produces a dotted quad for
+  // something it already validated as an IPv4 address, so shape is enough here.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(name);
 }
 
 // Does `origin` name the same host:port the request was addressed to? Ports are
