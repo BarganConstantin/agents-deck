@@ -57,8 +57,12 @@ const REASONS: Record<string, string> = {
   import_failed: "claude-swap refused the import",
 };
 
-const say = (out: { reason?: string; detail?: string } | null, fallback: string) =>
-  out?.detail || (out?.reason ? REASONS[out.reason] ?? out.reason : null) || fallback;
+// `error` is what the route sends when the server threw: without it, a crash in
+// the handler reaches the user as the generic fallback — indistinguishable from
+// a refusal, and that is how a broken import spent a release looking like a
+// rejected one.
+const say = (out: { reason?: string; detail?: string; error?: string } | null, fallback: string) =>
+  out?.detail || (out?.reason ? REASONS[out.reason] ?? out.reason : null) || out?.error || fallback;
 
 export default function AddAccountDialog({ onClose, onChanged }: Props) {
   const [tab, setTab] = useState<"login" | "paste">("login");

@@ -390,9 +390,15 @@ export async function importAccount(blob) {
     const before = await readStore();
     const child = runInteractive(await cswapBin(), ["import", "-"], { timeout: CSWAP_TIMEOUT_MS });
     child.write(un.payload);
-    try { child.write(""); } catch { /* best effort */ }
     // cswap reads stdin to EOF, so the pipe has to close for it to proceed.
-    endStdin(child);
+    //
+    // This used to write a raw EOT byte and then call `endStdin(child)` — a
+    // helper that was never written. EOT only means end-of-file on a TTY, so
+    // the byte did nothing to a pipe, and the call threw ReferenceError before
+    // cswap ever saw the payload: the route answered 500 and the dialog fell
+    // back to "the import failed", which is exactly what a genuinely refused
+    // import says. Reported 2026-08-14.
+    child.end();
 
     const r = await child.done;
     if (!r.ok) return { ok: false, reason: "import_failed", detail: failureText(r, "cswap import") };

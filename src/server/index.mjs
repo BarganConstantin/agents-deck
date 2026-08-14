@@ -1325,7 +1325,13 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
   // background quota poll hit a network error. Answer the request instead.
   const guard = (p, res) => Promise.resolve(p).catch(err => {
     console.error("agents-deck: request handler failed:", err?.message ?? err);
-    if (!res.headersSent) send(res, 500, { error: "internal error" });
+    // The message goes to the browser too. This server binds 127.0.0.1 and its
+    // only client is the user's own tab, so the usual reason to withhold it
+    // does not apply — while withholding it is how a ReferenceError in the
+    // import path spent a release looking like a rejected share.
+    if (!res.headersSent) {
+      send(res, 500, { error: "internal error", detail: String(err?.message ?? err).slice(0, 300) });
+    }
     else res.end();
   });
 
