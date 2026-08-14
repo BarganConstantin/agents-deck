@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error — .mjs server module, no types
-import { isBatch, viaCmd, tryNext, runInteractive, killTree } from "../../server/exec.mjs";
+import { isBatch, viaCmd, tryNext, run, runInteractive, killTree, looksMissing } from "../../server/exec.mjs";
 
 describe("batch-file detection", () => {
   it("catches the extensions that cannot be spawned directly, on Windows only", () => {
@@ -194,6 +194,121 @@ describe("killing a child", () => {
         else process.env[key] = value;
       }
       if (grandchild) { try { process.kill(grandchild, "SIGKILL"); } catch { /* already gone */ } }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// "The system cannot find the file specified" is Windows' generic ENOENT text,
+// and cswap is a Python CLI whose tracebacks end in it. Read as cmd.exe's
+// verdict, a tool that ran and failed was reported as "not on PATH" — real
+// error discarded — and the candidate loop re-ran the whole command, which for
+// `cswap remove 3` is a second deletion attempt.
+const TRACEBACK = [
+  "Traceback (most recent call last):",
+  '  File "cswap/store.py", line 41, in remove',
+  "    os.replace(src, dst)",
+  "FileNotFoundError: [WinError 2] The system cannot find the file specified",
+].join("\n");
+
+describe("telling cmd.exe's 'no such command' from a tool's own words", () => {
+  it("accepts cmd.exe's message when it names the candidate we asked for", () => {
+    const said = "'cswap.cmd' is not recognized as an internal or external command,\noperable program or batch file.\n";
+    expect(looksMissing(said, "cswap.cmd")).toBe(true);
+    // A full path is echoed back whole, and matched whole.
+    expect(looksMissing("'C:\\bin\\cswap.cmd' is not recognized as an internal or external command,", "C:\\bin\\cswap.cmd")).toBe(true);
+    // The wording for a path whose directory is missing, alone in the output.
+    expect(looksMissing("The system cannot find the path specified.", "C:\\gone\\cswap.cmd")).toBe(true);
+  });
+
+  it("rejects the same sentence inside the output of a tool that ran", () => {
+    expect(looksMissing(TRACEBACK, "cswap.exe")).toBe(false);
+    // Even alone on its line, a prefix means someone else is quoting Windows.
+    expect(looksMissing("error: The system cannot find the file specified", "cswap.cmd")).toBe(false);
+    // cmd.exe says this INSTEAD of running anything, so real output rules it out.
+    expect(looksMissing("account-2 removed\nThe system cannot find the path specified.", "cswap.cmd")).toBe(false);
+  });
+
+  it("rejects cmd.exe's message when it names some other command", () => {
+    // A tool that shells out itself forwards cmd.exe's verdict about ITS child.
+    const forwarded = "'git' is not recognized as an internal or external command,\noperable program or batch file.\n";
+    expect(looksMissing(forwarded, "claude.cmd")).toBe(false);
+    // With no candidate to check against, the shape alone still has to hold.
+    expect(looksMissing(forwarded)).toBe(true);
+  });
+});
+
+describe("a tool that ran and failed with a Windows ENOENT message", () => {
+  // Both halves of the bug, on the two entry points that had it.
+  const stub = (dir: string, base: string, log: string) => {
+    writeFileSync(`${base}.exe`, [
+      "#!/bin/sh",
+      `echo ran >> "${log}"`,
+      `cat >&2 <<'EOF'`,
+      TRACEBACK,
+      "EOF",
+      "exit 1",
+    ].join("\n") + "\n");
+    chmodSync(`${base}.exe`, 0o755);
+    // The next candidate the loop would reach for, and must not: running it is
+    // the whole command a second time.
+    writeFileSync(`${base}.cmd`, [`#!/bin/sh`, `echo ran >> "${log}"`, "echo done"].join("\n") + "\n");
+    const shim = join(dir, "fake-cmd.sh");
+    writeFileSync(shim, [
+      "#!/bin/sh",
+      `target=$(printf '%s' "$4" | tr -d '"')`,
+      `sh "$target"`,
+    ].join("\n") + "\n");
+    chmodSync(shim, 0o755);
+    return shim;
+  };
+
+  it.skipIf(process.platform === "win32")("keeps its own error and runs once, in run()", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-exec-"));
+    const base = join(dir, "ccdeck-angry-cli");
+    const log = join(dir, "runs.txt");
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const comspec = process.env.ComSpec;
+    try {
+      process.env.ComSpec = stub(dir, base, log);
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+      const r = await run(base, ["remove", "3"], { timeout: 20_000 });
+      expect(r.ok).toBe(false);
+      // Not "ENOENT": the caller turns that into "not on PATH", which is a lie
+      // about a tool that just ran, and hides what it said.
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("FileNotFoundError");
+      expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      if (comspec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = comspec;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it.skipIf(process.platform === "win32")("does not re-run the command, in runInteractive()", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccdeck-exec-"));
+    const base = join(dir, "ccdeck-angry-cli");
+    const log = join(dir, "runs.txt");
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const comspec = process.env.ComSpec;
+    try {
+      process.env.ComSpec = stub(dir, base, log);
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+      const r = await runInteractive(base, ["remove", "3"], { timeout: 20_000 }).done;
+      expect(r.ok).toBe(false);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("FileNotFoundError");
+      // The one that matters: `cswap remove 3` must not be attempted twice,
+      // and the second child's confirmation prompt would go unanswered anyway.
+      expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      if (comspec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = comspec;
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
