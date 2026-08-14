@@ -19,8 +19,8 @@
 //      notably on macOS, where Claude Code keeps credentials in the Keychain
 //      and that file does not exist, so this is the ONLY self-service path
 //      there. It is also the most expensive: a whole Claude Code process per
-//      poll. On Windows the binary is a .cmd wrapper, so exec() (shell-based)
-//      is used for correct quoting + stdin.
+//      poll. On Windows the binary may be a .cmd wrapper, so exec()
+//      (shell-based) is used for correct quoting + stdin.
 //
 // 2 and 3 are rate-floored (SELF_POLL_MS) and gated behind the same 429
 // cooldown; 1 is not, because it is a local file read.
@@ -29,11 +29,10 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { homedir, platform } from "node:os";
+import { join, posix as posixPath, win32 as winPath } from "node:path";
+import { homedir } from "node:os";
 
 const execAsync = promisify(exec);
-const IS_WIN = platform() === "win32";
 
 const CREDS_PATH  = join(homedir(), ".claude", ".credentials.json");
 const USAGE_URL   = "https://api.anthropic.com/api/oauth/usage";
@@ -298,31 +297,65 @@ function parseUsageText(raw) {
   return Object.keys(result).length > 0 ? result : null;
 }
 
+/**
+ * Every place the `claude` CLI is known to live, in the order to try them.
+ *
+ * Pure, and the platform, environment and home directory are parameters, so the
+ * Windows list can be checked from a Mac — which is the only way this list stays
+ * right, since it exists entirely for machines the author is not sitting at.
+ */
+export function quotaClaudeCandidates(platform = process.platform, env = process.env, home = homedir()) {
+  // The path flavour follows the PLATFORM ARGUMENT, not the host: node's `join`
+  // would emit forward slashes when the Windows list is built on a Mac.
+  const { join } = platform === "win32" ? winPath : posixPath;
+  if (platform !== "win32") {
+    return [
+      "claude",
+      join(home, ".local", "bin", "claude"),
+      "/usr/local/bin/claude",
+      "/opt/homebrew/bin/claude",
+    ];
+  }
+  return [
+    // The native installer, which ships a bare claude.exe and NO .cmd shim. It
+    // was the one install this branch could not reach: the npm path below does
+    // not exist on such a machine, and the bare-name fallback used to be spelled
+    // `claude.cmd`, which cmd.exe cannot resolve to an .exe — PATHEXT supplies a
+    // missing extension, it never substitutes one that is already there.
+    join(home, ".local", "bin", "claude.exe"),
+    // `npm i -g @anthropic-ai/claude-code`. npm's global prefix is %APPDATA%\npm
+    // — Roaming rather than Local, deliberately, since it follows the user
+    // between machines — and APPDATA is read from the environment because a
+    // roaming profile puts it on a network share, not under the home directory.
+    join(env.APPDATA || join(home, "AppData", "Roaming"), "npm", "claude.cmd"),
+    // Last resort: the bare name, which cmd.exe resolves through PATH + PATHEXT
+    // and so finds claude.exe and claude.cmd alike.
+    "claude",
+  ];
+}
+
 /** Build the shell command string for `claude --print /usage`.
  *
  *  We use exec() (shell-based) so cmd.exe / sh processes redirects.
  *  On Windows: `< nul` closes stdin immediately, preventing the 3-second
  *  "no stdin data" wait the claude CLI does when it detects a pipe.
  *  On Unix: `< /dev/null` has the same effect.
+ *
+ *  Exported, with everything it touches injectable, so the Windows branch is
+ *  testable from the platforms this repo is actually developed on.
  */
-function buildQuotaShellCmd() {
-  if (IS_WIN) {
-    const npmBin = join(homedir(), "AppData", "Roaming", "npm", "claude.cmd");
-    const bin = existsSync(npmBin) ? npmBin : "claude.cmd";
-    // exec() on Windows uses cmd /c, so < nul redirect works fine.
-    // Wrap path in quotes in case of spaces in username.
-    return `"${bin}" --print /usage < nul`;
-  }
-  const candidates = [
-    "claude",
-    join(homedir(), ".local", "bin", "claude"),
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
-  ];
-  for (const c of candidates) {
-    if (!c.includes("/") || existsSync(c)) return `${c} --print /usage < /dev/null`;
-  }
-  return "claude --print /usage < /dev/null";
+export function buildQuotaShellCmd(platform = process.platform, env = process.env,
+                                   home = homedir(), exists = existsSync) {
+  const win = platform === "win32";
+  const sep = win ? "\\" : "/";
+  // A bare name is left to the shell's own lookup; a full path is only worth
+  // naming when it is actually there.
+  const bin = quotaClaudeCandidates(platform, env, home)
+    .find(c => !c.includes(sep) || exists(c)) ?? "claude";
+  // Quote a path — a username can contain a space — but not a bare name, which
+  // cmd.exe resolves more predictably unquoted.
+  const quoted = bin.includes(sep) ? `"${bin}"` : bin;
+  return `${quoted} --print /usage < ${win ? "nul" : "/dev/null"}`;
 }
 
 export async function fetchClaudeQuota({ force = false } = {}) {

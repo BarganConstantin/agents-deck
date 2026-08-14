@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { quotaFromStore, maySelfPoll, freshest, parseResetToSec } from "../../server/quota.mjs";
+import { quotaFromStore, maySelfPoll, freshest, parseResetToSec, buildQuotaShellCmd } from "../../server/quota.mjs";
 
 const MIN = 60_000;
 
@@ -78,6 +78,57 @@ describe("parseResetToSec", () => {
   it("has nothing to say about an empty reset", () => {
     expect(parseResetToSec(null)).toBeNull();
     expect(parseResetToSec("")).toBeNull();
+  });
+});
+
+// Source 3 — `claude --print /usage` — is the only self-service path left once
+// the OAuth token in ~/.claude/.credentials.json has expired and claude-swap has
+// no fresh row, and on Windows it was structurally dead for anyone who used the
+// native installer: that one ships %USERPROFILE%\.local\bin\claude.exe with no
+// .cmd shim, and the branch probed a hardcoded AppData\Roaming npm path before
+// giving up on the literal `claude.cmd`, which cmd.exe cannot resolve to an
+// .exe. The quota bar stayed dark while `claude --print /usage` worked fine in
+// the user's own terminal. Platform, environment, home and the existence check
+// are all injected, so the Windows branch is exercised wherever this runs and
+// nothing here touches the real home directory.
+describe("buildQuotaShellCmd", () => {
+  const HOME_WIN = "C:\\Users\\dorin";
+  const HOME_NIX = "/home/dorin";
+  const none = () => false;
+  /** An existence check that says yes to exactly these paths. */
+  const only = (...present: string[]) => (p: string) => present.includes(p);
+
+  it("finds the native Windows install, which has no .cmd shim", () => {
+    const exe = "C:\\Users\\dorin\\.local\\bin\\claude.exe";
+    expect(buildQuotaShellCmd("win32", {}, HOME_WIN, only(exe)))
+      .toBe(`"${exe}" --print /usage < nul`);
+  });
+
+  it("respects a roaming profile's APPDATA rather than assuming the home dir", () => {
+    const roaming = "\\\\server\\profiles\\dorin\\AppData\\Roaming";
+    const shim = `${roaming}\\npm\\claude.cmd`;
+    expect(buildQuotaShellCmd("win32", { APPDATA: roaming }, HOME_WIN, only(shim)))
+      .toBe(`"${shim}" --print /usage < nul`);
+  });
+
+  it("still finds the npm shim under an unset APPDATA", () => {
+    const shim = "C:\\Users\\dorin\\AppData\\Roaming\\npm\\claude.cmd";
+    expect(buildQuotaShellCmd("win32", {}, HOME_WIN, only(shim)))
+      .toBe(`"${shim}" --print /usage < nul`);
+  });
+
+  it("falls back to the bare name, which PATHEXT can resolve to either spelling", () => {
+    // `claude.cmd` here is the bug: cmd.exe answers "is not recognized" on a
+    // machine whose claude is an .exe, however well it is on PATH.
+    expect(buildQuotaShellCmd("win32", {}, HOME_WIN, none))
+      .toBe("claude --print /usage < nul");
+  });
+
+  it("leaves the POSIX side asking the shell, as it always has", () => {
+    expect(buildQuotaShellCmd("darwin", {}, HOME_NIX, none))
+      .toBe("claude --print /usage < /dev/null");
+    expect(buildQuotaShellCmd("linux", {}, HOME_NIX, none))
+      .toBe("claude --print /usage < /dev/null");
   });
 });
 
