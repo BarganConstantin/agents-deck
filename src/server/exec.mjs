@@ -199,24 +199,39 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
     if (i >= tries.length) return finish(-1, { code: "ENOENT" });
     const raw = tries[i];
     const { file, args: argv, opts } = isBatch(raw) ? viaCmd(raw, args) : { file: raw, args, opts: {} };
+    let proc;
     try {
-      child = spawn(file, argv, { stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true, ...opts });
+      proc = spawn(file, argv, { stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true, ...opts });
     } catch (err) {
       return tryNext(err) ? attempt(i + 1) : finish(-1, err);
     }
-    child.on("error", (err) => {
+    child = proc;
+    // A spelling that fails to spawn emits 'error' AND THEN 'close' — with code
+    // -2 after an ENOENT. Once the error handler has moved on to the next
+    // candidate, that trailing 'close' is news about a child nobody is waiting
+    // for any more, and answering it settled `done` with ok:false while the
+    // real child was still running. On Windows that is the normal path, not a
+    // corner case: `claude.exe` does not exist, `claude.cmd` does, so the very
+    // first login reported "the code was not accepted" while the child it had
+    // abandoned went on to complete the OAuth and switch the live account.
+    // Every listener below therefore speaks only while its own child is the
+    // current one.
+    const stale = () => proc !== child;
+    proc.on("error", (err) => {
+      if (stale()) return;
       // Only retry another spelling while nothing has run yet; a mid-run error
       // is this child's failure, not evidence the name was wrong.
       if (tryNext(err) && !stdout && !stderr) { child = null; return attempt(i + 1); }
       finish(-1, err);
     });
-    child.on("spawn", () => resolved.set(cmd, raw));
+    proc.on("spawn", () => resolved.set(cmd, raw));
     // Capped so a runaway child cannot grow the heap without bound; the tail is
     // what carries the error, so the head is what gets dropped.
     const keep = (buf, text) => (buf + text).slice(-maxOutput);
-    child.stdout?.on("data", (d) => { const t = String(d); stdout = keep(stdout, t); emitLines(t); });
-    child.stderr?.on("data", (d) => { const t = String(d); stderr = keep(stderr, t); emitLines(t); });
-    child.on("close", (code) => {
+    proc.stdout?.on("data", (d) => { if (stale()) return; const t = String(d); stdout = keep(stdout, t); emitLines(t); });
+    proc.stderr?.on("data", (d) => { if (stale()) return; const t = String(d); stderr = keep(stderr, t); emitLines(t); });
+    proc.on("close", (code) => {
+      if (stale()) return;
       // Same cmd.exe case as in `run`: exit 1 with "is not recognized" means
       // this spelling does not exist, not that the tool failed.
       if (code !== 0 && looksMissing(`${stderr}\n${stdout}`)) {
