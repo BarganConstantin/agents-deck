@@ -182,18 +182,18 @@ export interface CostBreakdown {
   total: number;
 }
 
-// OpenAI's long-context tier: once a request's INPUT passes this many tokens,
-// the whole request re-prices at 2x input and 1.5x output — not just the
-// tokens past the line. Only the 1M-class models can reach it; every 400K
-// model caps its input at exactly the threshold, so the tier is unreachable
-// there and applying it would silently double their cost.
-const LONG_CONTEXT_THRESHOLD = 272_000;
-const LONG_CONTEXT_MODELS = /^gpt[-_]5[-_.](?:6(?![-_]cyber)|5|4)/i;
-
-function longContextMultipliers(modelId: string | undefined, inputTokens: number) {
-  if (!modelId || inputTokens <= LONG_CONTEXT_THRESHOLD) return { input: 1, output: 1 };
-  return LONG_CONTEXT_MODELS.test(modelId) ? { input: 2, output: 1.5 } : { input: 1, output: 1 };
-}
+// No long-context surcharge here, deliberately. OpenAI's >272K tier re-prices
+// a single request at 2x input / 1.5x output once THAT REQUEST's input passes
+// the line, but the only usage we ever hold for a Codex agent is the session
+// running total (`info.total_token_usage` from the rollout's token_count
+// events, which the reducer overwrites onto the session root). Cumulative
+// input crosses 272K on almost any multi-turn session while each individual
+// request stays far below it, so testing the total against a per-request
+// threshold surcharged nearly every Codex session by roughly 2x. The Codex
+// CLI also clamps its window to 258,400 (272,000 x 95%) precisely so no single
+// request crosses the boundary — see CODEX_CONTEXT_DEFAULTS below — which
+// makes the tier effectively unreachable. Restoring it would need per-request
+// input (the rollout's `last_token_usage`) accumulated request by request.
 
 export function costForUsage(usage: TokenUsage, modelId: string | undefined): CostBreakdown {
   const rates = ratesForModel(modelId);
@@ -205,14 +205,11 @@ export function costForUsage(usage: TokenUsage, modelId: string | undefined): Co
   const fullInputTokens = isCodex
     ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
     : usage.inputTokens;
-  // Measured against total input, cached portion included — the threshold is
-  // about how much the model had to read, not how much was billed fresh.
-  const mult = isCodex ? longContextMultipliers(modelId, usage.inputTokens) : { input: 1, output: 1 };
 
-  const input      = fullInputTokens         * rates.input      * mult.input  / 1_000_000;
-  const output     = usage.outputTokens      * rates.output     * mult.output / 1_000_000;
-  const cacheRead  = usage.cacheReadTokens   * rates.cacheRead  * mult.input  / 1_000_000;
-  const cacheWrite = usage.cacheCreateTokens * rates.cacheWrite * mult.input  / 1_000_000;
+  const input      = fullInputTokens         * rates.input      / 1_000_000;
+  const output     = usage.outputTokens      * rates.output     / 1_000_000;
+  const cacheRead  = usage.cacheReadTokens   * rates.cacheRead  / 1_000_000;
+  const cacheWrite = usage.cacheCreateTokens * rates.cacheWrite / 1_000_000;
   return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
