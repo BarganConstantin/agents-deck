@@ -238,13 +238,15 @@ function stripAnsi(s) {
  */
 // Parse "Jun 18, 4:09pm" (local time, no tz) into unix seconds.
 // Claude shows times in the user's local timezone, so parsing as local is correct.
-function parseResetToSec(resetStr) {
+export function parseResetToSec(resetStr) {
   if (!resetStr) return null;
   try {
     const year = new Date().getFullYear();
-    // "4:09pm" → "4:09 PM" so Date.parse handles it
+    // "4:09pm" → "4:09 PM" so Date.parse handles it. Minutes are optional in
+    // the CLI's output ("9am"); Date.parse rejects "9 AM", so supply ":00".
     const norm = resetStr
-      .replace(/(\d{1,2}:\d{2})(am|pm)/i, "$1 $2")
+      .replace(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i,
+               (_all, h, mm, ampm) => `${h}:${mm ?? "00"} ${ampm}`)
       .trim();
     const d = new Date(`${norm} ${year}`);
     return isNaN(d.getTime()) ? null : Math.floor(d.getTime() / 1000);

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { quotaFromStore, maySelfPoll, freshest } from "../../server/quota.mjs";
+import { quotaFromStore, maySelfPoll, freshest, parseResetToSec } from "../../server/quota.mjs";
 
 const MIN = 60_000;
 
@@ -53,6 +53,31 @@ describe("quotaFromStore", () => {
     const q = quotaFromStore(entry({ five_hour: { pct: 140 }, seven_day: { pct: -3 } }));
     expect(q.session5hPct).toBe(100);
     expect(q.week7dPct).toBe(0);
+  });
+});
+
+describe("parseResetToSec", () => {
+  // The CLI prints its reset times in the user's local zone with no timezone,
+  // and drops ":00" on the hour — "resets Jun 21, 9am". Those used to fall out
+  // of the parser as null, which cost the bar its countdown and its pace line.
+  const local = (month: number, day: number, hour: number, min: number) =>
+    new Date(new Date().getFullYear(), month, day, hour, min, 0, 0).getTime() / 1000;
+
+  it("reads an on-the-hour time that carries no minutes", () => {
+    expect(parseResetToSec("Jun 21, 9am")).toBe(local(5, 21, 9, 0));
+    expect(parseResetToSec("Jun 21, 12am")).toBe(local(5, 21, 0, 0));
+    expect(parseResetToSec("Jun 21, 12pm")).toBe(local(5, 21, 12, 0));
+  });
+
+  it("still reads the minute-bearing form the CLI usually prints", () => {
+    expect(parseResetToSec("Jun 18, 4:09pm")).toBe(local(5, 18, 16, 9));
+    expect(parseResetToSec("Jun 21, 8:59am")).toBe(local(5, 21, 8, 59));
+    expect(parseResetToSec("Jun 21, 9 AM")).toBe(local(5, 21, 9, 0));
+  });
+
+  it("has nothing to say about an empty reset", () => {
+    expect(parseResetToSec(null)).toBeNull();
+    expect(parseResetToSec("")).toBeNull();
   });
 });
 
