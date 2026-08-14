@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
 import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
 import { type SwapNote, manageAfterMove } from "../account-move";
+import { aliasSave } from "../alias-save";
 import { PRODUCT } from "../brand";
 import {
   type Failure,
@@ -73,6 +74,9 @@ const POLL_MS = 15_000;
 // does not keep reporting a move from ten minutes ago. Same shape as the
 // panel's other transient states — `copied` at 1.8s, an armed remove at 4s.
 const SWAP_NOTE_MS = 8_000;
+// How long `save` stands as `saved`. The panel's other transient confirmations
+// — `copied` on a share — use the same 1.8s, and the word is the whole signal.
+const SAVED_MS = 1_800;
 // Past this, a reload is called dead rather than slow. Both routes can spawn
 // cswap, and the server kills those at 20 seconds, so anything shorter would
 // abort answers that were still coming.
@@ -232,6 +236,10 @@ export default function AccountsPanel({ onClose }: Props) {
   const [menuFor, setMenuFor] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [aliasDraft, setAliasDraft] = useState("");
+  // Which account's alias was just stored. `save` is never disabled by the
+  // draft matching the alias any more — that was the block's resting state and
+  // it rendered at 1.98:1 — so the button confirms instead of greying out.
+  const [aliasSaved, setAliasSaved] = useState<number | null>(null);
   // Removal is irreversible, and there is no confirmation dialog anywhere in
   // this deck. The button becomes its own confirmation and gives up after a
   // few seconds, so a stray click can never be the second one.
@@ -360,6 +368,29 @@ export default function AccountsPanel({ onClose }: Props) {
   };
 
   /**
+   * Store the alias in the field, and say so.
+   *
+   * Both endings are the same word. A draft that already matches the store is
+   * not a failure and not a no-op the user should have to detect — it is an
+   * alias that is saved — so it confirms without a round trip, and a draft that
+   * differs confirms once the store has it. `saved` replaces the disabled state
+   * the block used to open in.
+   */
+  const doAlias = async (num: number, stored: string | null) => {
+    const { commit, alias } = aliasSave(aliasDraft, stored);
+    if (commit) {
+      const out = await admin({ action: "alias", account: num, alias }, `alias-${num}`);
+      await load(true);
+      if (!out?.ok) return;
+      // The store now holds the trimmed value, so the field should too — or the
+      // next comparison is against a draft the store never saw.
+      setAliasDraft(alias);
+    }
+    setAliasSaved(num);
+    window.setTimeout(() => setAliasSaved(n => (n === num ? null : n)), SAVED_MS);
+  };
+
+  /**
    * Send an account to another slot, then put the manage block back where its
    * account went.
    *
@@ -464,8 +495,13 @@ export default function AccountsPanel({ onClose }: Props) {
                 <span className="ap-num">{a.num}</span>
                 {a.alias && <span className="ap-alias">{a.alias}</span>}
                 <span className="ap-email" title={a.org ?? undefined}>{a.email}</span>
+                {/* aria-controls only while the block exists: an IDREF that
+                    resolves to nothing is not a relationship, it is a dangling
+                    pointer, and closed is exactly when there is nothing to
+                    point at. */}
                 <button type="button" className={`ap-more${menuFor === a.num ? " on" : ""}`}
                   aria-label={`Manage account ${a.num}`} aria-expanded={menuFor === a.num}
+                  aria-controls={menuFor === a.num ? `ap-manage-${a.num}` : undefined}
                   title="Share, rename, move, remove"
                   onClick={() => {
                     setMenuFor(menuFor === a.num ? null : a.num);
@@ -474,6 +510,7 @@ export default function AccountsPanel({ onClose }: Props) {
                     setShare(null);
                     setShareCopied(false);
                     setSwapNote(null);
+                    setAliasSaved(null);
                   }}>⋯</button>
                 {a.active
                   ? <span className="ap-badge-active">● active</span>
@@ -543,41 +580,53 @@ export default function AccountsPanel({ onClose }: Props) {
               </div>
 
               {menuFor === a.num && (
-                <div className="ap-manage">
+                /* A named group, so a screen reader that has just heard "Manage
+                   account 2, expanded" is told what the three rows underneath
+                   belong to instead of walking into unattributed form fields. */
+                <div className="ap-manage" id={`ap-manage-${a.num}`}
+                  role="group" aria-label={`Manage account ${a.num}`}>
                   <div className="ap-manage-row">
-                    <span className="ap-manage-label">name</span>
+                    {/* A real <label>, not an aria-label beside a word. The
+                        field used to answer to "Alias for account 2" while the
+                        screen said NAME — 2.5.3 asks that the accessible name
+                        contain the visible one, and voice control asks for it
+                        rather harder than that. The group above carries the
+                        account number the aria-label was there to supply. */}
+                    <label className="ap-manage-label" htmlFor={`ap-alias-${a.num}`}>name</label>
                     <input
+                      id={`ap-alias-${a.num}`}
                       className="ap-manage-input"
                       type="text"
                       value={aliasDraft}
                       onChange={e => setAliasDraft(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter") admin({ action: "alias", account: a.num, alias: aliasDraft }, `alias-${a.num}`).then(() => load(true)); }}
-                      placeholder="no alias"
+                      onKeyDown={e => { if (e.key === "Enter") doAlias(a.num, a.alias); }}
+                      /* An example, not a narration of the empty state: "no
+                         alias" reads as a field whose value is those two words. */
+                      placeholder="e.g. work"
                       spellCheck={false}
-                      aria-label={`Alias for account ${a.num}`}
+                      /* The block is a form revealed by a button, and the field
+                         at the top of it is where the keyboard should land —
+                         otherwise reaching it means tabbing back through the
+                         switch, the lanes and the freshness line. It mounts
+                         only when the block opens, so this fires exactly then. */
+                      autoFocus
                     />
-                    <button type="button" className="ap-manage-btn" disabled={busy != null || (aliasDraft.trim() === (a.alias ?? ""))}
-                      onClick={() => admin({ action: "alias", account: a.num, alias: aliasDraft }, `alias-${a.num}`).then(() => load(true))}
-                      title="A short name to show instead of the email">save</button>
+                    <button type="button" className="ap-manage-btn" disabled={busy != null}
+                      onClick={() => doAlias(a.num, a.alias)}
+                      title="A short name to show instead of the email"
+                    >{aliasSaved === a.num ? "saved" : "save"}</button>
                   </div>
 
                   <div className="ap-manage-row">
-                    <span className="ap-manage-label">slot</span>
-                    <span className="ap-field">
-                      <select
-                        aria-label={`Slot for account ${a.num}`}
-                        value={String(a.num)}
-                        disabled={busy != null}
-                        onChange={e => doMove(a.num, Number(e.target.value))}
-                      >
-                        {slotOptions(data.accounts ?? []).map(n => <option key={n} value={n}>{n}</option>)}
-                      </select>
-                    </span>
-                    {/* Where "rotation order" normally sits. A swap moved an
-                        account the user never selected, and the roster shows
-                        the result without ever saying it happened — two rows
-                        are simply not where they were. This is the only place
-                        that can say it, so it does, for as long as it is news. */}
+                    <label className="ap-manage-label" htmlFor={`ap-slot-${a.num}`}>slot</label>
+                    {/* "rotation order" said what the number is and never what
+                        changing it does — and what it does is move a second
+                        account: claude-swap trades places when the slot is
+                        taken. There is no predictive version of this to write.
+                        A <select> commits on change, so the moment a different
+                        slot is "picked" is the moment it has already happened,
+                        and the after-the-fact notice below is the honest one;
+                        this line is the rule that holds before any pick. */}
                     {swapNote?.at === a.num ? (() => {
                       const other = data.accounts?.find(x => x.num === swapNote.displaced);
                       const who = other?.alias ?? other?.email ?? "the account that was there";
@@ -588,37 +637,31 @@ export default function AccountsPanel({ onClose }: Props) {
                           swapped with slot {swapNote.displaced}
                         </span>
                       );
-                    })() : <span className="ap-manage-hint">rotation order</span>}
+                    })() : <span className="ap-manage-hint">swaps if the slot is taken</span>}
+                    <span className="ap-field">
+                      <select
+                        id={`ap-slot-${a.num}`}
+                        value={String(a.num)}
+                        disabled={busy != null}
+                        onChange={e => doMove(a.num, Number(e.target.value))}
+                      >
+                        {slotOptions(data.accounts ?? []).map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </span>
                   </div>
 
                   <div className="ap-manage-row">
+                    <span className="ap-manage-label">share</span>
+                    {/* The ellipsis is the standard promise of a dialog and
+                        this opens none — it drops a blob into the block. */}
+                    <span className="ap-manage-hint">copies a live login</span>
                     <button type="button" className="ap-manage-btn" disabled={busy != null}
                       title={`Copy this account to another ${PRODUCT}. The share carries a live login and expires in 10 minutes.`}
                       onClick={async () => {
                         setShareCopied(false);
                         const out = await admin({ action: "share", account: a.num }, `share-${a.num}`);
                         if (out?.ok) setShare({ num: a.num, blob: out.blob, expiresAt: out.expiresAt });
-                      }}>share…</button>
-                    {/* Two clicks, and the second one expires. There is no
-                        confirmation dialog anywhere in this deck, and removing
-                        an account cannot be undone. */}
-                    <button
-                      type="button"
-                      className={`ap-manage-btn danger${confirmRemove === a.num ? " armed" : ""}`}
-                      disabled={busy != null}
-                      title={confirmRemove === a.num
-                        ? "This deletes the stored credentials for this account"
-                        : "Remove this account from claude-swap"}
-                      onClick={() => {
-                        if (confirmRemove !== a.num) {
-                          setConfirmRemove(a.num);
-                          window.setTimeout(() => setConfirmRemove(c => (c === a.num ? null : c)), 4000);
-                          return;
-                        }
-                        setConfirmRemove(null);
-                        admin({ action: "remove", account: a.num }, `rm-${a.num}`).then(() => { setMenuFor(null); load(true); });
-                      }}
-                    >{confirmRemove === a.num ? "confirm remove" : "remove"}</button>
+                      }}>share</button>
                   </div>
 
                   {share?.num === a.num && (() => {
@@ -652,6 +695,32 @@ export default function AccountsPanel({ onClose }: Props) {
                       </div>
                     );
                   })()}
+
+                  {/* Two clicks, and the second one expires. There is no
+                      confirmation dialog anywhere in this deck, and removing an
+                      account cannot be undone — so it stands alone below the
+                      block's closing rule rather than 6px from `share`, and it
+                      is the last thing reached rather than the first thing the
+                      eye finds. */}
+                  <div className="ap-manage-foot">
+                    <button
+                      type="button"
+                      className={`ap-manage-btn danger${confirmRemove === a.num ? " armed" : ""}`}
+                      disabled={busy != null}
+                      title={confirmRemove === a.num
+                        ? "This deletes the stored credentials for this account"
+                        : "Remove this account from claude-swap"}
+                      onClick={() => {
+                        if (confirmRemove !== a.num) {
+                          setConfirmRemove(a.num);
+                          window.setTimeout(() => setConfirmRemove(c => (c === a.num ? null : c)), 4000);
+                          return;
+                        }
+                        setConfirmRemove(null);
+                        admin({ action: "remove", account: a.num }, `rm-${a.num}`).then(() => { setMenuFor(null); load(true); });
+                      }}
+                    >{confirmRemove === a.num ? "confirm remove" : "remove"}</button>
+                  </div>
                 </div>
               )}
             </div>
