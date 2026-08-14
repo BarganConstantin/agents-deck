@@ -10,8 +10,8 @@
 // writer per log file among the decks it is about to post to, and the server
 // honours that election for the event itself and for everything it later
 // derives from the same session's transcript.
-import { describe, it, expect, afterAll } from "vitest";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { describe, it, expect, afterAll, afterEach } from "vitest";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -37,6 +37,14 @@ process.env.CLAUDE_CONFIG_DIR = FAKE_CONFIG;
 const { startServer, writesLogFor } = await import("../../server/index.mjs");
 // @ts-expect-error — .mjs server module, no types
 const { claudeConfigDir } = await import("../../server/claude-dir.mjs");
+// @ts-expect-error — .mjs server module, no types
+const installer = await import("../../server/installer.mjs");
+const { discoveryPath, writeDiscovery, ensureDiscovery } = installer as {
+  discoveryPath: () => string;
+  writeDiscovery: (o: { port: number; workspace?: string; token?: string; persist?: string | null }) => Promise<string>;
+  ensureDiscovery: (o: { port: number; workspace?: string; token?: string; persist?: string | null })
+    => Promise<{ file: string; rewritten: boolean }>;
+};
 
 // Belt and braces: startServer sweeps the discovery dir it resolves, so if the
 // override were ignored this file would be deleting from a real one.
@@ -194,5 +202,50 @@ describe("electing one writer per events log", () => {
     expect(ports(decks, electWriters(decks, "darwin"))).toEqual([4317]);
     // On Linux those are two different files, and each one needs its writer.
     expect(ports(decks, electWriters(decks, "linux"))).toEqual([4317, 4325]);
+  });
+});
+
+// The election is only as good as what the decks advertise, and the discovery
+// file is re-asserted on a 5s heartbeat — so the log path has to be part of
+// both halves. Left out of the record, no hook can group decks by file; left
+// out of the comparison, the heartbeat either rewrites the file every tick or
+// settles for a record that never grows the field.
+describe("the log path in the discovery record", () => {
+  const PORT_A = 4326;
+  const TOKEN = "b6d1f0c0e2a4";
+  const wipe = () => rmSync(discoveryPath(), { force: true });
+
+  afterEach(() => wipe());
+
+  it("is what the deck publishes for the hook to read", async () => {
+    await writeDiscovery({ port: PORT_A, workspace: "", token: TOKEN, persist: LOG });
+    expect(JSON.parse(readFileSync(discoveryPath(), "utf8"))).toMatchObject({
+      pid: process.pid, port: PORT_A, token: TOKEN, persist: LOG,
+    });
+  });
+
+  it("is null for a deck running --no-persist, which can never be the writer", async () => {
+    await writeDiscovery({ port: PORT_A, workspace: "", token: TOKEN, persist: null });
+    expect(JSON.parse(readFileSync(discoveryPath(), "utf8")).persist).toBe(null);
+  });
+
+  it("leaves the deck's own record alone, so the heartbeat is not a rewrite loop", async () => {
+    await writeDiscovery({ port: PORT_A, workspace: "", token: TOKEN, persist: LOG });
+    const before = readFileSync(discoveryPath(), "utf8");
+    const res = await ensureDiscovery({ port: PORT_A, workspace: "", token: TOKEN, persist: LOG });
+    expect(res.rewritten).toBe(false);
+    // A rewrite stamps a new startedAt — proof this was a read, not a write.
+    expect(readFileSync(discoveryPath(), "utf8")).toBe(before);
+  });
+
+  it("replaces a record that names another log, or none at all", async () => {
+    for (const stale of [{ persist: "/somewhere/else.jsonl" }, {}]) {
+      writeFileSync(discoveryPath(), JSON.stringify({
+        pid: process.pid, port: PORT_A, workspace: "", token: TOKEN, ...stale,
+      }));
+      const res = await ensureDiscovery({ port: PORT_A, workspace: "", token: TOKEN, persist: LOG });
+      expect(res.rewritten).toBe(true);
+      expect(JSON.parse(readFileSync(discoveryPath(), "utf8")).persist).toBe(LOG);
+    }
   });
 });
