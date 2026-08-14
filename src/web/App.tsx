@@ -27,6 +27,7 @@ import ClearConfirm from "./components/ClearConfirm";
 import { clearActionFor, type ClearSource } from "./clear-confirm";
 import { escapeOutcome, modalStack } from "./modal-dismiss";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
+import { isUnplaced, needsLayout, recordPlacement, stampPlaceholder, type Provisional } from "./placement";
 import { createRenderCoalescer } from "./coalesce";
 import { createPauseGate } from "./pause";
 import { readStored } from "./storage";
@@ -433,6 +434,8 @@ function snapshotToFlow(
    */
   dragging: boolean,
   positions: Map<string, { x: number; y: number }>,
+  /** Ids in `positions` that hold a placeholder rather than a laid-out spot. */
+  provisional: Provisional,
   layoutSig: string,
   lastLayoutSigRef: { current: string },
   selectedIds: Set<string>,
@@ -535,11 +538,15 @@ function snapshotToFlow(
   // neighbours. Clamping at four bubbles is what keeps this cheap: the string
   // stops changing after an agent's fourth tool call.
   const sig = `${layoutSig}#lanes:${laneSignature(lanes)}`;
-  const missing = nodes.filter(n => !pinned.has(n.id) && !positions.has(n.id));
+  // A node holding a placeholder counts as missing however real its entry in
+  // `positions` looks — see placement.ts. Without that, the one write that
+  // exists to keep a node on screen for a frame was also the write that told
+  // this filter the node had been laid out.
+  const missing = nodes.filter(n => needsLayout(n.id, pinned, positions, provisional));
   if (missing.length > 0 || sig !== lastLayoutSigRef.current) {
     if (missing.length > 0) {
       const laidOut = autoLayout(nodes, edges, { direction: "LR", pinned, measured, availableWidth, availableHeight, lanes });
-      for (const n of laidOut) if (!positions.has(n.id)) positions.set(n.id, n.position);
+      for (const n of laidOut) if (isUnplaced(n.id, positions, provisional)) recordPlacement(n.id, n.position, positions, provisional);
       // Finished sessions are pruned as they complete, so the column they were
       // in has holes while new work keeps being appended underneath. Offer the
       // arrivals those holes before letting the canvas grow downward past
@@ -571,6 +578,10 @@ function snapshotToFlow(
   // against an empty agent map would wipe the whole saved arrangement on every
   // page load and re-derive it with dagre.
   pruneStaleEntries(positions, state.agents);
+  // A mark normally lives one frame — the pass it asks for clears it — but an
+  // agent that leaves between the stamp and that pass would leave its id in the
+  // set for the life of the tab, which is the leak the size cache below had.
+  pruneStaleEntries(provisional, state.agents);
   // Drop pins for agents that are gone. Pinned positions are restored from
   // localStorage on every load, so without this a drag from some previous run
   // outlives the agent it belonged to and keeps claiming that spot on the
@@ -597,20 +608,19 @@ function snapshotToFlow(
   for (const n of nodes) {
     let p = pinned.get(n.id) ?? positions.get(n.id);
     if (!p) {
-      p = { x: 0, y: 0 };
-      positions.set(n.id, p);
+      p = stampPlaceholder(n.id, positions, provisional);
       missingPosition = true;
     }
     finalNodes.push({ ...n, position: p });
   }
   if (missingPosition) {
     // Force the layout branch above to run again on the next render, even if
-    // nothing else changed. What that buys is narrower than it looks: the
-    // {0,0} written just now is a real entry in `positions`, so the node is no
-    // longer in `missing` and dagre stays skipped — only separateOverlaps
-    // touches it, which keeps it at x=0 and slides it down until it stops
-    // covering anything. Enough to un-stick it; a true dagre placement would
-    // mean leaving the position unset instead of stamping one here.
+    // nothing else changed. The stamp is recorded as provisional, so that pass
+    // sees the node in `missing` and hands it to dagre — which is what the
+    // invalidation was always meant to buy and never did while a placeholder
+    // was indistinguishable from a placement, leaving separateOverlaps as the
+    // only thing that ever touched the node and the x=0 column as the only
+    // place it could be.
     lastLayoutSigRef.current = "";
   }
   return { nodes: finalNodes, edges };
@@ -1397,6 +1407,12 @@ function Inner() {
   // rather than re-deriving one. Anything without a stored position — a new
   // agent, or one whose position was evicted — still gets laid out.
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map(storedLayout.positions));
+  // Which of those positions are placeholders. Deliberately not persisted: the
+  // retry runs on the next render, at most a 250ms tick away, and the save
+  // below is debounced 1500ms — so a placeholder is overwritten by a real
+  // coordinate long before anything writes it to storage, and a mark restored
+  // from a previous run would only relayout a node that has been settled since.
+  const provisionalRef = useRef<Provisional>(new Set());
   const lastLayoutSigRef = useRef<string>("");
   const layoutSig = useMemo(() => {
     const ids: string[] = [];
@@ -1551,7 +1567,7 @@ function Inner() {
       const flow = snapshotToFlow(
       stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
       measuredRef.current, prevSessionSizeRef.current, onBubble, settled, dragging,
-      positionsRef.current, layoutSig, lastLayoutSigRef,
+      positionsRef.current, provisionalRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
       );
       return flow;
