@@ -3362,12 +3362,16 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   opacity: 0.5;
   pointer-events: none;
 }
+/* Both selects share this rule and only one of them sits in the manage block,
+   so the lifted fill and edge arrive through the var() fallback: inside
+   .ap-account the row's own tokens answer, and the auto-switch threshold below
+   keeps exactly the values it had. */
 .ap-field select {
   appearance: none;
   -webkit-appearance: none;
-  background: var(--bg-soft);
+  background: var(--ap-ctl-fill, var(--bg-soft));
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ap-ctl-edge, var(--line));
   border-radius: 5px;
   padding: 2px 19px 2px 7px;
   font: inherit;
@@ -3378,6 +3382,11 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   transition: border-color 120ms, color 120ms;
 }
 .ap-field select:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+/* --accent-dim is 1.91:1 dark / 1.39:1 light, which inside the manage block
+   would make hovering the slot select DIM its boundary from the 3.55:1 it rests
+   at. Only there — the auto-switch select rests on --line and the dim edge is
+   still a lift for it. */
+.ap-manage .ap-field select:hover:not(:disabled) { border-color: var(--accent); }
 .ap-field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ap-field select:disabled { cursor: default; opacity: 0.6; }
 .ap-field:has(select:hover:not(:disabled))::after { color: var(--accent); opacity: 1; }
@@ -3562,23 +3571,49 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 }
 .ap-add:hover { border-color: var(--accent-dim); }
 
-/* The row's own disclosure. Nearly invisible until the row is hovered, because
-   nine of ten visits to this panel are to read a number. */
+/* The controls this row owns, in values mixed from the FOREGROUND rather than
+   borrowed from another surface. --bg-soft is 1.04:1 against --panel in dark
+   and byte-identical to it in light, so a pill painted with it had no fill at
+   all, and a --line border left its only boundary at 1.14:1 dark / 1.60:1
+   light — under the 3:1 that 1.4.11 asks of a control nothing else identifies.
+   Mixed from --text the edge lands at 4.10:1 dark / 3.55:1 light on --panel,
+   and still clears 3:1 over the 6% accent wash the active row paints beneath
+   it. Scoped to the row rather than promoted to :root because lifting --line
+   globally would redraw every border in the app to fix a defect that is this
+   block's; the readers all fall back to the old value, so the same declarations
+   are unchanged wherever these do not reach. */
+.ap-account {
+  --ap-ctl-fill: color-mix(in srgb, var(--text) 7%, transparent);
+  --ap-ctl-edge: color-mix(in srgb, var(--text) 50%, transparent);
+}
+
+/* The row's own disclosure, and the only door to share, rename, move and
+   remove. It used to be `opacity: 0` until the row was hovered — on a touch
+   device, a door with no handle — and it measured 25x16, under 2.5.8's 24x24
+   floor on the short side. Now a real 24x24 target, legible before it is
+   touched: 4.70:1 dark and 5.78:1 light against --panel, lifting to --text
+   under the pointer. Quiet is carried by size and colour, not by absence —
+   fading it to 0.35 instead would leave the glyph at 1.63:1, which is the same
+   defect the pills above have just been lifted out of. */
 .ap-more {
   margin-left: 4px;
-  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 2px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: none;
   color: var(--text-dim);
   font-size: 13px;
-  line-height: 1.1;
+  line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms, color 120ms, border-color 120ms;
 }
-.ap-account:hover .ap-more, .ap-more:focus-visible, .ap-more.on { opacity: 1; }
-.ap-more:hover, .ap-more.on { color: var(--text); border-color: var(--line); }
+.ap-account:hover .ap-more, .ap-more:hover, .ap-more:focus-visible, .ap-more.on {
+  color: var(--text);
+}
+.ap-more:hover, .ap-more.on { border-color: var(--ap-ctl-edge, var(--line)); }
 
 .ap-manage {
   display: flex;
@@ -3588,48 +3623,87 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   padding-top: 8px;
   border-top: 1px dashed var(--line-soft);
 }
-.ap-manage-row { display: flex; align-items: center; gap: 6px; }
-.ap-manage-label {
-  width: 34px;
-  flex: none;
-  color: var(--text-dim);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+/* One grid, three settings. The rows were three flex lines that stopped
+   wherever their content ran out — x273, x162, x133 at the panel's 288px — so
+   the block had a left edge and no right one. Label, then whatever explains the
+   setting, then the control that changes it, hard against the same right edge
+   on every row. */
+.ap-manage-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
 }
-.ap-manage-hint { color: var(--text-dim); font-size: 10px; }
+/* Sentence case, because every other label in this panel is prose — `in
+   rotation`, `collected 5m ago`, `carries a live login` — and 10px uppercase
+   with letter-spacing was the one place the block spoke form-chrome. */
+.ap-manage-label { color: var(--text-dim); font-size: 10px; }
+.ap-manage-hint { color: var(--text-dim); font-size: 10px; min-width: 0; }
+/* Removing an account cannot be undone, and it used to sit 6px from `share`
+   with the loudest colour in the block. Colour is not separation; a rule and an
+   empty row are. It keeps the error hue, but it is now the last thing reached
+   rather than the first thing seen. */
+.ap-manage-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 7px;
+  border-top: 1px dashed var(--line-soft);
+}
 /* The one thing this row ever has to announce rather than label: a move that
-   relocated a second account. Dim is right for "rotation order" and wrong for
-   news, so the notice takes the accent the row's own select hovers to. */
+   relocated a second account. Dim is right for the standing rule the hint
+   normally states and wrong for news, so the notice takes the accent the row's
+   own select hovers to. */
 .ap-manage-hint.ap-manage-swap { color: var(--accent); }
+/* The one control in the block that declared no transition and no hover, while
+   four siblings eased their border over 120ms. Focusing the field snapped and
+   pressing a button eased, which is felt long before it is noticed. */
 .ap-manage-input {
-  flex: 1;
   min-width: 0;
   padding: 3px 7px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ap-ctl-edge, var(--line));
   border-radius: 6px;
-  background: var(--bg-soft);
+  background: var(--ap-ctl-fill, var(--bg-soft));
   color: var(--text);
   font: inherit;
   font-size: 11px;
+  transition: border-color 120ms, background 120ms;
 }
+.ap-manage-input:hover { border-color: var(--accent); }
 .ap-manage-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* --muted here was the labels' own colour — identical to --text-dim in dark, to
+   a rounding error — so nothing in the block told a clickable pill from a
+   decorative word. The buttons rise to --text rather than the labels sinking
+   below it: the dark ramp has no readable tier under --muted's 4.70:1 to sink
+   into (styles.css:11), and a label that dim would trade one 1.4.3 failure for
+   another. */
 .ap-manage-btn {
   padding: 3px 9px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ap-ctl-edge, var(--line));
   border-radius: 999px;
-  background: var(--bg-soft);
-  color: var(--muted);
+  background: var(--ap-ctl-fill, var(--bg-soft));
+  color: var(--text);
   font: inherit;
   font-size: 10.5px;
   cursor: pointer;
   transition: border-color 120ms, color 120ms, background 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.ap-manage-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.ap-manage-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
 .ap-manage-btn:active:not(:disabled) { transform: scale(0.97); }
-.ap-manage-btn:disabled { opacity: 0.45; cursor: default; }
-.ap-manage-btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
+/* 0.6, the same dimming the ↻ and the two selects use for the moment a request
+   is out. At 0.45 this was the panel's only long-lived disabled control and it
+   sat at 1.98:1; nothing here is disabled at rest any more, so the value can
+   match the idiom instead of hedging against a resting state. */
+.ap-manage-btn:disabled { opacity: 0.6; cursor: default; }
+/* 30% put the destructive control's boundary at 1.96:1 dark / 1.71:1 light —
+   the report called this the only control in the block that met 3:1, and it
+   did not: only its LABEL did, at 9.54:1, which is exactly why it out-drew
+   everything around it. */
+.ap-manage-btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 65%, transparent); }
+.ap-manage-btn.danger:hover:not(:disabled) { border-color: var(--err); }
 /* Armed is a different button, not a hover state: it is one click from
    deleting stored credentials, and it disarms itself after four seconds. */
 .ap-manage-btn.danger.armed {
@@ -3870,7 +3944,9 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   to   { opacity: 1; transform: none; }
 }
 
-.ap-more { transition: opacity 140ms ease, color 120ms, border-color 120ms,
+/* No opacity here any more: the button is visible at rest, so what moves is the
+   colour it lifts to and the outline it grows, not whether it exists. */
+.ap-more { transition: color 120ms, border-color 120ms,
                        transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
 .ap-more:active { transform: scale(0.94); }
 
@@ -3907,10 +3983,12 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   text-overflow: ellipsis;
   color: var(--text-dim);
 }
-/* Copy is the point of the whole block, so it looks like it. */
+/* Copy is the point of the whole block, so it looks like it. The border is the
+   accent itself rather than --accent-dim: at 1.91:1 dark / 1.39:1 light the dim
+   edge was the same invisible boundary the pills above it just lost. */
 .ap-share-foot .ap-manage-btn {
   color: var(--accent);
-  border-color: var(--accent-dim);
+  border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .ap-share-foot .ap-manage-btn:hover:not(:disabled) {
