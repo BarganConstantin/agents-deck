@@ -5,6 +5,7 @@ import { readdir, open, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
+import { PRODUCT } from "./brand.mjs";
 
 const CODEX_HOME = process.env.CODEX_HOME
   ? process.env.CODEX_HOME
@@ -221,7 +222,7 @@ export async function fetchCodexUsage({ force = false } = {}) {
       addTo(w7d, windowDelta(series, start7d));
     });
   } catch (err) {
-    console.error("agents-deck codex-usage: scan failed:", err?.message ?? err);
+    console.error(`${PRODUCT} codex-usage: scan failed:`, err?.message ?? err);
     const result = { ok: false, fetchedAt: now };
     _cache = result;
     _cacheAt = now;

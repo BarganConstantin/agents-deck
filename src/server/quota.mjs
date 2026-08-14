@@ -31,6 +31,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, posix as posixPath, win32 as winPath } from "node:path";
 import { homedir } from "node:os";
+import { PRODUCT } from "./brand.mjs";
 
 const execAsync = promisify(exec);
 
@@ -452,7 +453,7 @@ async function _execOnce(shellCmd) {
     return { cliOk, parsed: parseUsageText(combined) };
   } catch (err) {
     const msg = err?.stderr ? stripAnsi(err.stderr).trim() : (err?.message ?? String(err));
-    console.error("agents-deck quota: claude CLI failed:", msg);
+    console.error(`${PRODUCT} quota: claude CLI failed:`, msg);
     if (err?.stdout || err?.stderr) {
       const combined = (err.stdout ?? "") + "\n" + (err.stderr ?? "");
       return { cliOk: /subscription/i.test(combined), parsed: parseUsageText(combined) };

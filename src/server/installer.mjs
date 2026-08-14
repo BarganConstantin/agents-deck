@@ -12,6 +12,7 @@ import { join, resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { PRODUCT } from "./brand.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
@@ -105,7 +106,7 @@ async function readJsonSafe(p) {
 function unreadableSettings(p, why) {
   const err = new Error(
     `${p} could not be read as JSON (${why}). Refusing to overwrite it — ` +
-    `fix the file or move it aside, then run agents-deck again.`,
+    `fix the file or move it aside, then run ${PRODUCT} again.`,
   );
   err.code = "SETTINGS_UNREADABLE";
   err.settingsPath = p;

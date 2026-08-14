@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { createHash, randomBytes } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { PRODUCT } from "./brand.mjs";
 import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -114,9 +115,9 @@ async function maybeRotatePersistFile() {
     try { await unlink(oldPath); } catch {}
     const { rename } = await import("node:fs/promises");
     await rename(persistPath, oldPath);
-    console.log(`agents-deck: rotated ${persistPath} (${(s.size / 1024 / 1024).toFixed(0)}MB → ${oldPath})`);
+    console.log(`${PRODUCT}: rotated ${persistPath} (${(s.size / 1024 / 1024).toFixed(0)}MB → ${oldPath})`);
   } catch (err) {
-    console.error("agents-deck: persist rotation failed:", err && err.message ? err.message : err);
+    console.error(`${PRODUCT}: persist rotation failed:`, err && err.message ? err.message : err);
   } finally {
     rotateInProgress = false;
   }
@@ -1818,7 +1819,7 @@ function originMatchesHost(origin, host) {
 // stderr keeps every byte and the response body carries none of it; nothing is
 // swallowed, it just stops travelling over the wire.
 export function sendInternalError(res, err, log = console.error) {
-  log("agents-deck: request handler failed:", err);
+  log(`${PRODUCT}: request handler failed:`, err);
   if (!res.headersSent) send(res, 500, { error: "internal error" });
   else res.end();
 }
@@ -1950,9 +1951,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   startServer({ port }).then(s => {
     const addr = s.address();
     const p = typeof addr === "object" && addr ? addr.port : port;
-    console.log(`agents-deck server: http://127.0.0.1:${p}`);
+    console.log(`${PRODUCT} server: http://127.0.0.1:${p}`);
   }).catch(e => {
-    console.error("agents-deck server failed:", e.message);
+    console.error(`${PRODUCT} server failed:`, e.message);
     process.exit(1);
   });
 }

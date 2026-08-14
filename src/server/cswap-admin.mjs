@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { looksMissing, run, runDetached, runInteractive } from "./exec.mjs";
 import { backupRoot, invalidateClaudeAccountsCache } from "./claude-accounts.mjs";
 import { cswapBin } from "./cswap-install.mjs";
+import { PRODUCT } from "./brand.mjs";
 
 // An OAuth code is short-lived at the source; there is no point holding a child
 // open longer than a user would plausibly take to fetch one.
@@ -618,7 +619,7 @@ export function firstUseful(text) {
 export function addFailureText(r) {
   const text = firstUseful(r.stderr || r.stdout);
   if (/keychain/i.test(text)) {
-    return `${text} — start agents-deck from a Terminal window rather than a background service.`;
+    return `${text} — start ${PRODUCT} from a Terminal window rather than a background service.`;
   }
   return failureText(r, "cswap add");
 }

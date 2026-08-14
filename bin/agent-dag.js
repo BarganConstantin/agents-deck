@@ -42,6 +42,7 @@ import {
 } from "../src/server/self-update.mjs";
 import { dieOfSignal, upgradeAttempt, upgradeRefusalText, workerExitAction } from "../src/server/supervisor.mjs";
 import { colorProfile, glyphs, palette, unicodeOK } from "../src/server/term.mjs";
+import { PRODUCT } from "../src/server/brand.mjs";
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
@@ -152,7 +153,7 @@ function launch(respawn) {
   });
 
   worker.on("error", (err) => {
-    console.error(`agents-deck: could not start ${WORKER}: ${err.message}`);
+    console.error(`${PRODUCT}: could not start ${WORKER}: ${err.message}`);
     process.exit(1);
   });
 }
@@ -342,7 +343,7 @@ function launchNpx() {
     if (stopping || served) return; // the user stopped it, or it ran and ended
     const summary = npxFailureSummary(tail);
     const hint = npxFailureHint(tail);
-    console.error(`agents-deck: ${why} — staying on v${VERSION}`);
+    console.error(`${PRODUCT}: ${why} — staying on v${VERSION}`);
     if (summary) console.error(`  ${summary}`);
     if (hint) console.error(`  ${hint}`);
     // Left for the worker about to be launched: it is the only way the browser

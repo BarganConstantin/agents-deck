@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import path from "node:path";
 import os from "node:os";
 import { killTree, spawnSpec } from "./exec.mjs";
+import { PRODUCT } from "./brand.mjs";
 
 const CACHE_MS = 120_000; // 2 min — modal is manual-open; cheap to keep warm
 const TIMEOUT_MS = 90_000;
@@ -173,7 +174,7 @@ async function getRunner() {
   // Cold: install once (deduped across concurrent callers).
   if (!_installing) {
     _installing = (async () => { installSync("latest"); })()
-      .catch(e => { console.error("agents-deck ccusage: install failed:", e?.message ?? e); })
+      .catch(e => { console.error(`${PRODUCT} ccusage: install failed:`, e?.message ?? e); })
       .finally(() => { _installing = null; });
   }
   await _installing;
@@ -263,7 +264,7 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
       fetchedAt: now,
     };
   } catch (err) {
-    console.error("agents-deck ccusage: fetch failed:", err?.message ?? err);
+    console.error(`${PRODUCT} ccusage: fetch failed:`, err?.message ?? err);
     // Anything untagged got here from the child itself — a non-zero exit, or a
     // spawn that never started one — which is exactly what run_failed means.
     result = {
@@ -307,7 +308,7 @@ export function primeCcusage() {
   }
   if (!_installing) {
     _installing = (async () => { installSync("latest"); })()
-      .catch(e => { console.error("agents-deck ccusage: install failed:", e?.message ?? e); })
+      .catch(e => { console.error(`${PRODUCT} ccusage: install failed:`, e?.message ?? e); })
       .finally(() => { _installing = null; });
   }
   return { state: "installing" };

@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { getCodexAuth, forceCodexRefresh } from "./codex-auth.mjs";
+import { PRODUCT } from "./brand.mjs";
 
 const CODEX_HOME  = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const CONFIG_PATH = join(CODEX_HOME, "config.toml");
@@ -269,7 +270,7 @@ async function doFetchCodexQuota() {
       return fail(res.status === 401 ? "refresh_rejected" : `http_${res.status}`);
     }
   } catch (err) {
-    console.error("agents-deck codex-quota: fetch failed:", err?.message ?? err);
+    console.error(`${PRODUCT} codex-quota: fetch failed:`, err?.message ?? err);
     return fail("fetch_error");
   }
 
