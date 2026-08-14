@@ -25,3 +25,28 @@ export function computeVisibleIds(state: GraphState, now: number): Set<string> {
   }
   return set;
 }
+
+/** Minimal rectangle, in whatever coordinate space both arguments share. */
+export type Box = { left: number; top: number; right: number; bottom: number };
+
+/**
+ * Do these two boxes touch, allowing `pad` of slack on every side?
+ *
+ * Used to decide whether the category filter bar has canvas content under it.
+ * The pad exists so the bar yields just BEFORE something reaches it: dimming at
+ * the exact moment of contact reads as a glitch, dimming a few pixels early
+ * reads as the bar getting out of the way.
+ */
+export function boxesTouch(a: Box, b: Box, pad = 0): boolean {
+  return a.right + pad > b.left
+    && a.left - pad < b.right
+    && a.bottom + pad > b.top
+    && a.top - pad < b.bottom;
+}
+
+/** Whether any box in the list touches the target. Same slack rule. */
+export function anyTouches(target: Box | null, boxes: Iterable<Box>, pad = 0): boolean {
+  if (!target) return false;
+  for (const b of boxes) if (boxesTouch(target, b, pad)) return true;
+  return false;
+}
