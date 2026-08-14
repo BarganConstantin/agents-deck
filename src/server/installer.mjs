@@ -95,8 +95,52 @@ async function ensureDir(p) {
   if (!existsSync(p)) await mkdir(p, { recursive: true });
 }
 
+// Notepad and PowerShell's Set-Content write UTF-8 with a byte-order mark, and
+// JSON.parse throws on it when the file is read as utf8. A BOM is not damage —
+// the JSON behind it is fine — so it never gets to look like a corrupt file.
+function stripBom(text) {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 async function readJsonSafe(p) {
-  try { return JSON.parse(await readFile(p, "utf8")); } catch { return null; }
+  try { return JSON.parse(stripBom(await readFile(p, "utf8"))); } catch { return null; }
+}
+
+function unreadableSettings(p, why) {
+  const err = new Error(
+    `${p} could not be read as JSON (${why}). Refusing to overwrite it — ` +
+    `fix the file or move it aside, then run agents-deck again.`,
+  );
+  err.code = "SETTINGS_UNREADABLE";
+  err.settingsPath = p;
+  return err;
+}
+
+/**
+ * Read settings we are about to rewrite. Only ENOENT means "nothing there yet";
+ * every other failure is a file whose contents we cannot reproduce — a stray
+ * comma, a half-written file from another process, a permission error — and
+ * writing our hooks over it would destroy every setting the user has. So the
+ * install refuses instead, loudly, and leaves the file exactly as it found it.
+ */
+async function readSettingsForWrite(p) {
+  let raw;
+  try {
+    raw = await readFile(p, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return {};
+    throw unreadableSettings(p, err?.message ?? String(err));
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(stripBom(raw));
+  } catch (err) {
+    throw unreadableSettings(p, err?.message ?? String(err));
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw unreadableSettings(p, "top level is not a JSON object");
+  }
+  return parsed;
 }
 
 async function installHookScript(installDir) {
@@ -124,13 +168,16 @@ export async function installHooks({ provider = "claude" } = {}) {
   const cfg = PROVIDERS[provider];
   if (!cfg) throw new Error(`unknown provider: ${provider}`);
 
+  // Read before writing anything, so a settings file we cannot parse aborts
+  // the install without leaving half of it behind.
+  const current = await readSettingsForWrite(cfg.settingsPath);
+
   const hookPath = await installHookScript(cfg.hookInstallDir);
   const command = hookCommand(hookPath, provider);
   await ensureDir(cfg.ensureDir);
   // Discovery dir is shared across providers — always make sure it exists.
   await ensureDir(AGENT_DAG_DIR);
 
-  const current = (await readJsonSafe(cfg.settingsPath)) ?? {};
   current.hooks = current.hooks ?? {};
 
   for (const evt of cfg.events) {

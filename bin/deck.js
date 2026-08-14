@@ -157,7 +157,18 @@ await printBanner();
 process.stdout.write(`  ${C.dim}workspace :${C.reset} ${workspace === "" ? C.yellow + "(all)" + C.reset : workspace}\n`);
 
 sp = spinner("installing Claude hooks…");
-const claudeInstall = await installHooks({ provider: "claude" });
+let claudeInstall;
+try {
+  claudeInstall = await installHooks({ provider: "claude" });
+} catch (err) {
+  // Settings the installer cannot parse are settings it cannot rewrite without
+  // losing them, so it refuses. That refusal has to be said out loud: the file
+  // it names is one only the user can repair, and every Claude Code session on
+  // this machine is reading it too.
+  sp.stop(false, `Claude hooks     ${C.dim}not installed${C.reset}`);
+  console.error(`\n  agents-deck: ${err.message}\n`);
+  process.exit(1);
+}
 sp.stop(true, `Claude hooks     ${C.dim}→ ${claudeInstall.hookPath}${C.reset}`);
 
 // Codex CLI hooks never fire on Windows (sandbox refuses to spawn the hook
