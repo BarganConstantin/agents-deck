@@ -1304,6 +1304,58 @@ export function requestUrl(rawUrl) {
   catch { return null; }
 }
 
+// Is this mutating request allowed to be acted on?
+//
+// The deck binds 127.0.0.1, which sounds private but is reachable from every
+// page the user's browser has open: a cross-site POST with a CORS-safelisted
+// `Content-Type: text/plain` fires no preflight, so any visited page could
+// remove a Claude account, import an attacker-crafted one, switch the live
+// account, flip auto-switching, start a global npm upgrade, restart the deck
+// or truncate the event log. None of those need to read the response, so the
+// same-origin policy alone never stopped them.
+//
+// Two headers decide it, and both are set by the browser itself — page script
+// cannot forge either, they are forbidden header names:
+//
+//   Sec-Fetch-Site  present on every modern-browser request. `same-origin`
+//                   (our own UI) and `none` (the user typed the URL) pass;
+//                   `cross-site` and `same-site` are exactly the attack and
+//                   are refused. Absent on older Safari, hence the second half.
+//   Origin          present on every browser POST, including same-origin ones.
+//                   It must name this very server: comparing it to the Host
+//                   header the browser filled in from the target URL. A page
+//                   on http://evil.com — or on http://localhost:8000, which is
+//                   just as cross-origin — cannot make the two agree. The
+//                   opaque `null` origin (sandboxed iframe, data: URL) fails
+//                   to parse and is refused with it.
+//
+// A request carrying neither header is not a browser request and is allowed:
+// that is hook/hook.js, a plain Node http.request from the user's own machine
+// that sends no Origin at all, plus curl and the deck's own tooling. Ambient
+// browser authority is the whole threat here, and those clients have none — a
+// process that can POST here can already run anything as the user.
+export function isTrustedMutation({ origin, host, secFetchSite } = {}) {
+  const site = typeof secFetchSite === "string" ? secFetchSite.trim().toLowerCase() : "";
+  if (site && site !== "same-origin" && site !== "none") return false;
+  if (typeof origin !== "string" || origin === "") return true;
+  return originMatchesHost(origin, host);
+}
+
+// Does `origin` name the same host:port the request was addressed to? Ports are
+// part of an origin, so http://127.0.0.1:8000 is not http://127.0.0.1:4317 —
+// and the default port is spelled both ways depending on the client, so it is
+// normalised off both sides before comparing.
+function originMatchesHost(origin, host) {
+  if (typeof host !== "string" || host === "") return false;
+  let parsed;
+  try { parsed = new URL(origin); } catch { return false; }
+  const dropDefaultPort = (h, scheme) =>
+    h.replace(scheme === "https:" ? /:443$/ : /:80$/, "");
+  const fromOrigin = dropDefaultPort(parsed.host.toLowerCase(), parsed.protocol);
+  const fromHost = dropDefaultPort(host.trim().toLowerCase(), parsed.protocol);
+  return fromOrigin !== "" && fromOrigin === fromHost;
+}
+
 async function tryListen(server, port, host) {
   return new Promise((res, rej) => {
     server.once("error", rej);
@@ -1360,6 +1412,17 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     // Unparseable request target. Nothing below can route it, and throwing here
     // would be an uncaughtException inside the listener — i.e. the whole deck.
     if (!url) return send(res, 400, { error: "bad request target" });
+
+    // Every route below that changes something is a POST, so one gate in front
+    // of the whole table covers them all — and covers any route added later
+    // without the author having to remember. See isTrustedMutation.
+    if (req.method !== "GET" && req.method !== "HEAD" && !isTrustedMutation({
+      origin: req.headers.origin,
+      host: req.headers.host,
+      secFetchSite: req.headers["sec-fetch-site"],
+    })) {
+      return send(res, 403, { error: "cross-site request blocked" });
+    }
 
     if (req.method === "POST" && url.pathname === "/api/event") return guard(handleEventIngest(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/health") return handleHealth(req, res);
