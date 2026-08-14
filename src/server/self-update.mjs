@@ -324,6 +324,20 @@ function legacyMarker(name) {
 function readMarker(name) {
   return readMarkerFile(markerPath(name)) ?? legacyMarker(name);
 }
+
+/** The version npm last named as `latest` for this package, straight off the
+ *  marker and with no lookup of its own.
+ *
+ *  This is what the supervisor calls a failed upgrade's TARGET. It has to be
+ *  answerable without the network — the supervisor asks it in the moment
+ *  between a click and a fetch, and the reason the fetch is about to fail may
+ *  well be that there is no network — and it has to be the same number the
+ *  banner offered, which is precisely what the marker holds. */
+export function lastKnownLatest(name = "agents-deck") {
+  const v = readMarker(name)?.version;
+  return typeof v === "string" && v ? v : null;
+}
+
 function writeMarker(name, marker) {
   const path = markerPath(name);
   try {
@@ -589,9 +603,14 @@ function restartFailurePath(name, key) {
   return file ? join(MARKER_DIR, file) : null;
 }
 
-/** Called by the supervisor, in the moment between "npx failed" and "relaunch
- *  the old copy". Best-effort: a read-only home costs the report, not the deck. */
-export function recordRestartFailure({ name = "agents-deck", command = null, error = null, version = null, at = Date.now(), key = restartFailureKey() } = {}) {
+/** Called by the supervisor when an upgrade does not happen — because the fetch
+ *  failed, because the fetched copy never served, or because this target has
+ *  already failed here and is not being tried again. Best-effort: a read-only
+ *  home costs the report, not the deck. */
+export function recordRestartFailure({
+  name = "agents-deck", command = null, error = null, version = null,
+  target = null, attempts = 1, at = Date.now(), failedAt = at, key = restartFailureKey(),
+} = {}) {
   const file = restartFailureFileName(name, key);
   if (!file) return;
   const path = join(MARKER_DIR, file);
@@ -602,6 +621,16 @@ export function recordRestartFailure({ name = "agents-deck", command = null, err
       error: error ? String(error).slice(0, 300) : null,
       // The version that failed to leave — see restartFailureNotice.
       version,
+      // The version that failed to ARRIVE, and how many attempts it has cost.
+      // Together they are the whole of what stops an unattended deck retrying
+      // the identical fetch forever; see upgradeAttempt in supervisor.mjs.
+      target,
+      attempts,
+      // When the fetch itself failed, which a refusal re-stating that failure
+      // carries forward unchanged. `at` moves on every write because the
+      // browser ends its attempt on a note it has not seen before — the
+      // cooldown must not be pushed out by the act of asking about it.
+      failedAt,
       at,
     }));
     sweepOrphanedNotes(file);

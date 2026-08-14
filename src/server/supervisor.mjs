@@ -1,6 +1,8 @@
 // What bin/agent-dag.js does when the worker dies: bring it back, fetch a
 // newer one, or let the whole thing stop — and, for a worker that was killed
-// rather than exited, how to hand that on to whoever started the deck.
+// rather than exited, how to hand that on to whoever started the deck. Plus the
+// question that now comes BEFORE any of that, since the fetch happens while the
+// worker is still serving: whether this upgrade is worth attempting at all.
 //
 // It lives here rather than inline in the supervisor because the supervisor
 // launches a real child process the moment it is imported, so the rule could
@@ -105,4 +107,93 @@ export function dieOfSignal(signal, proc = process) {
   // blocked — inherited dispositions survive spawn — so the kill above returns
   // instead of ending us.
   proc.exit(code);
+}
+
+// ── how often an upgrade that failed may be attempted again ──────────────────
+//
+// Reported from a terminal that had been left alone: the same version, the same
+// npm error, the same teardown, four times over. Nothing anywhere remembered
+// that this exact target had already failed, so every path back into the deck
+// offered the identical attempt — and each one cost a real interruption.
+//
+// Five minutes is chosen against what actually fails. A registry blip or a
+// version that has not finished propagating is gone well inside it; being
+// offline, behind a proxy that blocks the registry, or on the broken npx shim
+// of #184 is not, and no amount of retrying will change that. So the second
+// attempt waits, and there is no third: the copyable command is already on
+// screen beside the failure and is the honest escape hatch. A newer target
+// resets both — that is a different question, and it deserves its own answer.
+export const UPGRADE_COOLDOWN_MS = 300_000;
+export const UPGRADE_MAX_ATTEMPTS = 2;
+
+/** Whether a note on disk is a failure at all, and one about `target`.
+ *
+ *  Both sides of the comparison can be null — the version check is cached for
+ *  an hour and can be off entirely — and two unknowns count as the same target
+ *  rather than as two different ones. Guessing "different" would hand back the
+ *  unbounded retry this exists to end. A note from a deck older than this rule
+ *  carries no target at all, which is genuinely unknown against a target we do
+ *  know, so it is not held against a fresh version. */
+function noteAbout(note, target) {
+  if (!note || typeof note.error !== "string" || !note.error) return false;
+  return (note.target ?? null) === (target ?? null);
+}
+
+/** How many attempts the note already stands for. A note written before this
+ *  rule existed has no count and is exactly one failure. */
+function attemptsOf(note) {
+  return Number.isInteger(note?.attempts) && note.attempts > 0 ? note.attempts : 1;
+}
+
+/** When the attempt behind the note actually failed, which is not when the note
+ *  was last written: a refusal re-stamps `at` so the browser can tell it from
+ *  the failure before it, and the cooldown must not be pushed out by being
+ *  asked. */
+function failedAtOf(note) {
+  if (typeof note?.failedAt === "number") return note.failedAt;
+  return typeof note?.at === "number" ? note.at : null;
+}
+
+/**
+ * Whether an upgrade to `target` may be attempted, given what the last one left
+ * behind.
+ *
+ *   { allow: true, attempt: n }                     — go ahead; this is the nth
+ *   { allow: false, reason: "cooling", waitMs, attempt }
+ *   { allow: false, reason: "exhausted", attempt }
+ *
+ * Pure, and the note is a parameter rather than a read, because this is the
+ * rule that has to terminate an unattended loop and a rule worth a bug is worth
+ * a test.
+ */
+export function upgradeAttempt({
+  note, target = null, now = Date.now(),
+  cooldownMs = UPGRADE_COOLDOWN_MS, maxAttempts = UPGRADE_MAX_ATTEMPTS,
+} = {}) {
+  if (!noteAbout(note, target)) return { allow: true, attempt: 1 };
+  const attempt = attemptsOf(note);
+  if (attempt >= maxAttempts) return { allow: false, reason: "exhausted", attempt, waitMs: 0 };
+  const failedAt = failedAtOf(note);
+  // A clock that moved backwards — a laptop waking, an NTP correction — must
+  // not leave the deck cooling forever, so an unmeasurable wait counts as
+  // elapsed. The attempt cap is what makes that safe: it holds however the
+  // clock behaves, and it is the half that ends the loop.
+  const waited = typeof failedAt === "number" && now >= failedAt ? now - failedAt : cooldownMs;
+  if (waited < cooldownMs) {
+    return { allow: false, reason: "cooling", attempt, waitMs: cooldownMs - waited };
+  }
+  return { allow: true, attempt: attempt + 1 };
+}
+
+/** The refusal as the deck should state it — this is the whole of what the
+ *  banner and the terminal say, so it has to name the version, say what already
+ *  happened to it, and leave the user somewhere to go. The copyable command is
+ *  already on screen next to it. */
+export function upgradeRefusalText({ reason, waitMs = 0, attempt = 0 } = {}, target = null) {
+  const what = target ? `v${target}` : "this update";
+  if (reason === "exhausted") {
+    return `${what} failed to fetch ${attempt} times — not trying again from here; run the command yourself`;
+  }
+  const left = waitMs >= 60_000 ? `${Math.ceil(waitMs / 60_000)}m` : `${Math.max(1, Math.ceil(waitMs / 1000))}s`;
+  return `${what} failed to fetch a moment ago — waiting ${left} before trying again`;
 }

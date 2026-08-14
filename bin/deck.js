@@ -84,7 +84,7 @@ const persist = flags.noPersist
 
 const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-const { startServer, hookToken } =
+const { startServer, hookToken, releaseRestart } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
 
 // Codex hooks install when ~/.codex/ exists, unless --no-codex was passed.
@@ -279,20 +279,69 @@ if (upgrade) {
 // only after this process is gone — which is precisely what keeps the
 // replacement from racing this listener onto a random fallback port.
 let restarting = false;
+// Outer bound on the supervisor's answer below. It cannot be reached today —
+// the fetch has a deadline of its own and every path through it replies — but
+// `restarting` is a latch, and a latch with no way out is how a deck ends up
+// silently refusing every restart for the rest of its life.
+const UPGRADE_ANSWER_MS = 150_000;
+let upgradeTimer = null;
+
 const requestRestart = (mode) => {
   if (restarting) return;
   restarting = true;
-  // "npx" means the newer code is not on this disk at all — the supervisor has
-  // to fetch it — so there is no target version to name yet.
-  const viaNpx = mode === "npx";
-  const to = viaNpx ? null : restartTarget();
-  process.stdout.write(
-    viaNpx
-      ? `\n  ${C.yellow}↻${C.reset}  ${C.dim}updating via npx…${C.reset}\n`
-      : `\n  ${C.yellow}↻${C.reset}  ${C.dim}restarting${to ? ` → v${to}` : ""}…${C.reset}\n`,
-  );
-  shutdown(viaNpx ? UPGRADE_CODE : RESTART_CODE);
+  // "npx" means the newer code is not on this disk at all, so it has to be
+  // fetched — and this process keeps serving while that happens. Exiting first
+  // is what made every failed upgrade an outage: the SSE stream dropped, hook
+  // events fired into the gap were lost outright (hook/hook.js is
+  // fire-and-forget with a 1s timeout and no retry), and the canvas came back
+  // with whatever was in flight stuck until the stale sweeper reaped it — all
+  // of it paid before anyone knew whether npm could even resolve the version.
+  // Nothing is torn down here now; the supervisor answers when it knows.
+  if (mode === "npx") {
+    upgradeTimer = setTimeout(() => abandonUpgrade("no answer from the supervisor"), UPGRADE_ANSWER_MS);
+    upgradeTimer.unref?.();
+    // Armed before the ask, not after: a send that throws is a supervisor that
+    // can no longer answer, and the deck has to come back out of the latch on
+    // its own rather than wait out an answer that cannot arrive.
+    try { process.send({ type: "upgrade" }); }
+    catch (err) { abandonUpgrade(err?.message ?? "the supervisor is no longer listening"); }
+    return;
+  }
+  const to = restartTarget();
+  process.stdout.write(`\n  ${C.yellow}↻${C.reset}  ${C.dim}restarting${to ? ` → v${to}` : ""}…${C.reset}\n`);
+  shutdown(RESTART_CODE);
 };
+
+// The upgrade did not happen and this deck is still the deck. Said out loud
+// because the terminal has just printed that a fetch was starting, and left
+// unsaid it reads as a restart that hung.
+const abandonUpgrade = (why) => {
+  clearTimeout(upgradeTimer);
+  restarting = false;
+  // The server's own latch, which no longer has an exiting process to clear it.
+  releaseRestart();
+  process.stdout.write(
+    `\n  ${C.yellow}✕${C.reset}  ${C.dim}update not applied — still on ${C.reset}v${PKG_VERSION}\n` +
+    (why ? `     ${C.dim}${why}${C.reset}\n` : ""),
+  );
+};
+
+// The supervisor's verdict on the fetch it was asked for. Only it can answer:
+// the fetch is its child, and it is the process that will still be here when
+// this one exits.
+process.on("message", (m) => {
+  if (!restarting || !m || typeof m !== "object") return;
+  if (m.type === "upgrade-ready") {
+    clearTimeout(upgradeTimer);
+    // The replacement is on the machine now, so this is the last moment the
+    // port is worth holding: exiting hands it straight over.
+    process.stdout.write(`\n  ${C.yellow}↻${C.reset}  ${C.dim}updating via npx…${C.reset}\n`);
+    shutdown(UPGRADE_CODE);
+  } else if (m.type === "upgrade-refused") {
+    abandonUpgrade(m.error);
+  }
+});
+
 // What a restart would land on. Read from disk now rather than remembered from
 // boot, because the whole point is that the two differ.
 function restartTarget() {

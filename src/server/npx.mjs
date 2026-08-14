@@ -19,8 +19,15 @@
 // arithmetic. That is what this prefers. The shim stays as the fallback for
 // installs whose npm lives somewhere else entirely, and it still goes through
 // spawnSpec — the cmd.exe quoting there is load-bearing and unchanged.
+//
+// The pre-flight fetch below goes through the very same launcher, for the same
+// reason stated the other way round: a supervisor that cannot afford npx to be
+// broken cannot afford to discover that it is only after it has stopped
+// serving. So the fetch happens first, and only a fetch that worked costs the
+// deck its listener.
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { spawnSpec } from "./exec.mjs";
+import { killTree, spawnSpec } from "./exec.mjs";
 
 /**
  * Where npm's own `npx-cli.js` sits relative to the running Node binary, most
@@ -77,6 +84,106 @@ export function npxLaunch(args, {
   }
   const shim = platform === "win32" ? "npx.cmd" : "npx";
   return { ...spawnSpec(shim, args, platform), via: "shim", cli: null };
+}
+
+// Long enough for a cold tarball on a slow line; short enough that a connection
+// hanging on a dead proxy does not hold the deck's Update button for the three
+// minutes the tab waits before giving up on its own.
+export const PREFETCH_TIMEOUT_MS = 120_000;
+
+/**
+ * What to hand npx to DOWNLOAD a spec without running it.
+ *
+ * The reason this is not simply `["-y", spec]`: that form is the upgrade
+ * itself. npx resolves, unpacks AND executes the package's bin in one command,
+ * so asking it "can you fetch this?" the obvious way starts a second deck —
+ * which either binds the port the running one holds or, worse, does not, and
+ * registers itself with the hooks anyway. Both are outages of their own.
+ *
+ * `--package` is the half that installs; `--call` is the half that runs, and
+ * pointing it at a shell builtin is what makes the install the only effect. The
+ * spec never appears as a positional argument, so no bin of ours is ever named,
+ * let alone started.
+ *
+ * `exit 0` rather than anything more informative on purpose: npm runs the call
+ * through its script shell — `sh -c` on POSIX, cmd.exe on Windows — and both
+ * spell that builtin the same way. Anything that needed a program on PATH would
+ * fail exactly where PATH is broken, which is the environment from #184 this
+ * pre-flight most needs to answer honestly.
+ */
+export function npxPrefetchArgs(spec) {
+  return ["-y", "--package", spec, "--call", "exit 0"];
+}
+
+/**
+ * Resolve, download and unpack `spec` while the current deck keeps serving.
+ *
+ * Answers `{ ok, error, hint }` — never throws, because the caller's whole
+ * reason for asking is that it must survive the answer being "no". A refusal
+ * here costs the click; the alternative, which is what shipped before, was to
+ * exit the worker first and discover offline, a proxy, an ETARGET or a broken
+ * npx shim with the port already given up and the SSE stream already dropped.
+ *
+ * Nothing is echoed: the deck this runs alongside owns the terminal and is
+ * still drawing its pulse line over the last row, so npm's progress output
+ * would smear across it. The tail is kept only as evidence for a failure that
+ * may not happen, and reduced to one line by npxFailureSummary when it does.
+ *
+ * `spawnFn` and `launch` are injected so the choice of launcher and the stdio
+ * it is given can be asserted without a Node install to match, and `onChild`
+ * hands the process out so a Ctrl+C arriving mid-fetch has something to kill.
+ */
+export function npxPrefetch(spec, {
+  launch = npxLaunch,
+  spawnFn = spawn,
+  timeoutMs = PREFETCH_TIMEOUT_MS,
+  onChild = null,
+} = {}) {
+  return new Promise((resolve) => {
+    const { file, args, opts } = launch(npxPrefetchArgs(spec));
+    let child;
+    try {
+      child = spawnFn(file, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+    } catch (err) {
+      resolve({ ok: false, error: `could not run npx: ${err?.message ?? err}`, hint: null });
+      return;
+    }
+    onChild?.(child);
+
+    let tail = "";
+    const keep = (d) => { tail = (tail + String(d)).slice(-8000); };
+    // Both streams, one buffer: npm writes its errors to stderr and its
+    // resolution notices to stdout, and which of the two carries the sentence
+    // worth quoting depends on the failure.
+    child.stdout?.on("data", keep);
+    child.stderr?.on("data", keep);
+
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      // killTree, not kill: on Windows the shim path puts cmd.exe between us
+      // and npm, so a plain kill stops the shell and leaves the download
+      // running — writing into the very cache directory the next attempt reads.
+      killTree(child);
+      settle({ ok: false, error: `fetching ${spec} timed out after ${Math.round(timeoutMs / 1000)}s`, hint: null });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.on("error", err => settle({ ok: false, error: `could not run npx: ${err?.message ?? err}`, hint: null }));
+    child.on("exit", (code, signal) => {
+      if (code === 0) { settle({ ok: true, error: null, hint: null }); return; }
+      settle({
+        ok: false,
+        error: npxFailureSummary(tail) ?? `npx could not fetch ${spec} — exited ${code ?? signal}`,
+        hint: npxFailureHint(tail),
+      });
+    });
+  });
 }
 
 // Lines that are structure rather than content: a Node crash prints a stack,
