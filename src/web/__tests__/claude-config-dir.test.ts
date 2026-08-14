@@ -8,6 +8,7 @@
 // never find the server.
 import { describe, it, expect, afterAll } from "vitest";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -33,6 +34,10 @@ delete process.env.CODEX_HOME;
 
 // @ts-expect-error — .mjs server module, no types
 const { installHooks, CLAUDE_DIR, AGENT_DAG_DIR } = await import("../../server/installer.mjs");
+// The deck half of the hook handshake, imported after the environment above is
+// in place so nothing it resolves at load can point at the real config dir.
+// @ts-expect-error — .mjs server module, no types
+const { challengeProof } = await import("../../server/index.mjs");
 
 // Belt and braces: if the override were ignored the installer would resolve
 // somewhere under FAKE_HOME, and on a machine where the developer has
@@ -93,8 +98,17 @@ describe("hook.js discovery under CLAUDE_CONFIG_DIR", () => {
   // CLI always invokes it.
   it("posts the event to the server registered under the override", async () => {
     const { hookPath } = await installHooks({ provider: "claude" });
+    const token = randomBytes(32).toString("hex");
     const received: unknown[] = [];
     const server = createServer((req, res) => {
+      // Stand-in deck: it has to answer the identity challenge before the hook
+      // will send it anything. See hook/hook.js's challengeProof.
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/api/hook-challenge") {
+        const proof = challengeProof(token, url.searchParams.get("nonce"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ proof }));
+      }
       let body = "";
       req.on("data", c => { body += c; });
       req.on("end", () => {
@@ -110,7 +124,7 @@ describe("hook.js discovery under CLAUDE_CONFIG_DIR", () => {
     // sweeping it. An empty workspace matches any cwd.
     writeFileSync(
       join(AGENT_DAG_DIR, `${process.pid}.json`),
-      JSON.stringify({ pid: process.pid, port, workspace: "", startedAt: new Date().toISOString() }),
+      JSON.stringify({ pid: process.pid, port, workspace: "", token, startedAt: new Date().toISOString() }),
       "utf8",
     );
 

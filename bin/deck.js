@@ -79,7 +79,7 @@ const persist = flags.noPersist
 
 const { installHooks, writeDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-const { startServer } =
+const { startServer, hookToken } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
 
 // Codex hooks install when ~/.codex/ exists, unless --no-codex was passed.
@@ -328,7 +328,9 @@ if (RESPAWN) {
   else process.stdout.write("\n");
 }
 
-const discoveryFile = await writeDiscovery({ port: realPort, workspace });
+// The token goes in with the port: it is what lets a hook tell this deck from
+// whatever else may later be listening on the same number. See hookToken().
+const discoveryFile = await writeDiscovery({ port: realPort, workspace, token: hookToken() });
 
 // Never on a respawn: the tab that asked for the restart is still open and
 // reconnecting on its own. A second one would be the deck talking over itself.
