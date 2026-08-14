@@ -41,12 +41,22 @@ import {
   npxRestartSpec, readRestartFailure, recordRestartFailure,
 } from "../src/server/self-update.mjs";
 import { dieOfSignal, upgradeAttempt, upgradeRefusalText, workerExitAction } from "../src/server/supervisor.mjs";
+import { colorProfile, glyphs, palette, unicodeOK } from "../src/server/term.mjs";
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(BIN_DIR, "deck.js");
 const PKG_ROOT = dirname(BIN_DIR);
 
 const VERSION = installedVersion(PKG_ROOT) ?? "?";
+
+// The supervisor prints exactly one line of its own — the fetch — and it has to
+// look like it came from the same product as the worker's rows. That is all the
+// presentation this file gets: it is the process that is never replaced, and a
+// colour profile plus a glyph tier is the most it can carry without becoming
+// something that can fail. Everything else it says is an error, on stderr, in
+// plain text, where it belongs.
+const P = palette(colorProfile({ isTTY: Boolean(process.stdout.isTTY) }));
+const G = glyphs(unicodeOK());
 
 // Who the restart-failure note below belongs to. Several decks of the same
 // package run out of one home directory — two `npx ccdeck` runs even share the
@@ -228,7 +238,7 @@ async function prefetchUpgrade(worker) {
   }
 
   attempting = { pkgName, spec, target, attempt: decision.attempt };
-  process.stdout.write(`\n  ↻  fetching ${spec}…\n`);
+  process.stdout.write(`\n  ${P.warn}${G.restart}${P.reset}  ${P.muted}fetching ${spec}${G.ellipsis}${P.reset}\n`);
   const got = await npxPrefetch(spec, { onChild: (c) => { fetching = c; } });
   fetching = null;
   // Ctrl+C, or a worker that died on its own while npm was working: either way

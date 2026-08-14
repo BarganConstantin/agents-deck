@@ -8,6 +8,11 @@ import { resolve, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
+import { dieOfSignal } from "../src/server/supervisor.mjs";
+import {
+  CURSOR_HIDE, CURSOR_SHOW, colorProfile, fit, glyphs, labelColumn, link, motionOK, palette,
+  pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK, wordmark,
+} from "../src/server/term.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..");
@@ -101,181 +106,244 @@ if (!existsSync(WEB_DIST)) {
   process.exit(1);
 }
 
-// ── ANSI helpers ──────────────────────────────────────────────────────────────
-const tty = process.stdout.isTTY;
-const C = {
-  reset:   tty ? "\x1b[0m"  : "",
-  bold:    tty ? "\x1b[1m"  : "",
-  dim:     tty ? "\x1b[2m"  : "",
-  cyan:    tty ? "\x1b[36m" : "",
-  blue:    tty ? "\x1b[34m" : "",
-  magenta: tty ? "\x1b[35m" : "",
-  yellow:  tty ? "\x1b[33m" : "",
-  green:   tty ? "\x1b[32m" : "",
-  white:   tty ? "\x1b[97m" : "",
-  bCyan:   tty ? "\x1b[96m" : "",
-  bMag:    tty ? "\x1b[95m" : "",
-};
+// ── the terminal we are printing into ─────────────────────────────────────────
+// Asked once, degraded from there — see src/server/term.mjs, which is where all
+// of this is decided and asserted. Below this point the deck writes no escape of
+// its own: colour comes from `P`, glyphs from `G`, layout from statusLine. That
+// is what makes NO_COLOR, a pipe, a CI log and a legacy Windows console one
+// question rather than thirty separate ones nobody remembers to ask.
+const tty = Boolean(process.stdout.isTTY);
+const PROFILE = colorProfile({ isTTY: tty });
+const P = palette(PROFILE);
+const UNICODE = unicodeOK();
+const G = glyphs(UNICODE);
+const LINKS = supportsHyperlinks({ profile: PROFILE });
+// The terminal's prefers-reduced-motion: nothing sleeps, spins or repaints in a
+// pipe, under CI, or with NO_COLOR set.
+const MOTION = motionOK({ isTTY: tty, profile: PROFILE });
+const write = (s) => process.stdout.write(s);
+// Read per line, never cached: a terminal can be resized while the deck runs,
+// and the pulse below is still on screen hours later.
+const cols = () => termColumns(process.stdout);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const fileLink = (path) => link(path, pathToFileURL(path).href, LINKS);
 
-// ── Animated banner ───────────────────────────────────────────────────────────
-async function printBanner() {
-  // figlet slant font — hardcoded, no runtime dep
-  const ART = [
-    '                          __                 __          __  ',
-    '  ____ _____ ____  ____  / /______      ____/ /__  _____/ /__',
-    ' / __ `/ __ `/ _ \\/ __ \\/ __/ ___/_____/ __  / _ \\/ ___/ //_/',
-    '/ /_/ / /_/ /  __/ / / / /_(__  )_____/ /_/ /  __/ /__/ ,<   ',
-    '\\__,_/\\__, /\\___/_/ /_/\\__/____/      \\__,_/\\___/\\___/_/|_|  ',
-    '     /____/                                                    ',
-  ];
-  const COLORS = [C.dim, C.blue, C.cyan, C.bCyan, C.magenta, C.dim];
+// ── the cursor ────────────────────────────────────────────────────────────────
+// Hidden for as long as anything of ours is moving — the reveal, the spinner,
+// the pulse — and put back on every way out of this process: the ordinary exit,
+// all three signals, and an uncaught throw, which reaches 'exit' after Node has
+// printed it. Half of this is worse than none: a deck that dies with the cursor
+// hidden leaves the user's shell with no cursor and nothing to do about it but
+// `reset`.
+let cursorHidden = false;
+const showCursor = () => {
+  if (!cursorHidden) return;
+  cursorHidden = false;
+  try { write(CURSOR_SHOW); } catch { /* stdout is gone; nothing left to restore */ }
+};
+if (MOTION) { cursorHidden = true; write(CURSOR_HIDE); }
+process.on("exit", showCursor);
+// SIGHUP is the one signal this process does not otherwise handle, so its
+// default action would end us before 'exit' could run. Handled only to put the
+// cursor back and then die of it exactly as before — the supervisor reads the
+// signal, not an exit code.
+process.on("SIGHUP", () => { showCursor(); dieOfSignal("SIGHUP"); });
 
-  process.stdout.write('\n');
+// ── rows ──────────────────────────────────────────────────────────────────────
+// The status column is computed from the longest label. It used to be counted
+// into each string as trailing spaces, so any new row, or any label a character
+// longer, silently broke the alignment of every other one.
+const LABELS = [
+  "workspace", "Claude hooks", "Codex sessions", "claude-swap", "accounts",
+  "ccusage", "update", "server ready", "log",
+];
+const LABEL_W = labelColumn(LABELS);
 
-  if (tty) {
-    const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-    for (let i = 0; i < 8; i++) {
-      process.stdout.write(`\r  ${C.bCyan}${frames[i % frames.length]}${C.reset}  ${C.dim}loading…${C.reset}`);
-      await sleep(70);
-    }
-    process.stdout.write('\r' + ' '.repeat(28) + '\n');
-    await sleep(40);
-  }
-
-  for (let i = 0; i < ART.length; i++) {
-    process.stdout.write(` ${COLORS[i]}${ART[i]}${C.reset}\n`);
-    if (tty) await sleep(38);
-  }
-
-  process.stdout.write(`\n  ${C.dim}v${PKG_VERSION}  ·  live agent DAG · Claude Code + Codex${C.reset}\n\n`);
+function row({ mark = " ", tone = P.ok, label = "", detail = "", detailTone = P.muted, keep = false }) {
+  return statusLine({
+    mark, label, detail, keep, labelWidth: LABEL_W, columns: cols(), ellipsis: G.ellipsis,
+    paint: {
+      mark: (s) => `${tone}${s}${P.reset}`,
+      detail: (s) => `${detailTone}${s}${P.reset}`,
+    },
+  }) + "\n";
 }
 
-// ── Spinner ───────────────────────────────────────────────────────────────────
-function spinner(label) {
-  if (!tty) { process.stdout.write(`  … ${label}\n`); return { stop: (ok, msg) => process.stdout.write(`  ${ok ? "✓" : "✗"} ${msg}\n`) }; }
-  const frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+// ── the wordmark ──────────────────────────────────────────────────────────────
+async function printBanner() {
+  const { lines } = wordmark({ columns: cols(), version: PKG_VERSION, profile: PROFILE, unicode: UNICODE, pal: P });
+  for (const line of lines) {
+    write(line + "\n");
+    // A reveal, not a wait. The once-per-session work is already running under
+    // it (see startupWork), so the art costs the boot nothing and the deck is
+    // ready about when the last row lands. What used to be here — 560ms of
+    // spinner at "loading…" before a single art line — was dead time in a tool
+    // whose documented entry point is `npx ccdeck`.
+    if (MOTION && line) await sleep(45);
+  }
+}
+
+// ── a step, with a spinner only if it is slow enough to need one ──────────────
+// The interval's first frame is 80ms away, so anything already settled when we
+// get here paints nothing at all and the row below is the only trace of it.
+async function step(label, work) {
+  if (!MOTION) return work;
+  const frames = spinnerFrames(UNICODE);
+  // Kept inside the terminal: a label that wraps is a label the \r below can
+  // only half erase, and what is left of it stays under the row that follows.
+  const text = fit(label, cols() - 6, G.ellipsis);
   let i = 0;
   const iv = setInterval(() => {
-    process.stdout.write(`\r  ${C.cyan}${frames[i++ % frames.length]}${C.reset}  ${label}`);
+    write(`\r  ${P.accent}${frames[i++ % frames.length]}${P.reset}  ${P.muted}${text}${P.reset}`);
   }, 80);
-  return {
-    stop(ok, msg) {
-      clearInterval(iv);
-      const icon = ok ? `${C.green}✓${C.reset}` : `${C.yellow}✗${C.reset}`;
-      process.stdout.write(`\r  ${icon}  ${msg}\n`);
-    }
-  };
+  try {
+    return await work;
+  } finally {
+    clearInterval(iv);
+    // Cleared rather than overwritten: the row that follows is a different
+    // length, and relying on it to be the longer of the two is how a spinner
+    // leaves its own tail on screen. Nothing to clear if it never painted.
+    if (i) write("\r" + " ".repeat(text.length + 5) + "\r");
+  }
 }
 
-let sp;
-
-// Everything in here is once-per-session setup — hook install, tool probes,
-// registry lookups, and about 600ms of deliberate banner animation. A respawn
-// is the same session continuing, so it skips the lot and prints one line
-// instead. This is the difference between a restart that feels instant and one
-// that makes you wonder whether it worked.
-if (!RESPAWN) {
-await printBanner();
-
-// ── Startup steps ─────────────────────────────────────────────────────────────
-process.stdout.write(`  ${C.dim}workspace :${C.reset} ${workspace === "" ? C.yellow + "(all)" + C.reset : workspace}\n`);
-
-sp = spinner("installing Claude hooks…");
-let claudeInstall;
-try {
-  claudeInstall = await installHooks({ provider: "claude" });
-} catch (err) {
+/**
+ * The once-per-session work, all of it started at once and none of it awaited.
+ *
+ * Hook install, the claude-swap probe and the registry lookup have nothing to
+ * do with each other and nothing to do with the wordmark, so they run underneath
+ * the reveal instead of queueing behind it — the animation then costs the boot
+ * nothing and the deck is ready about when the last art row lands. Every one of
+ * them is given its rejection handler here, at the moment it is created, since a
+ * promise that settles before anything awaits it is otherwise an unhandled
+ * rejection.
+ */
+function startupWork() {
   // Settings the installer cannot parse are settings it cannot rewrite without
-  // losing them, so it refuses. That refusal has to be said out loud: the file
-  // it names is one only the user can repair, and every Claude Code session on
-  // this machine is reading it too.
-  sp.stop(false, `Claude hooks     ${C.dim}not installed${C.reset}`);
-  console.error(`\n  agents-deck: ${err.message}\n`);
-  process.exit(1);
-}
-sp.stop(true, `Claude hooks     ${C.dim}→ ${claudeInstall.hookPath}${C.reset}`);
+  // losing them, so it refuses — and that refusal is reported rather than
+  // thrown, because it is the only thing the user can act on.
+  const hooks = installHooks({ provider: "claude" }).then(v => ({ ok: true, v }), err => ({ ok: false, err }));
 
-// Codex CLI hooks never fire on Windows (sandbox refuses to spawn the hook
-// command). Instead the server tails Codex's rollout JSONL files directly, so
-// there's nothing to install and no /hooks trust step. We just confirm Codex
-// is present and let the watcher pick up sessions.
-if (wantCodex) {
-  process.stdout.write(`  ${C.green}✓${C.reset} Codex sessions    ${C.dim}→ watching ${join(homedir(), ".codex", "sessions")}${C.reset}\n`);
-} else {
-  process.stdout.write(`  ${C.dim}Codex watch skipped (no ~/.codex/, or --no-codex)${C.reset}\n`);
+  // claude-swap backs the multi-account panel, and an empty store leaves that
+  // panel useless even when the tool is there — so the account already signed
+  // in is registered once. Bounded inside seedFirstAccount: empty store only,
+  // once ever, never with NO_INSTALL set.
+  const cswap = (async () => {
+    const { ensureCswap } = await import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-install.mjs")).href);
+    const cs = await ensureCswap();
+    const usable = cs.state === "present" || cs.state === "installed" || cs.state === "upgrading";
+    if (!usable) return { cs, seed: null };
+    const { seedFirstAccount } = await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-accounts.mjs")).href);
+    return { cs, seed: await seedFirstAccount().catch(() => ({ state: "failed" })) };
+  })().catch(() => null);
+
+  // ccusage backs the usage-history modal. Primed at boot rather than on first
+  // open so a cold machine pays the install while the deck is still starting.
+  const ccusage = (async () => {
+    if (process.env.AGENTS_DECK_NO_INSTALL === "1") return null;
+    const { primeCcusage } = await import(pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href);
+    return primeCcusage();
+  })().catch(() => null);
+
+  // A newer release on npm, said once, in the place the upgrade gets typed.
+  // Hard-capped so a slow registry cannot delay the server — the answer is
+  // usually already cached in ~/.agents-deck/.self-update-check anyway. It has
+  // to resolve BEFORE the pulse indicator starts writing over the last line.
+  const update = Promise.race([
+    import(pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href)
+      .then(m => m.versionReport({ running: PKG_VERSION, pkgRoot: PKG_ROOT }))
+      .then(r => (r?.notice?.kind === "upgrade" ? r : null))
+      .catch(() => null),
+    new Promise(r => setTimeout(() => r(null), 1200)),
+  ]);
+
+  return { hooks, cswap, ccusage, update };
 }
 
-// claude-swap backs the multi-account panel. Installing it touches the user's
-// global tool path, so unlike the ccusage install this one announces itself.
-{
-  const { ensureCswap } = await import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-install.mjs")).href);
-  const csp = spinner("checking claude-swap…");
-  const cs = await ensureCswap();
-  if (cs.state === "present") {
-    csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version} (accounts panel enabled)${C.reset}`);
-  } else if (cs.state === "installed") {
-    csp.stop(true, `claude-swap      ${C.dim}→ installed v${cs.version} via ${cs.via}${C.reset}`);
-  } else if (cs.state === "upgrading") {
-    csp.stop(true, `claude-swap      ${C.dim}→ v${cs.version}, upgrading to v${cs.latest} in background${C.reset}`);
-  } else if (cs.state === "skipped") {
-    csp.stop(true, `claude-swap      ${C.dim}not installed (AGENTS_DECK_NO_INSTALL=1)${C.reset}`);
+/** The same work, said out loud, in a fixed order — a boot whose rows arrive in
+ *  whatever order the network settled is a boot nobody can scan twice. */
+async function reportStartup(jobs) {
+  write(row({
+    mark: G.ok, label: "workspace",
+    detail: workspace === "" ? "(all)" : workspace,
+    detailTone: workspace === "" ? P.warn : P.muted,
+  }));
+
+  const hooks = await step(`installing Claude hooks${G.ellipsis}`, jobs.hooks);
+  if (!hooks.ok) {
+    // The file it names is one only the user can repair, and every Claude Code
+    // session on this machine is reading it too.
+    write(row({ mark: G.fail, tone: P.err, label: "Claude hooks", detail: "not installed" }));
+    console.error(`\n  agents-deck: ${hooks.err.message}\n`);
+    process.exit(1);
+  }
+  write(row({ mark: G.ok, label: "Claude hooks", detail: fileLink(hooks.v.hookPath) }));
+
+  // Codex CLI hooks never fire on Windows (sandbox refuses to spawn the hook
+  // command). Instead the server tails Codex's rollout JSONL files directly, so
+  // there's nothing to install and no /hooks trust step. We just confirm Codex
+  // is present and let the watcher pick up sessions.
+  if (wantCodex) {
+    const dir = join(homedir(), ".codex", "sessions");
+    write(row({ mark: G.ok, label: "Codex sessions", detail: `watching ${fileLink(dir)}` }));
   } else {
-    const how = cs.reason === "no_installer"
-      ? "not installed — the accounts panel needs it"
-      : cs.reason === "not_on_path"
-        ? `installed via ${cs.via} but not on PATH — add ${
+    write(row({ label: "Codex sessions", detail: `skipped ${G.dash} no ~/.codex/, or --no-codex` }));
+  }
+
+  const swap = await step(`checking claude-swap${G.ellipsis}`, jobs.cswap);
+  const cs = swap?.cs;
+  if (cs?.state === "present") {
+    write(row({ mark: G.ok, label: "claude-swap", detail: `v${cs.version} (accounts panel enabled)` }));
+  } else if (cs?.state === "installed") {
+    write(row({ mark: G.ok, label: "claude-swap", detail: `installed v${cs.version} via ${cs.via}` }));
+  } else if (cs?.state === "upgrading") {
+    write(row({ mark: G.ok, label: "claude-swap", detail: `v${cs.version}, upgrading to v${cs.latest} in background` }));
+  } else if (cs?.state === "skipped") {
+    write(row({ mark: G.ok, label: "claude-swap", detail: "not installed (AGENTS_DECK_NO_INSTALL=1)" }));
+  } else {
+    const how = cs?.reason === "no_installer"
+      ? `not installed ${G.dash} the accounts panel needs it`
+      : cs?.reason === "not_on_path"
+        ? `installed via ${cs.via} but not on PATH ${G.dash} add ${
             process.platform === "win32" ? "%USERPROFILE%\\.local\\bin" : "~/.local/bin"
           }`
-        : `install failed via ${cs.via}`;
-    csp.stop(false, `claude-swap      ${C.dim}${how}${C.reset}`);
+        : `install failed${cs?.via ? ` via ${cs.via}` : ""}`;
+    write(row({ mark: G.fail, tone: P.warn, label: "claude-swap", detail: how }));
     // A URL is not an answer when someone just wants the panel to work. Print
     // the command for THIS machine, picked from what is already on it.
-    if (cs.hint) process.stdout.write(`    ${C.dim}${cs.hint}${C.reset}\n`);
+    if (cs?.hint) write(row({ label: "", detail: cs.hint }));
   }
 
-  // A working claude-swap with an empty store still leaves the panel useless,
-  // so the account already signed in is registered once. Bounded inside
-  // seedFirstAccount: empty store only, once ever, never with NO_INSTALL set.
-  if (cs.state === "present" || cs.state === "installed" || cs.state === "upgrading") {
-    const { seedFirstAccount } = await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-accounts.mjs")).href);
-    const seed = await seedFirstAccount().catch(() => ({ state: "failed" }));
-    if (seed.state === "added") {
-      process.stdout.write(`  ${C.green}✓${C.reset} accounts         ${C.dim}registered the signed-in account (cswap add)${C.reset}\n`);
-    } else if (seed.state === "failed" || seed.state === "nothing-to-add") {
-      process.stdout.write(`  ${C.dim}  accounts panel empty — sign in to Claude Code, then run cswap add${C.reset}\n`);
-    }
+  if (swap?.seed?.state === "added") {
+    write(row({ mark: G.ok, label: "accounts", detail: "registered the signed-in account (cswap add)" }));
+  } else if (swap?.seed?.state === "failed" || swap?.seed?.state === "nothing-to-add") {
+    write(row({ label: "accounts", detail: `panel empty ${G.dash} sign in to Claude Code, then run cswap add` }));
+  }
+
+  const cu = await jobs.ccusage;
+  if (cu?.state === "present") write(row({ mark: G.ok, label: "ccusage", detail: `v${cu.version}` }));
+  else if (cu?.state === "updating") write(row({ mark: G.ok, label: "ccusage", detail: `v${cu.version}, checking for update` }));
+  else if (cu?.state === "installing") write(row({ mark: G.ok, label: "ccusage", detail: "installing in background" }));
+
+  const upgrade = await jobs.update;
+  if (upgrade) {
+    write(row({
+      mark: G.up, tone: P.warn, label: "update",
+      detail: `v${upgrade.notice.to} available ${G.dash} ${upgrade.command}`,
+    }));
   }
 }
 
-// ccusage backs the usage-history modal. Primed here rather than on first
-// open so a cold machine pays the install while the deck is still booting.
-if (process.env.AGENTS_DECK_NO_INSTALL !== "1") {
-  const { primeCcusage } = await import(pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href);
-  const cu = primeCcusage();
-  if (cu.state === "present")         process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}→ v${cu.version}${C.reset}\n`);
-  else if (cu.state === "updating")   process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}→ v${cu.version}, checking for update${C.reset}\n`);
-  else if (cu.state === "installing") process.stdout.write(`  ${C.green}✓${C.reset} ccusage          ${C.dim}installing in background${C.reset}\n`);
+// Everything above is once-per-session setup — hook install, tool probes,
+// registry lookups, and the banner it now runs underneath. A respawn is the
+// same session continuing, so it skips the lot and prints one line instead.
+// This is the difference between a restart that feels instant and one that
+// makes you wonder whether it worked.
+if (!RESPAWN) {
+  const jobs = startupWork();
+  await printBanner();
+  await reportStartup(jobs);
 }
-
-// A newer release on npm, said once, in the place the upgrade gets typed.
-// Started here and collected below so the lookup overlaps the rest of boot, and
-// hard-capped so a slow registry cannot delay the server — the answer is
-// usually already cached in ~/.agents-deck/.self-update-check anyway. It has to
-// resolve BEFORE the pulse indicator starts writing over the last line.
-const selfCheck = import(pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href)
-  .then(m => m.versionReport({ running: PKG_VERSION, pkgRoot: PKG_ROOT }))
-  .catch(() => null);
-const upgrade = await Promise.race([
-  selfCheck.then(r => r?.notice?.kind === "upgrade" ? r : null),
-  new Promise(r => setTimeout(() => r(null), 1200)),
-]);
-if (upgrade) {
-  process.stdout.write(
-    `  ${C.yellow}↑${C.reset} update           ${C.dim}v${upgrade.notice.to} available — ${C.reset}${C.yellow}${upgrade.command}${C.reset}\n`,
-  );
-}
-} // end !RESPAWN
 
 // Asking the supervisor to bring us back. It is the only party that can, and
 // only after this process is gone — which is precisely what keeps the
@@ -310,7 +378,7 @@ const requestRestart = (mode) => {
     return;
   }
   const to = restartTarget();
-  process.stdout.write(`\n  ${C.yellow}↻${C.reset}  ${C.dim}restarting${to ? ` → v${to}` : ""}…${C.reset}\n`);
+  write(`\n  ${P.warn}${G.restart}${P.reset}  ${P.muted}restarting${to ? ` ${G.arrow} v${to}` : ""}${G.ellipsis}${P.reset}\n`);
   shutdown(RESTART_CODE);
 };
 
@@ -322,9 +390,9 @@ const abandonUpgrade = (why) => {
   restarting = false;
   // The server's own latch, which no longer has an exiting process to clear it.
   releaseRestart();
-  process.stdout.write(
-    `\n  ${C.yellow}✕${C.reset}  ${C.dim}update not applied — still on ${C.reset}v${PKG_VERSION}\n` +
-    (why ? `     ${C.dim}${why}${C.reset}\n` : ""),
+  write(
+    `\n  ${P.warn}${G.cancel}${P.reset}  ${P.muted}update not applied ${G.dash} still on ${P.reset}v${PKG_VERSION}\n` +
+    (why ? `     ${P.muted}${why}${P.reset}\n` : ""),
   );
 };
 
@@ -337,7 +405,7 @@ process.on("message", (m) => {
     clearTimeout(upgradeTimer);
     // The replacement is on the machine now, so this is the last moment the
     // port is worth holding: exiting hands it straight over.
-    process.stdout.write(`\n  ${C.yellow}↻${C.reset}  ${C.dim}updating via npx…${C.reset}\n`);
+    write(`\n  ${P.warn}${G.restart}${P.reset}  ${P.muted}updating via npx${G.ellipsis}${P.reset}\n`);
     shutdown(UPGRADE_CODE);
   } else if (m.type === "upgrade-refused") {
     abandonUpgrade(m.error);
@@ -351,15 +419,16 @@ function restartTarget() {
   catch { return null; }
 }
 
-if (!RESPAWN) sp = spinner("starting server…");
-const server = await startServer({
+const starting = startServer({
   port, persist, workspace, codex: wantCodex,
   // Withheld when nothing is supervising us: without a parent, exiting is just
   // exiting, and /api/restart answers 501 so the UI hides the control.
   onRestart: SUPERVISED ? requestRestart : null,
-}).catch(err => {
-  if (sp) sp.stop(false, `server failed: ${err.message}`);
-  else console.error(`agents-deck: server failed: ${err.message}`);
+});
+const server = await (RESPAWN ? starting : step(`starting server${G.ellipsis}`, starting)).catch(err => {
+  // stderr, not a row: a deck that could not bind is not a status line, and
+  // whatever launched it reads this stream.
+  console.error(`agents-deck: server failed: ${err.message}`);
   process.exit(1);
 });
 const addr = server.address();
@@ -373,15 +442,21 @@ const url = `http://127.0.0.1:${realPort}`;
 try { process.send?.({ type: "listening", port: realPort }); } catch { /* not supervised */ }
 
 if (RESPAWN) {
-  process.stdout.write(`  ${C.green}↻${C.reset}  ${C.dim}restarted → ${C.reset}v${PKG_VERSION}${C.dim} · ${url}${C.reset}\n`);
+  write(`  ${P.ok}${G.restart}${P.reset}  ${P.muted}restarted ${G.arrow} ${P.reset}v${PKG_VERSION}${P.muted} ${G.bullet} ${link(url, url, LINKS)}${P.reset}\n`);
 } else {
-  sp.stop(true, `server ready     ${C.dim}→ ${C.reset}${C.bCyan}${C.bold}${url}${C.reset}`);
-  if (persist) process.stdout.write(`  ${C.dim}log       : ${persist}${C.reset}\n`);
+  // The URL is the one detail an ellipsis would destroy — half an address is
+  // not a shorter address — so it keeps its own line when the terminal is too
+  // narrow to hold it beside the label. See statusLine's `keep`.
+  write(row({
+    mark: G.ok, label: "server ready",
+    detail: link(url, url, LINKS), detailTone: `${P.accent}${P.bold}`, keep: true,
+  }));
+  if (persist) write(row({ label: "log", detail: fileLink(persist) }));
   // Only when one is actually being opened. Under --no-open — which is how an
   // npx update relaunches, with a tab already waiting — this was announcing
   // something that never happened.
-  if (openBrowser) process.stdout.write(`\n  ${C.green}${C.bold}▶  opening browser…${C.reset}\n\n`);
-  else process.stdout.write("\n");
+  if (openBrowser) write(`\n  ${P.ok}${P.bold}${G.play}  opening browser${G.ellipsis}${P.reset}\n\n`);
+  else write("\n");
 }
 
 // The discovery file is the whole of how a hook finds this deck: hook.js
@@ -428,21 +503,19 @@ if (openBrowser && !RESPAWN) {
 }
 
 // ── Pulse indicator ───────────────────────────────────────────────────────────
-if (tty) {
-  const pulseFrames = [`${C.green}●${C.reset}`, `${C.dim}●${C.reset}`];
-  const LISTENING = "listening — Ctrl+C to stop";
-  // A deck no hook can find is not listening in any sense the user cares
-  // about, and the pulse is the one line that stays on screen for hours — so
-  // it is where this has to be said.
-  const UNREGISTERED = "listening, but not registered — hooks cannot find this deck";
-  // Padded on the plain text, before any colour: the line is redrawn over
-  // itself with \r, so the shorter message has to cover the longer one.
-  const width = UNREGISTERED.length + 3;
+// The whole line is rewritten each beat rather than just the dot: anything else
+// on this deck that has something to say writes a newline first, and after that
+// the line under the cursor is no longer the one we drew — a partial repaint
+// would leave the message behind and pulse into empty space. Sized to the real
+// terminal, because at 40 columns the old fixed 61-character line wrapped, and
+// from then on \r only ever reached its second row.
+if (MOTION) {
   let pi = 0;
   setInterval(() => {
-    const text = (registered ? LISTENING : UNREGISTERED).padEnd(width);
-    const colour = registered ? C.dim : C.yellow;
-    process.stdout.write(`\r  ${pulseFrames[pi++ % 2]}  ${colour}${text}${C.reset}`);
+    const text = pulseText({ registered, columns: cols(), unicode: UNICODE });
+    const dot = pi++ % 2 === 0 ? (registered ? P.ok : P.warn) : P.muted;
+    const tone = registered ? P.muted : P.warn;
+    write(`\r  ${dot}${G.pulse}${P.reset}  ${tone}${text}${P.reset}`);
   }, 800).unref();
 }
 
@@ -451,8 +524,11 @@ const shutdown = async (code = 0) => {
   // on its own before either timer runs, Node would otherwise exit 0 and the
   // supervisor would take that as "done" instead of "bring me back".
   process.exitCode = code;
+  // Before anything that can take time: a Ctrl+C the user has to watch for a
+  // second and a half is a second and a half without a cursor.
+  showCursor();
   if (tty && code !== RESTART_CODE && code !== UPGRADE_CODE) {
-    process.stdout.write(`\n\n  ${C.yellow}◉  shutting down…${C.reset}\n`);
+    write(`\n\n  ${P.warn}${G.stop}  shutting down${G.ellipsis}${P.reset}\n`);
   }
   // Stopped first, always: a tick landing after the unlink would re-register a
   // deck that is on its way out, and leave the file behind for the hooks to
@@ -477,15 +553,15 @@ process.on("beforeExit", () => { discovery.stop(); removeDiscovery(discoveryFile
 // reason — because the alternative is what this replaced: an ordinary-looking
 // deck that simply never shows a session.
 function reportUnregistered({ file, error }) {
-  const why = error?.message ? ` — ${error.message}` : "";
-  process.stdout.write(
-    `\n  ${C.yellow}⚠${C.reset}  ${C.bold}not registered${C.reset}${C.dim}${why}${C.reset}\n` +
-    `     ${C.dim}hooks find this deck through ${file}, so until that file exists no events arrive.${C.reset}\n`,
+  const why = error?.message ? ` ${G.dash} ${error.message}` : "";
+  write(
+    `\n  ${P.warn}${G.warn}${P.reset}  ${P.bold}not registered${P.reset}${P.muted}${why}${P.reset}\n` +
+    `     ${P.muted}hooks find this deck through ${file}, so until that file exists no events arrive.${P.reset}\n`,
   );
 }
 
 function reportReregistered({ file }) {
-  process.stdout.write(`\n  ${C.green}✓${C.reset}  ${C.dim}registered again → ${file}${C.reset}\n`);
+  write(`\n  ${P.ok}${G.ok}${P.reset}  ${P.muted}registered again ${G.arrow} ${fileLink(file)}${P.reset}\n`);
 }
 
 function parseArgs(args) {
