@@ -178,9 +178,12 @@ describe("--text-dim, the token the annotation rules now read from (#262)", () =
     // `border-color:` keeps it; a bare `color:` is the regression.
     const offenders = [...css.matchAll(/(^|[^-\w])color:\s*var\(--muted-dim\)/g)];
     expect(offenders.map(m => m[0].trim())).toEqual([]);
-    // Sixteen, not the seventeen #262 converted: .chips-empty was one of them and
-    // #243 deleted it as unreachable.
-    expect([...css.matchAll(/color:\s*var\(--text-dim\)/g)].length).toBeGreaterThanOrEqual(16);
+    // Fifteen, down from the seventeen #262 converted: .chips-empty went with
+    // #243 as unreachable, and .ap-manage-label went when the manage block's
+    // labels came off the screen — the fields keep hidden <label>s, which carry
+    // no colour at all. The floor tracks deletions; a rule switching BACK to
+    // --muted-dim is what the assertion above catches.
+    expect([...css.matchAll(/color:\s*var\(--text-dim\)/g)].length).toBeGreaterThanOrEqual(15);
   });
 });
 
