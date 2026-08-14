@@ -34,7 +34,7 @@ npx ccdeck          # or: npx agents-deck · npx agent-dag — same package
 
 Opens **http://127.0.0.1:4317** and registers the Claude Code hook on first run. Start any Claude Code or Codex session and the graph fills in live. `Ctrl+C` stops it.
 
-No config file. No account. No telemetry. Nothing leaves your machine except one ~20-byte version check against the npm registry, which you can turn off.
+No config file. No account. No telemetry — nothing about your sessions is reported anywhere. What does go out is short and ordinary: a ~20-byte version check against the npm registry, installs and daily version checks for the two tools the deck manages (claude-swap from PyPI, ccusage from npm), and, while the page is open, quota reads to Anthropic and OpenAI signed with your own credentials — that is where those numbers live. `AGENTS_DECK_NO_INSTALL=1` turns off everything but the quota reads.
 
 ## What you get
 
