@@ -10,7 +10,7 @@
 // Only ever touches its own entry, tagged `__agent-dag-sound`. Hooks the user
 // wrote themselves are left exactly as found — including the platform-specific
 // ones this replaces, which are reported rather than deleted.
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -60,6 +60,18 @@ function refusal(err) {
   };
 }
 
+const isParkFailure = (err) => err?.code === "PARKED_UNREADABLE" || err?.code === "PARKED_UNWRITABLE";
+
+/** The same refusal, for the file the parked hooks live in rather than settings.json. */
+function parkRefusal(err) {
+  return {
+    ok: false,
+    reason: err?.code === "PARKED_UNREADABLE" ? "parked_unreadable" : "parked_unwritable",
+    parkedPath: PARKED_PATH,
+    message: err?.message ?? String(err),
+  };
+}
+
 /**
  * Write settings.json back atomically — this file holds every hook the user
  * has, and a torn write costs them all of them.
@@ -91,18 +103,63 @@ function foreignSoundHooks(settings) {
   return found;
 }
 
-async function readParked() {
-  try {
-    const parsed = JSON.parse(await readFile(PARKED_PATH, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
+function parkedError(code, why) {
+  const err = new Error(
+    code === "PARKED_UNREADABLE"
+      ? `${PARKED_PATH} could not be read as JSON (${why}). It holds sound hooks you wrote yourself, ` +
+        `so it is not being treated as empty — fix the file or move it aside, then try again.`
+      : `${PARKED_PATH} could not be written (${why}). It is where your own sound hooks are kept while ` +
+        `the toggle is on, so nothing was taken out of settings.json — they would have been in neither file.`,
+  );
+  err.code = code;
+  err.parkedPath = PARKED_PATH;
+  return err;
 }
 
+/**
+ * Read the parked hooks, refusing to guess at a file that will not parse.
+ *
+ * Same bargain as readSettingsForWrite, for the same reason: this is the only
+ * copy of hooks the user wrote by hand, and every caller either overwrites the
+ * file or reports how much is in it. A truncated file — a kill mid-write, a full
+ * disk — used to read as "nothing was ever parked", and the next toggle wrote
+ * its own list over the remains. Only ENOENT is genuinely empty; the array is
+ * not optional, because a JSON object here means the file is not ours to touch.
+ */
+async function readParked() {
+  let raw;
+  try {
+    raw = await readFile(PARKED_PATH, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    throw parkedError("PARKED_UNREADABLE", err?.message ?? String(err));
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw parkedError("PARKED_UNREADABLE", err?.message ?? String(err));
+  }
+  if (!Array.isArray(parsed)) throw parkedError("PARKED_UNREADABLE", "top level is not a JSON array");
+  return parsed;
+}
+
+/**
+ * Write the parked hooks, and never quietly fail to.
+ *
+ * This used to swallow every error, which made the park a suggestion: a
+ * root-owned ~/.agents-deck, a full disk or a Windows lock on the file left the
+ * write undone while setSoundHook went on to strip the same hooks out of
+ * settings.json and report success. Atomic for the other half of it — a torn
+ * parked file is a parked file that reads as empty.
+ */
 async function writeParked(entries) {
   try {
     if (!existsSync(dirname(PARKED_PATH))) await mkdir(dirname(PARKED_PATH), { recursive: true });
-    await writeFile(PARKED_PATH, JSON.stringify(entries, null, 2) + "\n", "utf8");
-  } catch { /* best-effort */ }
+    await writeFileAtomic(PARKED_PATH, JSON.stringify(entries, null, 2) + "\n");
+  } catch (err) {
+    throw parkedError("PARKED_UNWRITABLE", err?.message ?? String(err));
+  }
 }
 
 /**
@@ -128,13 +185,30 @@ export async function soundHookStatus() {
     // Reporting a healthy "off" here would be a lie the user acts on: the
     // toggle cannot do anything until they repair the file, so say which file
     // and why rather than offering a switch that will refuse.
-    return { ...refusal(err), enabled: false, platform: process.platform, foreign: [], parked: (await readParked()).length };
+    return {
+      ...refusal(err),
+      enabled: false,
+      platform: process.platform,
+      foreign: [],
+      // A parked file that will not read is a second refusal, and settings.json
+      // is the one being reported. Count what can be counted.
+      parked: await readParked().then(p => p.length, () => 0),
+    };
   }
   const group = settings?.hooks?.[EVENT];
-  const parked = await readParked();
+  const enabled = Array.isArray(group) && group.some(isOurs);
+  let parked;
+  try {
+    parked = await readParked();
+  } catch (err) {
+    if (!isParkFailure(err)) throw err;
+    // "parked: 0" on a file we cannot read is the lie that sends the user to
+    // click the toggle, which is the thing that would overwrite it.
+    return { ...parkRefusal(err), enabled, platform: process.platform, foreign: foreignSoundHooks(settings), parked: 0 };
+  }
   return {
     ok: true,
-    enabled: Array.isArray(group) && group.some(isOurs),
+    enabled,
     platform: process.platform,
     foreign: foreignSoundHooks(settings),
     parked: parked.length,
@@ -148,7 +222,15 @@ export async function soundHookStatus() {
  * can have it back exactly as it was.
  */
 export async function restoreParkedSoundHooks() {
-  const parked = await readParked();
+  let parked;
+  try {
+    parked = await readParked();
+  } catch (err) {
+    if (!isParkFailure(err)) throw err;
+    // The file is left exactly as it is. Answering "restored: 0" would be the
+    // last word on hooks that are still in there, badly written but present.
+    return parkRefusal(err);
+  }
   if (parked.length === 0) return { ok: true, restored: 0 };
   let settings;
   try {
@@ -163,7 +245,15 @@ export async function restoreParkedSoundHooks() {
   const group = Array.isArray(settings.hooks[EVENT]) ? settings.hooks[EVENT] : [];
   settings.hooks[EVENT] = [...parked, ...group];
   await writeSettings(settings);
-  await writeParked([]);
+  // Emptying the park comes last and its failure is reported, not swallowed:
+  // the hooks are safely back in settings.json now, but a park left behind is
+  // one the next restore hands over a second time, duplicating them.
+  try {
+    await writeParked([]);
+  } catch (err) {
+    if (!isParkFailure(err)) throw err;
+    return { ...parkRefusal(err), restored: parked.length };
+  }
   return { ok: true, restored: parked.length };
 }
 
@@ -221,9 +311,19 @@ export async function setSoundHook(enabled) {
   // Without this the toggle is a lie in both directions: off still plays their
   // afplay/PowerShell hook, and on plays twice. They are moved, not deleted —
   // restoreParkedSoundHooks puts them back untouched.
+  //
+  // Which only holds if the move lands first. The filter below drops exactly
+  // these entries from the object written to settings.json, so a park that
+  // failed and said nothing left the user's own Stop hook in neither file, with
+  // ok:true on the way out. Nothing here is written until the park is on disk.
   const parking = group.filter(isSoundHook);
   if (parking.length > 0) {
-    await writeParked([...(await readParked()), ...parking]);
+    try {
+      await writeParked([...(await readParked()), ...parking]);
+    } catch (err) {
+      if (!isParkFailure(err)) throw err;
+      return parkRefusal(err);
+    }
   }
   const others = group.filter(g => !isOurs(g) && !isSoundHook(g));
 
