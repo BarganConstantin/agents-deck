@@ -7,8 +7,10 @@
 // agent-dag's idiom (plain CSS, no Tailwind/framer-motion).
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { fmtCost } from "../pricing";
+import { commandOutput, explainCcusageFailure } from "../admin-failure";
 import { createLatestGuard } from "../latest";
 import { presetSince } from "../usage-range";
+import { usageView } from "../usage-view";
 import { useModalDismiss } from "./use-modal-dismiss";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
@@ -37,9 +39,14 @@ interface CcusageResp {
   days?: DayEntry[];
   totals?: Record<string, number> | null;
   since?: string;
+  reason?: string;
   error?: string;
   fetchedAt?: number;
 }
+
+/** A landed response together with the preset it was requested for. The tag is
+ *  what lets the view refuse to show one range's numbers under another's tab. */
+interface Landed { range: number; resp: CcusageResp; }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function fmtN(n: number): string {
@@ -73,7 +80,7 @@ const PRESETS = [7, 14, 30, 90];
 
 // ── data hook ─────────────────────────────────────────────────────────────
 function useCcusage(rangeDays: number) {
-  const [data, setData] = useState<CcusageResp | null>(null);
+  const [landed, setLanded] = useState<Landed | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Responses can land out of order — a cached 7d range answers instantly while
@@ -83,13 +90,16 @@ function useCcusage(rangeDays: number) {
 
   const load = (force = false) => {
     const isCurrent = guard.begin();
+    const range = rangeDays;
     setLoading(true);
-    const since = presetSince(rangeDays);
+    const since = presetSince(range);
     const url = `/api/ccusage?since=${since}${force ? "&refresh=1" : ""}`;
     fetch(url)
       .then(r => r.json())
-      .then(d => { if (isCurrent()) setData(d); })
-      .catch(() => { if (isCurrent()) setData({ ok: false, error: "request failed" }); })
+      .then(resp => { if (isCurrent()) setLanded({ range, resp }); })
+      // The deck itself never answered, which is a different failure from
+      // ccusage failing and the only one whose remedy is about the deck.
+      .catch(() => { if (isCurrent()) setLanded({ range, resp: { ok: false, reason: "unreachable" } }); })
       .finally(() => { if (isCurrent()) setLoading(false); });
   };
 
@@ -98,7 +108,7 @@ function useCcusage(rangeDays: number) {
     return () => guard.cancel();
     /* eslint-disable-next-line */
   }, [rangeDays]);
-  return { data, loading, reload: () => load(true) };
+  return { landed, loading, reload: () => load(true) };
 }
 
 // ── component ─────────────────────────────────────────────────────────────
@@ -107,11 +117,18 @@ interface Props { onClose: () => void; }
 export default function UsageHistoryModal({ onClose }: Props) {
   const [rangeDays, setRangeDays] = useState(30);
   const [selected, setSelected] = useState<string | null>(null);
-  const { data, loading, reload } = useCcusage(rangeDays);
+  const { landed, loading, reload } = useCcusage(rangeDays);
 
   useModalDismiss(onClose);
 
-  const days = data?.ok ? (data.days ?? []) : [];
+  const view = usageView({
+    loading,
+    want: rangeDays,
+    answer: landed && { range: landed.range, ok: landed.resp.ok === true, days: landed.resp.days?.length ?? 0 },
+  });
+  // Only a "chart" verdict means a non-empty response for the range on screen,
+  // so nothing below can render another range's bars, totals or legend.
+  const days = view.phase === "chart" ? landed!.resp.days ?? [] : [];
   const maxCost = useMemo(() => days.reduce((m, d) => Math.max(m, d.totalCost), 0), [days]);
 
   // Aggregate totals + per-model cost across the range.
@@ -156,18 +173,40 @@ export default function UsageHistoryModal({ onClose }: Props) {
               >{p}d</button>
             ))}
           </div>
-          <button className="btn icon-btn uh-reload" onClick={reload} title="Re-run ccusage" aria-label="Reload">↻</button>
+          <button
+            className="btn icon-btn uh-reload"
+            onClick={reload}
+            disabled={loading}
+            title="Re-run ccusage"
+            aria-label="Reload"
+          >{loading ? "…" : "↻"}</button>
           <button className="uh-close" onClick={onClose} aria-label="Close">×</button>
         </header>
 
-        {loading && days.length === 0 ? (
-          <div className="uh-status">running ccusage… (first run downloads the package)</div>
-        ) : data && !data.ok ? (
-          <div className="uh-status uh-err">ccusage failed: {data.error}</div>
-        ) : days.length === 0 ? (
-          <div className="uh-status">no usage in this range</div>
+        {view.phase === "busy" ? (
+          <div className="uh-status" aria-busy="true">
+            {landed ? "running ccusage…" : "running ccusage… (first run downloads the package)"}
+          </div>
+        ) : view.phase === "error" ? (
+          // The reason map says what happened; ccusage's own line is evidence,
+          // one hover away, because it is what the user pastes into an issue.
+          <div className="uh-status uh-err" title={commandOutput(landed!.resp) || undefined}>
+            {explainCcusageFailure(landed!.resp, "ccusage did not report usage")}
+            <div>
+              <button className="btn uh-retry" onClick={reload} disabled={loading}>
+                {loading ? "trying…" : "Try again"}
+              </button>
+            </div>
+          </div>
+        ) : view.phase === "empty" ? (
+          <div className={`uh-status${view.stale ? " uh-stale" : ""}`} aria-busy={view.stale || undefined}>
+            no usage in this range
+          </div>
         ) : (
-          <>
+          // One wrapper so the whole answer dims together while a newer run for
+          // this same range is in flight: these are the right range's numbers,
+          // but they are not the final word yet.
+          <div className={view.stale ? "uh-stale" : undefined} aria-busy={view.stale || undefined}>
             <div className="uh-totals">
               <Stat label="total cost"   val={fmtCost(totalCost)} accent />
               <Stat label="tokens"       val={fmtN(totalTok)} />
@@ -254,7 +293,7 @@ export default function UsageHistoryModal({ onClose }: Props) {
                 </div>
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
     </div>

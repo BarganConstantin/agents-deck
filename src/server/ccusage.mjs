@@ -62,6 +62,16 @@ function installsDisabled() {
   return process.env.AGENTS_DECK_NO_INSTALL === "1";
 }
 
+// A run can end four ways that mean four different things to whoever opened the
+// modal — installs are forbidden, the deadline expired, the output was not usage
+// data, the CLI exited on its own — and all four used to arrive as one `error`
+// string, leaving the modal nothing to say but whatever `err.message` happened
+// to be. The code rides on the error and comes back out as `reason`; `error`
+// keeps the raw text, which the modal shows only on hover.
+function tagged(reason, message) {
+  return Object.assign(new Error(message), { reason });
+}
+
 // ── managed install ─────────────────────────────────────────────────────────
 
 // Absolute path to ccusage's CLI entry inside our managed install, or null if
@@ -158,7 +168,7 @@ async function getRunner() {
   // — so there is no runner to hand back. Fail with the reason, which the
   // usage-history modal shows, instead of quietly installing.
   if (installsDisabled()) {
-    throw new Error("ccusage is not installed, and installs are off (AGENTS_DECK_NO_INSTALL=1)");
+    throw tagged("no_install", "ccusage is not installed, and installs are off (AGENTS_DECK_NO_INSTALL=1)");
   }
   // Cold: install once (deduped across concurrent callers).
   if (!_installing) {
@@ -191,7 +201,7 @@ async function runCcusage(args) {
       // The npx fallback runs through a shell, so on Windows `child` is cmd.exe
       // and npx is a grandchild that a plain kill would leave downloading.
       killTree(child);
-      reject(new Error("ccusage timed out"));
+      reject(tagged("timeout", "ccusage timed out"));
     }, TIMEOUT_MS);
     child.stdout.on("data", d => { out += d; });
     child.stderr.on("data", d => { err += d; });
@@ -208,8 +218,15 @@ async function runCcusage(args) {
 function extractJson(out) {
   const start = out.indexOf("{");
   const end = out.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("no JSON in ccusage output");
-  return JSON.parse(out.slice(start, end + 1));
+  if (start === -1 || end === -1) throw tagged("bad_output", "no JSON in ccusage output");
+  try {
+    return JSON.parse(out.slice(start, end + 1));
+  } catch (err) {
+    // A ccusage that printed a progress line containing braces, or was cut off
+    // mid-object, lands here rather than on the branch above. Same failure to
+    // the reader either way: it ran, and what came back was not usage data.
+    throw tagged("bad_output", `unreadable ccusage output: ${err?.message ?? err}`);
+  }
 }
 
 // YYYYMMDD for the CLI's --since/--until.
@@ -221,7 +238,7 @@ function toCliDate(d) {
  * Fetch daily usage from ccusage for a date range.
  * @param {{ since?: string, until?: string, force?: boolean }} opts
  *        since/until are YYYYMMDD strings (CLI format). Defaults to last 30 days.
- * @returns {{ ok, days, totals, since, until, fetchedAt } | { ok:false, error }}
+ * @returns {{ ok, days, totals, since, until, fetchedAt } | { ok:false, reason, error }}
  */
 export async function fetchCcusageDaily({ since, until, force = false } = {}) {
   const now = Date.now();
@@ -247,7 +264,14 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
     };
   } catch (err) {
     console.error("agents-deck ccusage: fetch failed:", err?.message ?? err);
-    result = { ok: false, error: String(err?.message ?? err), fetchedAt: now };
+    // Anything untagged got here from the child itself — a non-zero exit, or a
+    // spawn that never started one — which is exactly what run_failed means.
+    result = {
+      ok: false,
+      reason: err?.reason ?? "run_failed",
+      error: String(err?.message ?? err),
+      fetchedAt: now,
+    };
   }
 
   _cache.set(key, { result, at: now });
