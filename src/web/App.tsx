@@ -89,10 +89,17 @@ const VERSION_FORCE_MS = 15 * 60_000;
 // means the process keeps executing the old code until it restarts.
 type VersionNotice = { kind: "restart" | "upgrade"; from: string; to: string };
 type VersionInfo = {
+  /** The package the server asked npm about, which is the one its `command`
+   *  would install — `ccdeck` for a deck started with `npx ccdeck`. */
   name: string;
   running: string | null;
   installed: string | null;
+  /** npm's newest version that is confirmed installable under `name`. */
   latest: string | null;
+  /** A version npm's dist-tag names that the registry cannot serve yet. Never
+   *  offered: the tag moves before the version does, and a restart taken inside
+   *  that window fails with ETARGET. */
+  latestPending?: string | null;
   notice: VersionNotice | null;
   command: string;
   // False when nothing is supervising the process, or when --no-persist means a

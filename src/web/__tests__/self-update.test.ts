@@ -5,9 +5,21 @@
 // boot version, and the browser bundle shows whichever version it was served.
 // These tests pin the three-way comparison that makes that state visible.
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// The marker lives under homedir(), which the suite must not write to: these
+// tests are about what gets cached there, and a real ~/.agents-deck/ would be
+// shared with every deck on the machine running them. homedir() answers with a
+// temp directory for as long as one is set, and with the real one otherwise, so
+// the rest of the file behaves exactly as before.
+const { homeRef } = vi.hoisted(() => ({ homeRef: { dir: null as string | null } }));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  const patched = { ...actual, homedir: () => homeRef.dir ?? actual.homedir() };
+  return { ...patched, default: patched };
+});
 
 // Nothing is executed: the install child and the kill that follows it are
 // recorded and handed back as fakes, so no test in this file can install
@@ -44,7 +56,7 @@ vi.mock("node:child_process", async () => {
 });
 
 // @ts-expect-error — plain JS module, no types
-import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, nextMarker, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode, markerFileName, startUpgrade, upgradeStatus } from "../../server/self-update.mjs";
+import { isOlder, pickNotice, isNpxInstall, upgradeCommand, upgradeBlockedReason, lastMeaningfulLine, checkDue, nextMarker, npxRoot, bareSpecName, npxSpecFromMeta, upgradeMode, upgradeName, markerFileName, startUpgrade, upgradeStatus } from "../../server/self-update.mjs";
 
 describe("isOlder", () => {
   it("compares numerically, not lexically", () => {
@@ -271,6 +283,29 @@ describe("npxSpecFromMeta", () => {
   });
 });
 
+// Reported live: a deck started with `npx ccdeck` answered
+// `{"name":"agents-deck","latest":"1.33.26","command":"npx -y ccdeck@latest"}`.
+// The version came from one package's dist-tag and the command installed
+// another, with nothing holding the two at the same number — and since CI
+// publishes the three names one after another, they are routinely apart.
+describe("upgradeName", () => {
+  it("keeps asking about the published name for a global install", () => {
+    expect(upgradeName("/usr/local/lib/node_modules/agents-deck")).toBe("agents-deck");
+  });
+
+  it("falls back to the package name when the npx cache has no metadata to read", () => {
+    // Which is also the name the command falls back to, so the two still agree.
+    const npx = "/Users/x/.npm/_npx/9a1c/node_modules/agents-deck";
+    expect(upgradeName(npx)).toBe("agents-deck");
+    expect(upgradeCommand(npx)).toBe(`npx -y ${upgradeName(npx)}@latest`);
+  });
+
+  it("answers for a Windows npx cache too", () => {
+    expect(upgradeName("C:\\Users\\x\\AppData\\Local\\npm-cache\\_npx\\9a1c\\node_modules\\ccdeck"))
+      .toBe("agents-deck");
+  });
+});
+
 describe("upgradeMode", () => {
   it("installs where an install is allowed", () => {
     expect(upgradeMode(null)).toBe("install");
@@ -386,14 +421,14 @@ describe("nextMarker", () => {
 
   it("stamps the moment npm answered, and clears the last failure", () => {
     expect(nextMarker({ prev: { ...answered, failedAt: NOW - 60_000 }, now: NOW, ok: true, version: "1.34.0" }))
-      .toEqual({ at: NOW, version: "1.34.0", failedAt: null });
+      .toEqual({ at: NOW, version: "1.34.0", failedAt: null, pending: null, pendingAt: null });
   });
 
   it("records a failure as a failure, leaving the last real answer alone", () => {
     // The whole bug: `at` used to move to `now` here, so the UI reported an
     // hour-old version as freshly confirmed.
     expect(nextMarker({ prev: answered, now: NOW, ok: false, version: null }))
-      .toEqual({ at: answered.at, version: "1.33.0", failedAt: NOW });
+      .toEqual({ at: answered.at, version: "1.33.0", failedAt: NOW, pending: null, pendingAt: null });
   });
 
   it("invents no check when the very first lookup fails", () => {
@@ -401,7 +436,66 @@ describe("nextMarker", () => {
     // no version to keep — but the attempt still has to be remembered, or the
     // backoff below has nothing to work from.
     expect(nextMarker({ prev: null, now: NOW, ok: false, version: null }))
-      .toEqual({ at: null, version: null, failedAt: NOW });
+      .toEqual({ at: null, version: null, failedAt: NOW, pending: null, pendingAt: null });
+  });
+
+  // The third outcome, and the one #130 is about: npm answered, and the version
+  // it named cannot be installed yet.
+  it("holds a version npm cannot serve yet apart from the one it can", () => {
+    // `latest` must keep naming the version the upgrade command can resolve —
+    // announcing the other one is what burned a restart and printed ETARGET.
+    expect(nextMarker({ prev: answered, now: NOW, ok: true, version: "1.34.0", installable: false }))
+      .toEqual({ at: NOW, version: "1.33.0", failedAt: null, pending: "1.34.0", pendingAt: NOW });
+  });
+
+  it("does not record a pending version as a failed lookup", () => {
+    // The registry was reached and answered; "checked just now" is true. Saying
+    // the check failed would send the UI into the offline explanation instead.
+    const m = nextMarker({ prev: answered, now: NOW, ok: true, version: "1.34.0", installable: false });
+    expect(m.failedAt).toBeNull();
+    expect(m.at).toBe(NOW);
+  });
+
+  it("clears the pending version once npm can serve it", () => {
+    const pending = { at: NOW - 300_000, version: "1.33.0", failedAt: null, pending: "1.34.0", pendingAt: NOW - 300_000 };
+    expect(nextMarker({ prev: pending, now: NOW, ok: true, version: "1.34.0" }))
+      .toEqual({ at: NOW, version: "1.34.0", failedAt: null, pending: null, pendingAt: null });
+  });
+
+  it("keeps the pending version through a lookup that could not reach npm", () => {
+    // Otherwise the short retry window disappears with it and the deck waits
+    // out the full hour before looking again.
+    const pending = { at: NOW - 60_000, version: "1.33.0", failedAt: null, pending: "1.34.0", pendingAt: NOW - 60_000 };
+    expect(nextMarker({ prev: pending, now: NOW, ok: false, version: null }))
+      .toEqual({ at: pending.at, version: "1.33.0", failedAt: NOW, pending: "1.34.0", pendingAt: pending.pendingAt });
+  });
+});
+
+describe("checkDue while a version is waiting to be published", () => {
+  const HOUR = 3600_000;
+  const RETRY = 300_000;
+  const NOW = 1_800_000_000_000;
+
+  it("looks again in minutes, not in an hour", () => {
+    // npm answered, so `at` is fresh and the hour would otherwise apply — but
+    // the answer named a version nothing can install, and the evidence in #130
+    // is that the same spec resolved cleanly a few minutes later.
+    expect(checkDue({ at: NOW, pendingAt: NOW - RETRY - 1, now: NOW })).toBe(true);
+    expect(checkDue({ at: NOW, pendingAt: NOW - 1000, now: NOW })).toBe(false);
+  });
+
+  it("waits out the newer of the two unsettled attempts", () => {
+    // A pending version, then a lookup that failed: the retry is counted from
+    // the failure, not from the older pending stamp.
+    expect(checkDue({ at: NOW - HOUR, pendingAt: NOW - RETRY - 1, failedAt: NOW - 1000, now: NOW })).toBe(false);
+  });
+
+  it("does not wait out a pending stamp from the future", () => {
+    expect(checkDue({ at: NOW - HOUR, pendingAt: NOW + HOUR, now: NOW })).toBe(true);
+  });
+
+  it("still yields to an explicit ask", () => {
+    expect(checkDue({ at: NOW, pendingAt: NOW - 1000, now: NOW, force: true })).toBe(true);
   });
 });
 
@@ -539,5 +633,263 @@ describe("an install that runs past its deadline", () => {
     child.emit("close", 1);
     expect(upgradeStatus()).toMatchObject({ state: "failed" });
     expect(upgradeStatus().error).toContain("permission denied");
+  });
+});
+
+// The two halves of one defect, checked against a registry that only exists in
+// this file — nothing here reaches registry.npmjs.org.
+//
+// #131: the check asked npm about `agents-deck` while the command it handed
+// back installed `ccdeck`, so the version on screen and the version the button
+// would fetch came from two different packages.
+//
+// #130: npm makes a moved dist-tag visible before the version document has
+// propagated, so the banner fired on a version `npx -y ccdeck@latest` answered
+// with `No matching version found for ccdeck@1.33.28` — after the worker had
+// already exited and handed the port over.
+describe("the version check and the upgrade command must be about one package", () => {
+  const INSTALLED = "1.33.27";
+  const NEXT = "1.33.28";
+
+  type Registry = { tags: Record<string, string>; published: Set<string>; docStatus?: number };
+  type Report = Record<string, unknown>;
+  let home = "";
+  let calls: string[] = [];
+  let registry: Registry;
+  let mod: {
+    versionReport: (o: Record<string, unknown>) => Promise<Report>;
+    upgradeName: (root: string, name?: string) => string;
+  };
+  const env: Record<string, string | undefined> = {};
+
+  // Answers the two endpoints this file talks to, and records every URL so the
+  // cost of a check can be asserted rather than assumed.
+  const serve = (url: string) => {
+    calls.push(url);
+    const tags = /^https:\/\/registry\.npmjs\.org\/-\/package\/(.+)\/dist-tags$/.exec(url);
+    if (tags) {
+      const latest = registry.tags[tags[1]];
+      return latest
+        ? { ok: true, status: 200, json: async () => ({ latest }) }
+        : { ok: false, status: 404, json: async () => ({}) };
+    }
+    const doc = /^https:\/\/registry\.npmjs\.org\/([^/]+)\/([^/]+)$/.exec(url);
+    if (doc) {
+      // A registry that is reachable but unhappy is not evidence that the
+      // version is missing — and is not permission to announce it either.
+      if (registry.docStatus && registry.docStatus !== 200) {
+        return { ok: false, status: registry.docStatus, json: async () => ({}) };
+      }
+      if (registry.published.has(`${doc[1]}@${doc[2]}`)) {
+        return { ok: true, status: 200, json: async () => ({ name: doc[1], version: doc[2] }) };
+      }
+      // What npm answers for a version whose document has not landed yet.
+      return { ok: false, status: 404, json: async () => ({ error: "version not found" }) };
+    }
+    throw new Error(`test: unexpected registry request ${url}`);
+  };
+
+  /** An npx cache exactly as npm lays it out: the package is `agents-deck`, and
+   *  the only record of what the user typed is `_npx.packages` one level up. */
+  const npxTree = (typed: string) => {
+    const hash = join(home, "npm-cache", "_npx", "007bf1a1643dbf9a");
+    const root = join(hash, "node_modules", "agents-deck");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(hash, "package.json"), JSON.stringify({ _npx: { packages: [typed] } }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "agents-deck", version: INSTALLED }));
+    return root;
+  };
+
+  const globalTree = () => {
+    const root = join(home, "lib", "node_modules", "agents-deck");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "agents-deck", version: INSTALLED }));
+    return root;
+  };
+
+  const marker = (name: string) => join(home, ".agents-deck", `.self-update-check-${name}`);
+
+  beforeEach(async () => {
+    home = mkdtempSync(join(tmpdir(), "ccdeck-home-"));
+    homeRef.dir = home;
+    calls = [];
+    registry = { tags: {}, published: new Set() };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => serve(String(url))));
+    for (const k of ["AGENTS_DECK_NO_UPDATE_CHECK", "AGENTS_DECK_NO_INSTALL"]) {
+      env[k] = process.env[k];
+      delete process.env[k];
+    }
+    // A fresh module per test: the marker directory is resolved from homedir()
+    // at import, and "asked once this process" is module state.
+    vi.resetModules();
+    mod = await import("../../server/self-update.mjs") as unknown as typeof mod;
+  });
+
+  afterEach(() => {
+    homeRef.dir = null;
+    vi.unstubAllGlobals();
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("asks npm about ccdeck when the command will install ccdeck", async () => {
+    // The two tags disagree, which is the normal state of the world between the
+    // first and the last publish of a release.
+    registry.tags = { ccdeck: NEXT, "agents-deck": "1.33.30" };
+    registry.published = new Set([`ccdeck@${NEXT}`]);
+    const pkgRoot = npxTree("ccdeck");
+
+    expect(mod.upgradeName(pkgRoot)).toBe("ccdeck");
+    const report = await mod.versionReport({ running: INSTALLED, pkgRoot });
+
+    expect(report.command).toBe("npx -y ccdeck@latest");
+    expect(report.name).toBe("ccdeck");
+    expect(report.latest).toBe(NEXT);
+    // 1.33.30 is agents-deck's tag; offering it here is the bug.
+    expect(report.notice).toEqual({ kind: "upgrade", from: INSTALLED, to: NEXT });
+    expect(calls).toContain("https://registry.npmjs.org/-/package/ccdeck/dist-tags");
+    expect(calls.some(u => u.includes("agents-deck"))).toBe(false);
+  });
+
+  it("keys the marker to the package it asked about, not to the package it is", async () => {
+    // #133 gave every name its own marker; this is that pairing following the
+    // query name, so a `npx ccdeck` deck no longer writes agents-deck's file.
+    registry.tags = { ccdeck: NEXT };
+    registry.published = new Set([`ccdeck@${NEXT}`]);
+    await mod.versionReport({ running: INSTALLED, pkgRoot: npxTree("ccdeck") });
+
+    expect(existsSync(marker("ccdeck"))).toBe(true);
+    expect(existsSync(marker("agents-deck"))).toBe(false);
+  });
+
+  it("still asks about agents-deck for the global install that installs it", async () => {
+    registry.tags = { "agents-deck": NEXT, ccdeck: "1.33.30" };
+    registry.published = new Set([`agents-deck@${NEXT}`]);
+
+    const report = await mod.versionReport({ running: INSTALLED, pkgRoot: globalTree() });
+
+    expect(report.name).toBe("agents-deck");
+    expect(report.command).toBe("npm i -g agents-deck@latest");
+    expect(report.latest).toBe(NEXT);
+    expect(calls.some(u => u.includes("ccdeck"))).toBe(false);
+  });
+
+  it("says nothing about a dist-tag the install command cannot resolve yet", async () => {
+    // The tag has moved; the version document has not landed. This is the exact
+    // moment the banner used to fire.
+    registry.tags = { ccdeck: NEXT };
+    registry.published = new Set();
+
+    const report = await mod.versionReport({ running: INSTALLED, pkgRoot: npxTree("ccdeck") });
+
+    expect(report.notice).toBeNull();
+    expect(report.latest).toBeNull();
+    expect(report.latestPending).toBe(NEXT);
+    // Confirmed against the name that will be installed, which is where the two
+    // fixes meet.
+    expect(calls).toContain(`https://registry.npmjs.org/ccdeck/${NEXT}`);
+    // npm was reached and answered, so this is not the offline state.
+    expect(report.checkFailedAt).toBeNull();
+    expect(typeof report.checkedAt).toBe("number");
+  });
+
+  it("announces it the moment the registry can serve it", async () => {
+    registry.tags = { ccdeck: NEXT };
+    const pkgRoot = npxTree("ccdeck");
+    expect((await mod.versionReport({ running: INSTALLED, pkgRoot })).notice).toBeNull();
+
+    // A few minutes later, which is what the reported window actually was.
+    registry.published.add(`ccdeck@${NEXT}`);
+    const later = await mod.versionReport({ running: INSTALLED, pkgRoot, force: true });
+
+    expect(later.notice).toEqual({ kind: "upgrade", from: INSTALLED, to: NEXT });
+    expect(later.latest).toBe(NEXT);
+    expect(later.latestPending).toBeNull();
+  });
+
+  it("keeps the version it already confirmed while a newer one is still landing", async () => {
+    registry.tags = { ccdeck: INSTALLED };
+    registry.published = new Set([`ccdeck@${INSTALLED}`]);
+    const pkgRoot = npxTree("ccdeck");
+    await mod.versionReport({ running: INSTALLED, pkgRoot });
+
+    registry.tags = { ccdeck: NEXT };  // tagged, not yet resolvable
+    const report = await mod.versionReport({ running: INSTALLED, pkgRoot, force: true });
+
+    // Still the number the command can install — never null, never the new one.
+    expect(report.latest).toBe(INSTALLED);
+    expect(report.latestPending).toBe(NEXT);
+    expect(report.notice).toBeNull();
+  });
+
+  it("does not announce on a registry that answers the probe with an error", async () => {
+    // Not evidence that the version is missing, and not evidence that it is
+    // there either — so the deck waits rather than spending a restart on it.
+    registry.tags = { ccdeck: NEXT };
+    registry.docStatus = 500;
+
+    const report = await mod.versionReport({ running: INSTALLED, pkgRoot: npxTree("ccdeck") });
+
+    expect(report.notice).toBeNull();
+    expect(report.latestPending).toBe(NEXT);
+  });
+
+  it("looks again in minutes while a version is pending, not in an hour", async () => {
+    registry.tags = { ccdeck: NEXT };
+    const pkgRoot = npxTree("ccdeck");
+    const t0 = 1_800_000_000_000;
+    await mod.versionReport({ running: INSTALLED, pkgRoot, now: t0 });
+
+    calls = [];
+    // Not this process's first call any more, and not forced: the ordinary
+    // poll. Inside the retry window it must reuse what it has…
+    await mod.versionReport({ running: INSTALLED, pkgRoot, now: t0 + 60_000 });
+    expect(calls).toHaveLength(0);
+
+    // …and after it, look again on its own — the hour would have hidden a
+    // release that became installable five minutes after it was tagged.
+    registry.published.add(`ccdeck@${NEXT}`);
+    const later = await mod.versionReport({ running: INSTALLED, pkgRoot, now: t0 + 300_000 });
+    expect(later.notice).toEqual({ kind: "upgrade", from: INSTALLED, to: NEXT });
+  });
+
+  it("costs one registry request per check, and one more only to confirm a new version", async () => {
+    registry.tags = { ccdeck: INSTALLED };
+    registry.published = new Set([`ccdeck@${INSTALLED}`]);
+    const pkgRoot = npxTree("ccdeck");
+
+    // Nothing cached yet, so this one confirms what it found: two requests.
+    await mod.versionReport({ running: INSTALLED, pkgRoot });
+    expect(calls).toHaveLength(2);
+
+    // Every check after it, for as long as the tag does not move, is the single
+    // ~20-byte dist-tags GET the README advertises.
+    calls = [];
+    await mod.versionReport({ running: INSTALLED, pkgRoot, force: true });
+    expect(calls).toEqual(["https://registry.npmjs.org/-/package/ccdeck/dist-tags"]);
+
+    // A release lands: one dist-tags GET, one confirmation, then back to one.
+    registry.tags = { ccdeck: NEXT };
+    registry.published.add(`ccdeck@${NEXT}`);
+    calls = [];
+    await mod.versionReport({ running: INSTALLED, pkgRoot, force: true });
+    expect(calls).toHaveLength(2);
+    calls = [];
+    await mod.versionReport({ running: INSTALLED, pkgRoot, force: true });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("asks nothing at all when the update check is switched off", async () => {
+    process.env.AGENTS_DECK_NO_UPDATE_CHECK = "1";
+    registry.tags = { ccdeck: NEXT };
+
+    const report = await mod.versionReport({ running: INSTALLED, pkgRoot: npxTree("ccdeck") });
+
+    expect(calls).toHaveLength(0);
+    expect(report.latest).toBeNull();
+    expect(report.latestPending).toBeNull();
   });
 });

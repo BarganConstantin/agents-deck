@@ -167,12 +167,34 @@ export function npxRestartSpec(pkgRoot, name = "agents-deck") {
   return npxSpecFromMeta(meta, name);
 }
 
+/** The package an upgrade would actually install here — the only package worth
+ *  asking npm about.
+ *
+ *  The check used to ask about `agents-deck` no matter what the upgrade
+ *  command installed, so a deck started with `npx ccdeck` compared its version
+ *  against `agents-deck`'s dist-tag and then handed back `npx -y ccdeck@latest`.
+ *  Nothing tied the two together. CI publishes the three names one after
+ *  another, so between the first and the last publish they genuinely disagree,
+ *  and inside that window the deck offered a version the command could not
+ *  install — the ETARGET below, with a window measured in publishes rather than
+ *  in seconds of propagation.
+ *
+ *  Deriving the name from the resolved upgrade spec keeps the two halves
+ *  consistent by construction: whatever the command will install is what gets
+ *  asked about, and the per-name marker follows the same name. A global install
+ *  installs `name` and a checkout installs nothing, so both keep asking about
+ *  the name this build was published under. */
+export function upgradeName(pkgRoot, name = "agents-deck") {
+  if (!isNpxInstall(pkgRoot) || isGitCheckout(pkgRoot)) return name;
+  return bareSpecName(npxRestartSpec(pkgRoot, name)) ?? name;
+}
+
 /** The exact line the user can paste, for the way THIS copy was installed. */
 export function upgradeCommand(pkgRoot, name = "agents-deck") {
   // A checkout is updated by pulling, and the bundle is built, not shipped —
   // so `npm run build` is part of the answer rather than an afterthought.
   if (isGitCheckout(pkgRoot)) return "git pull && npm run build";
-  if (isNpxInstall(pkgRoot)) return `npx -y ${npxRestartSpec(pkgRoot, name) ?? `${name}@latest`}`;
+  if (isNpxInstall(pkgRoot)) return `npx -y ${upgradeName(pkgRoot, name)}@latest`;
   return `npm i -g ${name}@latest`;
 }
 
@@ -197,6 +219,41 @@ async function fetchLatest(name) {
     return typeof v === "string" ? { ok: true, version: v } : { ok: false, version: null };
   } catch {
     return { ok: false, version: null };
+  }
+}
+
+// A dist-tag is a pointer, and being pointed at is not the same as being
+// installable.
+//
+// npm makes the moved tag visible before the version document has propagated to
+// the replica the installer reads, so for a window `{"latest":"1.33.28"}` and
+// `No matching version found for ccdeck@1.33.28` are both true at the same
+// moment. Reported live: the banner offered v1.33.28, the restart ran
+// `npx -y ccdeck@latest`, npm answered ETARGET, and the deck came back on the
+// version it started with after tearing itself down — under npx a restart is
+// not free, since the worker exits and hands the port over before anything is
+// fetched.
+//
+// So the tag is checked against the version document, which is the same
+// question `npm view <name>@<version> version` asks and the same document the
+// installer resolves against. 404 is the answer this exists for: published
+// tag, unpublished version, try again in five minutes. `ok` is false only when
+// the registry gave no usable answer at all — that is not a licence to
+// announce either, but it is not evidence of an unpublished version.
+async function isPublished(name, version) {
+  try {
+    const res = await fetch(`https://registry.npmjs.org/${name}/${version}`, {
+      headers: { accept: "application/json", "user-agent": "agents-deck" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (res.status === 404) return { ok: true, published: false };
+    if (!res.ok) return { ok: false, published: false };
+    // The document has to be the one asked for: a registry that answers 200
+    // with something else has not shown that this version is resolvable.
+    const body = await res.json().catch(() => null);
+    return { ok: true, published: body?.version === version };
+  } catch {
+    return { ok: false, published: false };
   }
 }
 
@@ -276,10 +333,27 @@ function writeMarker(name, marker) {
  *  A success stamps the hour and clears the failure. A failure records only
  *  itself, leaving the last real answer and the time it arrived untouched —
  *  the deck keeps showing what it knew, and stops claiming it just confirmed
- *  it. */
-export function nextMarker({ prev, now, ok, version }) {
-  if (ok) return { at: now, version: version ?? null, failedAt: null };
-  return { at: prev?.at ?? null, version: prev?.version ?? null, failedAt: now };
+ *  it.
+ *
+ *  `installable` is the third outcome: npm answered, and what it named is not
+ *  yet a version anything can install. That is a real answer — `at` moves, the
+ *  registry was reached — but the version is held in `pending` instead of
+ *  `version`, so `latest` stays a number the upgrade command can resolve, and
+ *  `pendingAt` puts the next look on the short window rather than the hour. */
+export function nextMarker({ prev, now, ok, version, installable = true }) {
+  if (!ok) {
+    return {
+      at: prev?.at ?? null,
+      version: prev?.version ?? null,
+      failedAt: now,
+      pending: prev?.pending ?? null,
+      pendingAt: prev?.pendingAt ?? null,
+    };
+  }
+  if (!installable) {
+    return { at: now, version: prev?.version ?? null, failedAt: null, pending: version ?? null, pendingAt: now };
+  }
+  return { at: now, version: version ?? null, failedAt: null, pending: null, pendingAt: null };
 }
 
 // Even a per-package marker is shared by every deck running that package, so
@@ -294,15 +368,20 @@ const _askedThisProcess = new Set();
  * banner appear" is the question this feature gets asked, and the rule behind
  * it should be readable in one place.
  */
-export function checkDue({ at, failedAt, now, first = false, force = false, ttlMs = CHECK_MS, retryMs = RETRY_MS }) {
+export function checkDue({ at, failedAt, pendingAt, now, first = false, force = false, ttlMs = CHECK_MS, retryMs = RETRY_MS }) {
   if (force || first) return true;      // explicit ask, or this process's first
-  // The last attempt failed, so there is nothing to reuse and the long window
-  // does not apply — but the short one does, or an unreachable registry turns
-  // every poll into another request. Answered first: `at` here is the older,
-  // successful check, and letting it decide would ask again immediately.
-  if (typeof failedAt === "number") {
-    if (failedAt > now) return true;    // clock moved; do not wait it out
-    return now - failedAt >= retryMs;
+  // Two ways of not having an answer yet, and neither may spend the hour a real
+  // answer buys: the last attempt failed, or npm named a version that cannot be
+  // installed yet. Both take the short window instead — an unreachable registry
+  // must not turn every poll into another request, and a release mid-publish is
+  // resolvable minutes later, not an hour later. Answered before `at`, which
+  // here is the older, settled check and would otherwise ask again immediately
+  // (or, for a pending version, not for another hour).
+  const unsettled = [failedAt, pendingAt].filter(t => typeof t === "number");
+  if (unsettled.length) {
+    const last = Math.max(...unsettled);
+    if (last > now) return true;        // clock moved; do not wait it out
+    return now - last >= retryMs;
   }
   if (typeof at !== "number") return true;  // never checked
   if (at > now) return true;            // marker from the future: a moved clock
@@ -319,23 +398,39 @@ async function latestOnNpm(name, now, force = false) {
   const key = markerFileName(name);
   const first = !_askedThisProcess.has(key);
   _askedThisProcess.add(key);
-  if (!checkDue({ at: m?.at, failedAt: m?.failedAt, now, first, force })) return m?.version ?? null;
-  const pending = _inflight.get(key);
-  if (pending) return pending;
-  const run = fetchLatest(name)
+  if (!checkDue({ at: m?.at, failedAt: m?.failedAt, pendingAt: m?.pendingAt, now, first, force })) {
+    return m?.version ?? null;
+  }
+  const inflight = _inflight.get(key);
+  if (inflight) return inflight;
+  const run = runCheck(name, m, now)
     // Record the outcome, not just the moment, and record it against THIS
     // package: only an answer stamps `at`; a failure takes the short retry
     // window instead of the hour, keeps the version we already knew rather
     // than erasing it, and lands in this name's marker rather than spending
     // another package's window on a lookup that was never about it.
-    .then(({ ok, version }) => {
-      writeMarker(name, nextMarker({ prev: m, now, ok, version }));
-      return (ok ? version : null) ?? m?.version ?? null;
+    .then((marker) => {
+      writeMarker(name, marker);
+      return marker.version ?? null;
     })
     .catch(() => m?.version ?? null)
     .finally(() => { _inflight.delete(key); });
   _inflight.set(key, run);
   return run;
+}
+
+/** One check, as a marker: what npm's dist-tag says, and — only when that is a
+ *  version this deck has not already confirmed — whether it can be installed.
+ *
+ *  The second request is what keeps the banner honest, and it is skipped in the
+ *  case that runs all day: a tag that has not moved was confirmed the first
+ *  time it was seen, so a deck sitting on the current release still costs one
+ *  ~20-byte GET per check. Confirming costs one more, once per release. */
+async function runCheck(name, prev, now) {
+  const { ok, version } = await fetchLatest(name);
+  if (!ok || version === prev?.version) return nextMarker({ prev, now, ok, version });
+  const probe = await isPublished(name, version);
+  return nextMarker({ prev, now, ok, version, installable: probe.ok && probe.published });
 }
 
 // ── the notice ───────────────────────────────────────────────────────────────
@@ -526,6 +621,11 @@ export function lastMeaningfulLine(text) {
  *  registry is unreachable. */
 export async function versionReport({ running, pkgRoot, name = "agents-deck", now = Date.now(), force = false }) {
   const installed = installedVersion(pkgRoot);
+  // Asked about the package the command installs, not about the one this build
+  // happens to be named after — see upgradeName. Everything registry-shaped in
+  // this report is about `target`: the version, the marker it is cached in, and
+  // the name the report gives for it.
+  const target = upgradeName(pkgRoot, name);
   // Only an explicit opt-out silences the registry.
   //
   // A checkout used to be excluded here too, on the reasoning that its version
@@ -539,11 +639,11 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
   const skipRegistry =
     process.env.AGENTS_DECK_NO_UPDATE_CHECK === "1" ||
     process.env.AGENTS_DECK_NO_INSTALL === "1";
-  const latest = skipRegistry ? null : await latestOnNpm(name, now, force);
-  const marker = skipRegistry ? null : readMarker(name);
+  const latest = skipRegistry ? null : await latestOnNpm(target, now, force);
+  const marker = skipRegistry ? null : readMarker(target);
   const blocked = upgradeBlock(pkgRoot);
   return {
-    name,
+    name: target,
     running: running ?? null,
     installed,
     latest,
@@ -556,6 +656,11 @@ export async function versionReport({ running, pkgRoot, name = "agents-deck", no
     // most common reason for a missing update button — a proxy, a flaky line,
     // an offline machine — is indistinguishable from being up to date.
     checkFailedAt: marker?.failedAt ?? null,
+    // A version npm's dist-tag names that the registry cannot serve yet — the
+    // one thing `latest` deliberately will not say, since saying it is what
+    // sent a deck into a restart that ended in ETARGET. Reported so the state
+    // is visible rather than looking like nothing was published at all.
+    latestPending: marker?.pending ?? null,
     checkDisabled: skipRegistry,
     notice: pickNotice({ running, installed, latest }),
     command: upgradeCommand(pkgRoot, name),
