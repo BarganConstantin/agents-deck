@@ -11,7 +11,7 @@ import ReactFlow, {
   useStore,
   type ReactFlowState,
 } from "reactflow";
-import AgentNode, { shortModel } from "./components/AgentNode";
+import AgentNode, { shortModel, waitingSentence } from "./components/AgentNode";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import SessionGroupNode from "./components/SessionGroupNode";
@@ -45,7 +45,7 @@ import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
-import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
+import type { AgentNodeData, HookEnvelope, ToolCall, WaitingBlock } from "./types";
 
 function cssVar(name: string): string {
   if (typeof window === "undefined") return "";
@@ -1878,6 +1878,23 @@ function Inner() {
     }, 30);
   }, [selectAgent, rf]);
 
+  /** Select a session's root and bring it on screen. Reads `nodesRef` rather
+   *  than the render-scope array so callers can be memoised: the array is
+   *  rebuilt every render and would otherwise re-create every handler that
+   *  closes over it. The frame of delay is for the same reason the session list
+   *  has always needed one — the node has to be laid out before fitView can
+   *  have anything to fit to. */
+  const focusSession = useCallback((sessionId: string) => {
+    selectAgent(sessionId, false);
+    window.setTimeout(() => {
+      try {
+        const node = nodesRef.current.find(n => n.id === sessionId);
+        if (node) rf.fitView({ padding: 0.3, duration: 500, nodes: [node] });
+        lastFitTimeRef.current = Date.now();
+      } catch {}
+    }, 60);
+  }, [selectAgent, rf]);
+
   // keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1930,6 +1947,16 @@ function Inner() {
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
+  /** Sessions blocked on a human, longest-blocked first — which is the one the
+   *  count's own click goes to. Only roots carry `waiting`, so no session can
+   *  be counted twice. */
+  const waitingSessions = useMemo(() => {
+    const blocked: Array<{ id: string; label: string; waiting: WaitingBlock }> = [];
+    for (const a of stateRef.current.agents.values()) {
+      if (a.kind === "root" && a.waiting) blocked.push({ id: a.id, label: a.label, waiting: a.waiting });
+    }
+    return blocked.sort((x, y) => x.waiting.since - y.waiting.since);
+  }, [stateRef.current, stateRef.current.lastSeq]);
   const totalTokens = useMemo(() => {
     let inT = 0, outT = 0, cacheR = 0, cacheC = 0;
     let costSum = 0, costInput = 0, costOutput = 0, costCacheR = 0, costCacheW = 0;
@@ -2113,6 +2140,28 @@ function Inner() {
               );
             })()}
           </span>
+          {/* Outside the .status strip on purpose: that span is role="status",
+              a live region for numbers that change on their own, and a control
+              does not belong in one. This is the only number in the bar the user
+              is meant to act on — click goes to the session that has been stuck
+              longest, which is the one the deck was left open for. It says
+              nothing when nothing is blocked, and it never speaks for Codex:
+              those sessions emit no notification, so counting them would turn
+              "we have no signal" into "they are fine". */}
+          {waitingSessions.length > 0 && (
+            <button
+              type="button"
+              className="waiting-stat"
+              onClick={() => focusSession(waitingSessions[0].id)}
+              title={`Blocked waiting for you — click to go to the one that has been stuck longest:\n${
+                waitingSessions.map(w => `  ${w.label}: ${waitingSentence(w.waiting)} (${shortAgo(now - w.waiting.since)})`).join("\n")
+              }`}
+              aria-label={`${waitingSessions.length} session${waitingSessions.length === 1 ? "" : "s"} waiting for you`}
+            >
+              <span className="ap-pulse" aria-hidden />
+              <b>{waitingSessions.length}</b> waiting
+            </button>
+          )}
           {(() => {
             const btn = pauseButton({ paused, held: pauseRef.current.size });
             return (
@@ -2351,17 +2400,7 @@ function Inner() {
           state={stateRef.current}
           now={now}
           selectedIds={selectedIds}
-          onSelect={(sid) => {
-            selectAgent(sid, false);
-            // After a frame so the selected node is settled, fit-view to it.
-            window.setTimeout(() => {
-              try {
-                const node = nodes.find(n => n.id === sid);
-                if (node) rf.fitView({ padding: 0.3, duration: 500, nodes: [node] });
-                lastFitTimeRef.current = Date.now();
-              } catch {}
-            }, 60);
-          }}
+          onSelect={focusSession}
           onClose={() => setSessionListOpen(false)}
         />
       )}

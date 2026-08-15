@@ -46,7 +46,7 @@ export function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefi
     `total                                 = ${fmtCost(c.total)}`,
   ].join("\n");
 }
-import type { AgentNodeData, TokenUsage, ToolCall } from "../types";
+import type { AgentNodeData, TokenUsage, ToolCall, WaitingBlock } from "../types";
 
 function elapsed(start: number, end: number | undefined, now: number): string {
   const ms = (end ?? now) - start;
@@ -112,6 +112,12 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
         )}
       </div>
 
+      {/* A row of its own rather than a chip in the title. The card is 260px
+          wide and the header already spends it on the state pill, the workspace
+          name and the elapsed clock; a fourth item there pushed the label to an
+          ellipsis and still overflowed. A blocked session has earned a line. */}
+      {data.waiting && <WaitingRow waiting={data.waiting} now={now} />}
+
       {data.tools.length > 0 && <ToolRateSpark tools={data.tools} now={now} />}
 
       <div className="meta">
@@ -145,6 +151,46 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
 function StatePill({ state }: { state: AgentNodeData["state"] }) {
   const label = state === "active" ? "live" : state === "done" ? "done" : "err";
   return <span className={`state-pill state-${state}`}>{label}</span>;
+}
+
+/** What a blocked session says for itself, on the card, in the row and in the
+ *  topbar's tooltip. CC's own sentence wherever there is one — the payload has
+ *  no tool_name and no tool_input, so it is the entire truth we hold about the
+ *  block, and paraphrasing it would only add a claim we cannot back. The
+ *  fallback is what stops a re-wording upstream, or an older log line with no
+ *  message at all, from rendering a coloured row that says nothing. One
+ *  function so the three surfaces cannot drift apart, the way shortModel below
+ *  is one for the same reason. */
+export function waitingSentence(waiting: WaitingBlock): string {
+  if (waiting.message) return waiting.message;
+  return waiting.kind === "permission" ? "Needs your permission" : "Waiting for your input";
+}
+
+/** The session is blocked on a human — and on which of the two chores that is.
+ *  A dot alone would not carry it: a permission prompt is a decision a session
+ *  cannot proceed without, an idle prompt is a finished turn waiting for your
+ *  next instruction, and those are not the same errand. So the sentence carries
+ *  it and the hue and the dot reinforce it — and only the permission variant
+ *  pings: a stalled session is interrupt-driven and rare, which is the case a
+ *  pulse is for, and a session that finished and is resting is neither. The
+ *  ping is .ap-pulse, the emitter the accounts panel
+ *  already uses, so the app keeps one idiom for "still asking" and one
+ *  reduced-motion answer for it. */
+function WaitingRow({ waiting, now }: { waiting: WaitingBlock; now: number }) {
+  const permission = waiting.kind === "permission";
+  const said = waitingSentence(waiting);
+  return (
+    <div
+      className={permission ? "waiting-row permission" : "waiting-row idle"}
+      title={`${said}\nBlocked for ${elapsed(waiting.since, undefined, now)} — the answer goes in the terminal, not here.`}
+    >
+      {permission
+        ? <span className="ap-pulse" aria-hidden />
+        : <span className="waiting-dot" aria-hidden />}
+      <span className="waiting-said">{said}</span>
+      <b>{elapsed(waiting.since, undefined, now)}</b>
+    </div>
+  );
 }
 
 function fmtTok(n: number): string {

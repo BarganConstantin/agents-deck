@@ -5,18 +5,31 @@
 import React, { useMemo } from "react";
 import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
-import { shortModel } from "./AgentNode";
+import type { WaitingBlock } from "../types";
+import { shortModel, waitingSentence } from "./AgentNode";
 
 interface Row {
   sessionId: string;
   label: string;
   cwdBasename?: string;
   state: "active" | "done" | "err";
+  waiting?: WaitingBlock | null;
   modelId?: string;
   toolCount: number;
   cost: number;
   startedAt: number;
   lastActivity: number;
+}
+
+/** Where a row sorts, before activity is looked at. A blocked session is the
+ *  only row on this list that is asking for something, so it outranks a running
+ *  one — and a permission prompt outranks an idle one, because the first is a
+ *  decision a session is stalled on and the second is a turn that simply ended.
+ *  Waiting is not the row's `state`: an idle_prompt sits on a session that is
+ *  legitimately done and still reads `done` two columns to the left. */
+function rank(r: Row): number {
+  if (r.waiting) return r.waiting.kind === "permission" ? 0 : 1;
+  return r.state === "active" ? 2 : 3;
 }
 
 function buildRows(state: GraphState, now: number): Row[] {
@@ -41,6 +54,7 @@ function buildRows(state: GraphState, now: number): Row[] {
       label: a.label || a.cwdBasename || "session",
       cwdBasename: a.cwdBasename,
       state: a.state,
+      waiting: a.waiting,
       modelId: a.model,
       toolCount,
       cost,
@@ -48,12 +62,14 @@ function buildRows(state: GraphState, now: number): Row[] {
       lastActivity,
     });
   }
-  // Sort: active first (most recent activity), then done by most-recent ended.
+  // Sort: blocked first, then active, then done by most-recent ended. Among the
+  // blocked rows the LONGEST-blocked comes first — the opposite of the
+  // most-recent ordering everything below uses, because on this list the number
+  // that decides whether you go look is how long the session has been stuck.
   rows.sort((x, y) => {
-    if (x.state !== y.state) {
-      if (x.state === "active") return -1;
-      if (y.state === "active") return 1;
-    }
+    const rx = rank(x), ry = rank(y);
+    if (rx !== ry) return rx - ry;
+    if (x.waiting && y.waiting) return x.waiting.since - y.waiting.since;
     return y.lastActivity - x.lastActivity;
   });
   return rows;
@@ -81,11 +97,18 @@ interface Props {
 export default function SessionList({ state, now, selectedIds, onSelect, onClose }: Props) {
   const rows = useMemo(() => buildRows(state, now), [state, state.lastSeq, now]);
   const liveCount = rows.filter(r => r.state === "active").length;
+  const waitingCount = rows.filter(r => r.waiting).length;
 
   return (
     <aside className="session-list" aria-label="Sessions">
       <div className="sl-header">
         <h3>Sessions <span className="sl-count">{rows.length}</span></h3>
+        {/* Beside the live count, not instead of it: the two answer different
+            questions, and a session can be both (a permission prompt lands
+            mid-turn). Codex sessions are counted in neither — they emit no
+            notification, so their absence from this number is the absence of a
+            signal rather than a claim that none of them is blocked. */}
+        {waitingCount > 0 && <span className="sl-waiting-count">{waitingCount} waiting</span>}
         {liveCount > 0 && <span className="sl-live-count">{liveCount} live</span>}
         <button className="btn icon-btn sl-close" onClick={onClose} title="Hide sidebar (L)" aria-label="Hide session list">‹</button>
       </div>
@@ -110,7 +133,21 @@ export default function SessionList({ state, now, selectedIds, onSelect, onClose
                 <div className="sl-row-meta">
                   <span title="tool calls"><b>{r.toolCount}</b> tools</span>
                   {r.cost > 0 && <span className="sl-cost" title="total spend"><b>{fmtCost(r.cost)}</b></span>}
-                  <span className="sl-elapsed" title={`Started ${new Date(r.startedAt).toLocaleString()}`}>{elapsedShort(r.startedAt, r.state === "active" ? undefined : r.lastActivity, now)}</span>
+                  {/* How long it has been stuck, in the slot the run time had.
+                      On a blocked row that is the number worth the space: the
+                      session's own age says nothing about whether to go look,
+                      and "waiting 6m" says all of it. The run time is still on
+                      the tooltip, where it costs nothing. */}
+                  {r.waiting
+                    ? (
+                      <span
+                        className="sl-waiting"
+                        title={`${waitingSentence(r.waiting)}\nBlocked since ${new Date(r.waiting.since).toLocaleTimeString()} · started ${new Date(r.startedAt).toLocaleString()}`}
+                      >waiting {elapsedShort(r.waiting.since, undefined, now)}</span>
+                    )
+                    : (
+                      <span className="sl-elapsed" title={`Started ${new Date(r.startedAt).toLocaleString()}`}>{elapsedShort(r.startedAt, r.state === "active" ? undefined : r.lastActivity, now)}</span>
+                    )}
                 </div>
               </div>
             </button>

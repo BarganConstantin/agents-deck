@@ -253,6 +253,7 @@ const CONTROLS: Control[] = [
   { at: "button.btn.warn", fillFrom: "button.btn", states: ["button.btn.warn:hover"], beds: [...TOPBAR, "--panel"] },
   { at: "button.btn.danger", fillFrom: "button.btn", states: ["button.btn.danger:hover"], beds: ["--panel"] },
   { at: ".search input", states: [".search input:focus"], beds: TOPBAR },
+  { at: ".topbar .waiting-stat", states: [".topbar .waiting-stat:hover"], beds: TOPBAR },
   // version banner
   { at: ".ver-banner .ver-cmd", states: [".ver-banner .ver-cmd:hover"], beds: BANNER },
   { at: ".ver-banner .ver-act", states: [".ver-banner .ver-act:hover:not(:disabled)"], beds: BANNER },
