@@ -26,6 +26,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { PRODUCT } from "../brand";
+import { ambientSignal } from "../ambient";
 import { SCHEMA_KEY, SHAPE_KEYS } from "../storage";
 import { PRODUCT as SERVER_PRODUCT } from "../../server/brand.mjs";
 import { wordmark } from "../../server/term.mjs";
@@ -61,6 +62,19 @@ describe("the product's display name", () => {
     // index.html is parsed before any module runs, so this literal is the one
     // copy of the name that cannot be derived — hence pinned here instead.
     expect(read("src/web/index.html")).toContain(`<title>${PRODUCT}</title>`);
+  });
+
+  it("still names it the same thing once the deck starts writing the title", () => {
+    // #338 gave the tab a second author: index.html's markup is the title until
+    // the bundle runs, and ambientSignal owns it from the first SSE frame on.
+    // Two authors, so two chances to drift — and the drift would be invisible
+    // to whoever caused it, since the static name is only on screen for the
+    // moment before the effect replaces it. Both directions are checked: the
+    // resting title has to be the markup's name exactly, and the counted form
+    // has to be the same name with a prefix rather than a second spelling.
+    expect(ambientSignal({ waiting: 0, running: 0 }).title).toBe(PRODUCT);
+    expect(read("src/web/index.html")).toContain(`<title>${ambientSignal({ waiting: 0, running: 0 }).title}</title>`);
+    expect(ambientSignal({ waiting: 2, running: 0 }).title).toBe(`(2) ${PRODUCT}`);
   });
 
   it("is the name the terminal banner draws, so the two surfaces cannot drift", () => {
