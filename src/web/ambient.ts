@@ -72,11 +72,15 @@ export function ambientSignal({ waiting, running }: { waiting: number; running: 
 //     running  #2a90d4   3.48:1 on #ffffff   4.74:1 on #1f1f1f
 //     idle     #7e828c   3.85:1 on #ffffff   4.28:1 on #1f1f1f
 //
-// They sit within 1.18:1 of each other in luminance, so the state is carried by
-// hue and chroma rather than by brightness — which is what keeps the amber
-// alarming rather than merely lighter. Under a dichromat simulation the three
-// separate on lightness instead (waiting ~30%, idle ~53%, running ~66% in both
-// the protan and deutan renderings), so neither channel is carrying it alone.
+// That double floor is also why they sit within 1.18:1 of each other: the two
+// bounds leave a luminance band 1.83:1 wide end to end, so three fills inside
+// it cannot be told apart by brightness however they are chosen. What is left
+// is hue — and hue is the channel a dichromat viewer does not get. These three
+// simulated (Viénot 1999) land within 1.25:1 of each other, and under
+// protanopia the amber and the grey come out at 1.01:1. So the colour here is
+// the redundant cue and the SILHOUETTE is the signal; see mark() below, which
+// is where the states are actually distinguished.
+//
 // The blue is deliberately between the two theme accents (#7dd3fc dark,
 // #0369a1 light) and the grey is the dark theme's --muted: the icon belongs to
 // the same palette as the deck without being able to ask which half is on.
@@ -99,19 +103,41 @@ const FILL: Record<AmbientIcon, string> = {
  * box in all three colours, at whatever weight the fallback font picked. Two
  * `<circle>`s have no such dependency: the shape is in the document.
  *
- * The gap between ring and dot is left unpainted on purpose. Since no value
- * here may assume a background (see above), the safest thing to put in the
- * negative space is the tab strip itself — which is also what keeps the fisheye
- * the deck has always used, rather than trading it for a plain disc.
+ * The gap inside the ring is left unpainted on purpose. Since no value here may
+ * assume a background (see above), the safest thing to put in the negative
+ * space is the tab strip itself — which is also what keeps the fisheye the deck
+ * has always used, rather than trading it for a plain disc.
  *
- * At 16px the ring lands 3px thick around a 5px dot with a 2px gap, which is
- * the smallest fisheye that still reads as one rather than as a smudge.
+ * THE THREE STATES DIFFER IN SILHOUETTE, NOT ONLY IN COLOUR, and that is forced
+ * rather than decorative. Clearing 3:1 against a white strip caps a fill's
+ * relative luminance at 0.300, and clearing it against a #1f1f1f one floors it
+ * at 0.141 — so every fill this icon is allowed to use is trapped in a band
+ * whose own extremes are 1.83:1 apart, and three of them land within 1.35:1 of
+ * each other. Brightness therefore cannot carry the state, which leaves hue;
+ * and hue is exactly what a dichromat viewer does not receive. Simulated
+ * (Viénot 1999), the three fills collapse to within 1.25:1 of one another, and
+ * under protanopia the amber and the grey land at 1.01:1 — an alarm and a
+ * resting state rendered as the same mark, for roughly one man in twelve. The
+ * shape is the channel that survives all of it:
+ *
+ *     idle     hollow ring          least ink
+ *     running  ring around a dot    the deck's own fisheye
+ *     waiting  solid disc           most ink
+ *
+ * Same outer diameter throughout, so it reads as one mark filling in rather
+ * than three unrelated glyphs, and the ink rises monotonically with how much
+ * the deck wants you. Colour stays as the redundant cue for everyone who can
+ * use it. Do not "simplify" this back to one shape in three colours.
+ *
+ * At 16px the ring lands 2.5px thick and the dot 5px across with a 2.25px gap,
+ * which is the smallest fisheye that still reads as one rather than as a smudge.
  */
-function mark(fill: string): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">`
-    + `<circle cx="16" cy="16" r="12" fill="none" stroke="${fill}" stroke-width="6"/>`
-    + `<circle cx="16" cy="16" r="5" fill="${fill}"/>`
-    + `</svg>`;
+function mark(fill: string, icon: AmbientIcon): string {
+  const body = icon === "waiting"
+    ? `<circle cx="16" cy="16" r="14.5" fill="${fill}"/>`
+    : `<circle cx="16" cy="16" r="12" fill="none" stroke="${fill}" stroke-width="5"/>`
+      + (icon === "running" ? `<circle cx="16" cy="16" r="5" fill="${fill}"/>` : "");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">${body}</svg>`;
 }
 
 /**
@@ -133,7 +159,7 @@ function mark(fill: string): string {
  * lifetime of the tab, and it is the single most hated pattern in this genre.
  */
 export const FAVICON_HREF: Readonly<Record<AmbientIcon, string>> = Object.freeze({
-  waiting: `data:image/svg+xml,${encodeURIComponent(mark(FILL.waiting))}`,
-  running: `data:image/svg+xml,${encodeURIComponent(mark(FILL.running))}`,
-  idle: `data:image/svg+xml,${encodeURIComponent(mark(FILL.idle))}`,
+  waiting: `data:image/svg+xml,${encodeURIComponent(mark(FILL.waiting, "waiting"))}`,
+  running: `data:image/svg+xml,${encodeURIComponent(mark(FILL.running, "running"))}`,
+  idle: `data:image/svg+xml,${encodeURIComponent(mark(FILL.idle, "idle"))}`,
 });

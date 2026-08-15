@@ -155,8 +155,30 @@ describe("the favicon", () => {
     for (const icon of STATES) {
       const svg = svgFor(icon);
       expect(svg, `${icon} still draws with a glyph`).not.toMatch(/<text|font-|◉/);
-      expect(svg.match(/<circle/g) ?? [], `${icon} lost the ring or the dot`).toHaveLength(2);
+      expect(svg.match(/<circle/g) ?? [], `${icon} draws nothing`).not.toHaveLength(0);
     }
+  });
+
+  it("gives each state its own silhouette, not just its own colour", () => {
+    // Colour alone cannot carry this. Clearing 3:1 on a white strip caps a
+    // fill's luminance at 0.300 and clearing it on a #1f1f1f one floors it at
+    // 0.141, so every fill the icon is allowed to use sits in a band 1.83:1
+    // wide end to end — brightness is out, which leaves hue, which is what a
+    // dichromat viewer does not receive. Simulated, the three collapse to
+    // within 1.25:1, and under protanopia the amber and the grey reach 1.01:1:
+    // the alarm and the resting state as one mark. The shape is what survives,
+    // so it is the shape this pins. Stripped of colour the three must still be
+    // three different documents, and the ink must rise from idle to waiting.
+    const geometry = STATES.map(icon => svgFor(icon).replace(/(?:fill|stroke)="#[0-9a-f]{6}"/gi, ""));
+    expect(new Set(geometry).size, "two states are the same drawing").toBe(3);
+
+    const [waiting, running, idle] = STATES.map(icon => svgFor(icon));
+    expect(waiting, "waiting is not the solid one").toMatch(/<circle[^>]*r="14\.5"[^>]*fill="#/);
+    expect(waiting.match(/<circle/g)!, "waiting should be one filled disc").toHaveLength(1);
+    expect(running.match(/<circle/g)!, "running should be a ring around a dot").toHaveLength(2);
+    expect(idle.match(/<circle/g)!, "idle should be a bare ring").toHaveLength(1);
+    expect(idle, "idle's ring is filled in, so it cannot read as the empty state")
+      .toMatch(/fill="none"/);
   });
 
   it("percent-encodes the hex fills, which are fragment delimiters raw", () => {
