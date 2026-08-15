@@ -33,6 +33,7 @@ import { createPauseGate } from "./pause";
 import { readStored } from "./storage";
 import { THEME_KEY, storedTheme, type Theme } from "./theme";
 import { PRODUCT } from "./brand";
+import { ambientSignal, FAVICON_HREF, type AmbientSignal } from "./ambient";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
@@ -1957,6 +1958,49 @@ function Inner() {
     }
     return blocked.sort((x, y) => x.waiting.since - y.waiting.since);
   }, [stateRef.current, stateRef.current.lastSeq]);
+  /** Sessions with an agent still working — the other half of what the tab
+   *  strip reports. Counted over the map the canvas draws from, on every frame,
+   *  rather than kept as a tally: the map forgets. pruneOldAgents (reducer.ts)
+   *  evicts old `done` agents outright, and a number that was only ever
+   *  incremented would go on reporting sessions that are no longer on the board
+   *  — a tab claiming work with nothing behind it to click through to. Sessions
+   *  rather than agents, so a fan-out of six subagents is still one. */
+  const runningSessions = useMemo(() => {
+    const live = new Set<string>();
+    for (const a of stateRef.current.agents.values()) {
+      if (a.state === "active") live.add(a.sessionId);
+    }
+    return live.size;
+  }, [stateRef.current, stateRef.current.lastSeq]);
+  // The tab strip — the only surface of this deck that is on screen while the
+  // deck is not. The rule lives in ambient.ts, where it can be tested; this is
+  // the DOM write the rule is not allowed to own.
+  //
+  // Comparing before writing is not defensive tidiness. This runs on the SSE
+  // path and `running` churns under a title that is standing still: every
+  // subagent that spawns or finishes moves it while the tab still says plain
+  // ccdeck and still wears the blue mark. Assigning `document.title` rewrites
+  // the <title> node and hands the browser a fresh tab label whether or not the
+  // string changed, and a fresh icon href is a data URI to parse and rasterise
+  // again. Both cost nothing on the frames where nothing moved, which is nearly
+  // all of them.
+  const ambientRef = useRef<AmbientSignal | null>(null);
+  useEffect(() => {
+    const next = ambientSignal({ waiting: waitingSessions.length, running: runningSessions });
+    const prev = ambientRef.current;
+    ambientRef.current = next;
+    if (prev?.title !== next.title) document.title = next.title;
+    if (prev?.icon !== next.icon) {
+      // Mutating href on the existing <link>, not swapping the node. Chrome,
+      // Firefox and Safari all re-read the attribute; the replace-the-whole-
+      // element dance is a workaround for browsers none of them still are, and
+      // it costs a fresh parse of the data URI every time. If some browser in
+      // the matrix is ever found ignoring this, THAT is the moment to adopt the
+      // heavier version — not before.
+      const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (link) link.href = FAVICON_HREF[next.icon];
+    }
+  }, [waitingSessions.length, runningSessions]);
   const totalTokens = useMemo(() => {
     let inT = 0, outT = 0, cacheR = 0, cacheC = 0;
     let costSum = 0, costInput = 0, costOutput = 0, costCacheR = 0, costCacheW = 0;
