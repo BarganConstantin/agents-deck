@@ -1990,11 +1990,24 @@ function Inner() {
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
   /** Sessions blocked on a human, longest-blocked first — which is the one the
    *  count's own click goes to. Only roots carry `waiting`, so no session can
-   *  be counted twice. */
+   *  be counted twice.
+   *
+   *  PERMISSION ONLY, and that is the difference between an alarm and noise.
+   *  Both kinds are a human being waited on, but only one is urgent: a
+   *  permission prompt is a session that cannot proceed until you decide, while
+   *  an idle prompt is a turn that ended and has not been picked back up — the
+   *  node is already `done` and says so more quietly. On this machine's log the
+   *  split ran 16 idle to 5 permission, so counting both put three quarters
+   *  noise into the topbar chip, the tab title and the favicon, which are the
+   *  three surfaces whose whole value is that they are rare. Idle keeps its row,
+   *  its card line, its sort position and its tooltip; it just stops raising an
+   *  alarm. */
   const waitingSessions = useMemo(() => {
     const blocked: Array<{ id: string; label: string; waiting: WaitingBlock }> = [];
     for (const a of stateRef.current.agents.values()) {
-      if (a.kind === "root" && a.waiting) blocked.push({ id: a.id, label: a.label, waiting: a.waiting });
+      if (a.kind === "root" && a.waiting?.kind === "permission") {
+        blocked.push({ id: a.id, label: a.label, waiting: a.waiting });
+      }
     }
     return blocked.sort((x, y) => x.waiting.since - y.waiting.since);
   }, [stateRef.current, stateRef.current.lastSeq]);
