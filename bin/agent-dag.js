@@ -35,6 +35,7 @@ import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killTree } from "../src/server/exec.mjs";
+import { invokedAs } from "../src/server/invoked-as.mjs";
 import { npxFailureHint, npxFailureSummary, npxLaunch, npxPrefetch } from "../src/server/npx.mjs";
 import {
   bareSpecName, claimRestartFailureKey, clearRestartFailure, installedVersion, lastKnownLatest,
@@ -49,6 +50,15 @@ const WORKER = join(BIN_DIR, "deck.js");
 const PKG_ROOT = dirname(BIN_DIR);
 
 const VERSION = installedVersion(PKG_ROOT) ?? "?";
+
+// Which of the three published commands the user typed, when that is knowable.
+// This process is the one the shell exec'd, so its argv[1] is the only place
+// the answer exists — the worker's is `…/bin/deck.js` under every one of them —
+// and launch() carries it down rather than letting the worker ask a question it
+// cannot answer. Null wherever it cannot be proven, which is a Windows global
+// install and a git checkout; see src/server/invoked-as.mjs for why those two
+// have to stay silent rather than guess.
+const INVOKED_AS = invokedAs({ pkgRoot: PKG_ROOT, argv1: process.argv[1], platform: process.platform });
 
 // The supervisor prints exactly one line of its own — the fetch — and it has to
 // look like it came from the same product as the worker's rows. That is all the
@@ -108,6 +118,12 @@ function launch(respawn) {
       // is what would make a restart feel like a restart.
       AGENTS_DECK_RESPAWN: respawn ? "1" : "",
       AGENTS_DECK_RESTARTS: String(restarts),
+      // Empty for "we could not tell", which knownCommand reads as unknown just
+      // like an absent one. Set on the worker's environment only: the npx
+      // relaunch below spawns a whole new supervisor, and that one has to ask
+      // its own _npx directory rather than inherit an answer about a cache
+      // directory it is not running from.
+      AGENTS_DECK_INVOKED_AS: INVOKED_AS ?? "",
     },
   });
 

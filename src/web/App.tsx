@@ -86,6 +86,12 @@ const DETAIL_OPEN_KEY = "agent-dag.detailOpen";
 const USAGE_PANEL_OPEN_KEY = "agent-dag.usagePanelOpen";
 const ACCOUNTS_PANEL_OPEN_KEY = "agent-dag.accountsPanelOpen";
 const VERSION_DISMISSED_KEY = "agent-dag.versionNoticeDismissed";
+// Which old command the name notice has already been dismissed for — the name
+// itself, not a boolean. Somebody who dismisses it under `agent-dag` and later
+// starts the deck as `agents-deck` is a second install that has not heard this
+// yet, and a flag would silence it. In the agent-dag.* namespace like every
+// other key here; brand.ts explains why the rename stops at the storage layer.
+const OLD_NAME_DISMISSED_KEY = "agent-dag.oldNameNoticeDismissed";
 // How stale the last registry lookup may get before a poll asks npm again
 // instead of accepting the server's cached answer. Three times the poll
 // interval: often enough that a release shows up while you are looking at the
@@ -126,6 +132,14 @@ type VersionInfo = {
    *  failed npx relaunch from the one before it, since a retry that breaks the
    *  same way reports the same command and the same error. */
   upgrade?: { state: "idle" | "running" | "done" | "failed"; command: string | null; error: string | null; at?: number | null };
+  /** Which of the three published commands the user typed, when the server can
+   *  prove it — and null everywhere it cannot: a global install on Windows,
+   *  where npm's shim swallows the name before the process starts, and a git
+   *  checkout, where nothing was typed. Never guessed, so a null here means the
+   *  notice below stays away rather than that it picks the likeliest name.
+   *  Deliberately separate from `name` above, which is the upgrade target: for
+   *  a global install that is the published package whichever bin was run. */
+  invokedAs?: string | null;
 };
 
 // Said in the UI's voice, not npm's. Each of these is a decision we made on
@@ -841,6 +855,32 @@ function Inner() {
     setVersionDismissed(next);
     try { window.localStorage.setItem(VERSION_DISMISSED_KEY, next); } catch { /* private mode */ }
   }, [notice, noticeKey, versionDismissed]);
+
+  // ── the name this deck was started under ──────────────────────────────────
+  // Three npm names reach this same deck, every surface it draws says ccdeck,
+  // and the name most people type is one of the other two. So it is said here
+  // once per old name — in the shape of the banner above, never as an error.
+  // Nothing is broken and nothing is being taken away, and a red alarm over a
+  // name preference would be a lie about severity.
+  //
+  // The server reports `invokedAs` only where it can prove what was typed, so
+  // this stays silent for a global install on Windows and for a git checkout
+  // instead of guessing at either. Seeing this over a deck you started as
+  // `ccdeck` is the one failure that would make it worth ignoring.
+  const [oldNameDismissed, setOldNameDismissed] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    try { return window.localStorage.getItem(OLD_NAME_DISMISSED_KEY) ?? ""; } catch { return ""; }
+  });
+  // PRODUCT is both halves of the comparison on purpose: the name the deck
+  // calls itself and the command we ask people to type are the same string
+  // since the rename (#324), and display-name.test.ts is what holds them there.
+  const oldName = version?.invokedAs && version.invokedAs !== PRODUCT ? version.invokedAs : null;
+  const oldNameOpen = oldName != null && oldNameDismissed !== oldName;
+  const dismissOldName = useCallback(() => {
+    if (!oldName) return;
+    setOldNameDismissed(oldName);
+    try { window.localStorage.setItem(OLD_NAME_DISMISSED_KEY, oldName); } catch { /* private mode */ }
+  }, [oldName]);
   // Installing runs on the server and reports back through /api/version, so the
   // only thing the click owns is starting it and polling a little faster while
   // it runs — an npm install is a minute, not five.
@@ -2328,7 +2368,7 @@ function Inner() {
               : `Restarting ${PRODUCT}…`
             : `Lost connection to the ${PRODUCT} server. Reconnecting…`}
         </div>
-      ) : noticeOpen && notice && (
+      ) : noticeOpen && notice ? (
         // Both banners want grid row 2, and a dead connection is the more
         // urgent of the two — the version notice waits its turn.
         <div className={`ver-banner ${notice.kind}`} role="status">
@@ -2425,7 +2465,29 @@ function Inner() {
               focused <button> alone. */}
           <button type="button" aria-label="Dismiss" className="ver-close" onClick={toggleNotice}>×</button>
         </div>
-      )}
+      ) : oldNameOpen && oldName ? (
+        // Last of the four, because it is the only one nobody has to act on
+        // today: a dropped connection, a restart and a release all outrank a
+        // name. It comes back the moment the row above it is dismissed.
+        <div className="ver-banner" role="status">
+          <span className="ver-dot" />
+          <strong>{oldName} still works — the deck is called {PRODUCT} now.</strong>
+          {/* The half people do not expect. A global install already put a
+              ccdeck on the PATH — the same install ships all three commands —
+              so there is nothing to fetch and nothing to uninstall, only a
+              different word to type. Under npx there is no such install, and
+              the command itself is the whole answer. `upgradeMode` is npx only
+              where this copy runs from an npx cache, and every other value it
+              can take here is a global install: a checkout never reports a
+              name at all, so it never reaches this branch. */}
+          <span className="ver-sub">
+            {version?.upgradeMode === "npx"
+              ? `Run npx ${PRODUCT} next time.`
+              : `${PRODUCT} already works here — same install, no download.`}
+          </span>
+          <button type="button" aria-label="Dismiss" className="ver-close" onClick={dismissOldName}>×</button>
+        </div>
+      ) : null}
 
       {usagePanelOpen && (
         <UsagePanel
