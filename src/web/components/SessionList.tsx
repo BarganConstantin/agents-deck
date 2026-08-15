@@ -97,7 +97,10 @@ interface Props {
 export default function SessionList({ state, now, selectedIds, onSelect, onClose }: Props) {
   const rows = useMemo(() => buildRows(state, now), [state, state.lastSeq, now]);
   const liveCount = rows.filter(r => r.state === "active").length;
-  const waitingCount = rows.filter(r => r.waiting).length;
+  // Permission only, like the topbar chip and the tab strip. An idle prompt is
+  // a turn that ended, not a session that is stuck: it keeps its row and its
+  // place at the top of the sort, but it is not what this number is counting.
+  const waitingCount = rows.filter(r => r.waiting?.kind === "permission").length;
 
   return (
     <aside className="session-list" aria-label="Sessions">

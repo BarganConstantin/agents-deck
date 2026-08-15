@@ -166,6 +166,21 @@ export function waitingSentence(waiting: WaitingBlock): string {
   return waiting.kind === "permission" ? "Needs your permission" : "Waiting for your input";
 }
 
+/** The visible label, which is CC's sentence for a permission block and a
+ *  quieter one for an idle block.
+ *
+ *  "Claude is waiting for your input" is accurate and reads as an emergency,
+ *  and it is the kind that fires most — three of every four blocks on this
+ *  machine's log. What it actually describes is a turn that ended and has not
+ *  been picked back up, sitting on a node that already reads `done` two columns
+ *  away. So the visible half says whose move it is and the verbatim sentence
+ *  stays in the tooltip, where it is still the only human wording the payload
+ *  gives us and still exactly what CC said. A permission block is genuinely
+ *  urgent and keeps its sentence untouched. */
+export function waitingLabel(waiting: WaitingBlock): string {
+  return waiting.kind === "permission" ? waitingSentence(waiting) : "Your turn";
+}
+
 /** The session is blocked on a human — and on which of the two chores that is.
  *  A dot alone would not carry it: a permission prompt is a decision a session
  *  cannot proceed without, an idle prompt is a finished turn waiting for your
@@ -187,7 +202,7 @@ function WaitingRow({ waiting, now }: { waiting: WaitingBlock; now: number }) {
       {permission
         ? <span className="ap-pulse" aria-hidden />
         : <span className="waiting-dot" aria-hidden />}
-      <span className="waiting-said">{said}</span>
+      <span className="waiting-said">{waitingLabel(waiting)}</span>
       <b>{elapsed(waiting.since, undefined, now)}</b>
     </div>
   );
