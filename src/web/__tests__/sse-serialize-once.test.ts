@@ -99,6 +99,26 @@ function event(n: number) {
   return { hook_event_name: "UserPromptSubmit", session_id: `sid-${n}`, cwd: DIR, prompt: `p${n}` };
 }
 
+/**
+ * The `prompt` of every event in the log, in order.
+ *
+ * Read as records, never as text. Every line also carries the envelope's
+ * `epoch` — `Date.now().toString(36)` plus eight random base36 characters — and
+ * 23 of 2000 runs of this sequence drew one holding the literal "p3", which
+ * made a raw `toContain` on the file report a suppressed event as written. It
+ * cuts the other way too: an epoch holding "p4" ended the wait for the log
+ * early and let the assertions run against a file the event had not reached.
+ *
+ * The last line can be half-written while a fire-and-forget append is in
+ * flight, so a line that will not parse is skipped rather than thrown on.
+ */
+function loggedPrompts(): unknown[] {
+  return readFileSync(join(DIR, "events.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(line => { try { return JSON.parse(line).payload?.prompt; } catch { return null; } });
+}
+
 async function waitForClients(n: number): Promise<void> {
   for (let i = 0; i < 400; i++) {
     if ((await getJson("/api/health")).clients === n) return;
@@ -170,13 +190,13 @@ describe("SSE envelope serialization", () => {
       // The log append is fire-and-forget, so read the file only once an event
       // posted after the suppressed one has landed in it.
       await post("/api/event", event(4));
-      let log = "";
-      for (let i = 0; i < 400 && !log.includes("p4"); i++) {
-        log = readFileSync(join(DIR, "events.jsonl"), "utf8");
-        if (!log.includes("p4")) await new Promise(r => setTimeout(r, 10));
+      let prompts: unknown[] = [];
+      for (let i = 0; i < 400 && !prompts.includes("p4"); i++) {
+        prompts = loggedPrompts();
+        if (!prompts.includes("p4")) await new Promise(r => setTimeout(r, 10));
       }
-      expect(log).toContain("p4");
-      expect(log).not.toContain("p3");
+      expect(prompts).toContain("p4");
+      expect(prompts).not.toContain("p3");
     } finally {
       await unsubscribe(sub);
     }
