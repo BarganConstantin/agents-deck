@@ -149,17 +149,25 @@ export function bareSpecName(spec) {
   return /^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i.test(name) ? name : null;
 }
 
-/** What to hand `npx -y`, read from the cache directory's own metadata. */
+/** What to hand `npx -y`, read from the cache directory's own metadata.
+ *
+ *  `fallback` is what to answer when that metadata names nothing usable — the
+ *  package name, for the caller whose job is to re-run SOMETHING. Pass null and
+ *  the answer is null instead, which is what invoked-as.mjs needs: it asks which
+ *  name the user typed, and there the package name is not a lesser answer, it is
+ *  a wrong one. */
 export function npxSpecFromMeta(meta, fallback = "agents-deck") {
   const list = meta && meta._npx && Array.isArray(meta._npx.packages) ? meta._npx.packages : [];
   for (const entry of list) {
     const name = bareSpecName(entry);
     if (name) return `${name}@latest`;
   }
-  return `${fallback}@latest`;
+  return fallback ? `${fallback}@latest` : null;
 }
 
-/** The same, answered against the filesystem. Null when this is not an npx run. */
+/** The same, answered against the filesystem. Null when this is not an npx run,
+ *  and — for a caller that passed no fallback — when the metadata cannot be
+ *  read. */
 export function npxRestartSpec(pkgRoot, name = "agents-deck") {
   const root = npxRoot(pkgRoot);
   if (!root) return null;

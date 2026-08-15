@@ -11,6 +11,7 @@ import { createInterface } from "node:readline";
 import { createHash, randomBytes } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
+import { invokedName } from "./invoked-as.mjs";
 import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1367,7 +1368,16 @@ async function handleVersion(req, res) {
   // wondering whether the check is working at all.
   const force = new URL(req.url, "http://localhost").searchParams.get("refresh") === "1";
   const report = await versionReport({ running: RUNNING_VERSION, pkgRoot: PKG_ROOT, force });
-  send(res, 200, { ...report, canRestart: _canRestart });
+  // Attached here rather than inside versionReport for the same reason
+  // canRestart is: the report is what this package root says about itself,
+  // while both of these are facts about the process serving it — the command
+  // the user typed lives in this process's environment and argv, not on disk.
+  //
+  // It is deliberately not folded into `name`, which is documented as the
+  // package an upgrade would install and is load-bearing for the update flow.
+  // The two answer different questions and diverge everywhere but npx: `name`
+  // for a global install is the published package whichever bin was typed.
+  send(res, 200, { ...report, canRestart: _canRestart, invokedAs: invokedName({ pkgRoot: PKG_ROOT }) });
 }
 
 // Runs `npm i -g agents-deck@latest`, and only that: the argument vector is

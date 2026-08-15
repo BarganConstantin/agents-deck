@@ -81,7 +81,7 @@ copyFileSync(fileURLToPath(new URL("../../../bin/agent-dag.js", import.meta.url)
 
 // The server modules the supervisor imports, re-exported from the repo rather
 // than copied, so what runs here is what ships…
-for (const mod of ["brand.mjs", "exec.mjs", "self-update.mjs", "supervisor.mjs", "term.mjs"]) {
+for (const mod of ["brand.mjs", "exec.mjs", "invoked-as.mjs", "self-update.mjs", "supervisor.mjs", "term.mjs"]) {
   const real = new URL(`../../server/${mod}`, import.meta.url).href;
   writeFileSync(join(SERVER, mod), `export * from ${JSON.stringify(real)};\n`);
 }

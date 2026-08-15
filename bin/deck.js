@@ -14,6 +14,7 @@ import {
   pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK, wordmark,
 } from "../src/server/term.mjs";
 import { PRODUCT } from "../src/server/brand.mjs";
+import { invokedName, renameNotice } from "../src/server/invoked-as.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..");
@@ -21,6 +22,11 @@ const PKG_VERSION = (() => {
   try { return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ?? "0.0.0"; }
   catch { return "0.0.0"; }
 })();
+
+// The command the user typed, handed down by the supervisor — our own argv[1]
+// is this file under every one of the three names. Null when it cannot be
+// proven, and null is the answer that prints nothing.
+const INVOKED_AS = invokedName({ pkgRoot: PKG_ROOT });
 
 const argv = process.argv.slice(2);
 const flags = parseArgs(argv);
@@ -156,7 +162,7 @@ process.on("SIGHUP", () => { showCursor(); dieOfSignal("SIGHUP"); });
 // longer, silently broke the alignment of every other one.
 const LABELS = [
   "workspace", "Claude hooks", "Codex sessions", "claude-swap", "accounts",
-  "ccusage", "update", "server ready", "log",
+  "ccusage", "update", "name", "server ready", "log",
 ];
 const LABEL_W = labelColumn(LABELS);
 
@@ -332,6 +338,22 @@ async function reportStartup(jobs) {
       mark: G.up, tone: P.warn, label: "update",
       detail: `v${upgrade.notice.to} available ${G.dash} ${upgrade.command}`,
     }));
+  }
+
+  // Which name this deck was started under, when that is knowable — a notice,
+  // never a refusal. 95% of installs are on the two old names and the update
+  // path runs through this very process, so a build that declined to boot under
+  // one of them would kill the deck on the machine where the deck is what would
+  // have explained why. Nothing at all is printed wherever the typed name
+  // cannot be proven (a Windows global install, a git checkout): telling
+  // somebody who already types `ccdeck` to type `ccdeck` is the one failure
+  // that would make this row worth ignoring. See src/server/invoked-as.mjs.
+  const rename = renameNotice({ invoked: INVOKED_AS, pkgRoot: PKG_ROOT, dash: G.dash });
+  if (rename) {
+    write(row({ mark: G.warn, tone: P.warn, label: "name", detail: rename.said }));
+    // The line that carries the value: for a global install there is nothing to
+    // install and nothing to download, only six different characters to type.
+    write(row({ label: "", detail: rename.fix }));
   }
 }
 
