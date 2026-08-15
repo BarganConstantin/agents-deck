@@ -68,6 +68,41 @@ writeFileSync(FAKE_NPX, [
 const fakeLaunch = (how: string) => (args: string[]) =>
   ({ file: process.execPath, args: [FAKE_NPX, how, ...args], opts: {} });
 
+/**
+ * Settles once `child` has exited AND been reaped — the only moment at which
+ * `process.kill(pid, 0)` can be believed about a child of this process.
+ *
+ * This was `setTimeout(200)`, and #343 is what that cost: a fixed sleep is a bet
+ * on the scheduler, not a fact about the child. On a loaded machine the signalled
+ * process had not been scheduled to die inside that window, its pid was still
+ * reachable, and the test failed — once in 22 full-suite runs. A process that HAS
+ * died is no safer to ask about either: until its parent reaps it, it is a zombie
+ * and `kill(pid, 0)` still answers "alive", on Linux and macOS alike. Node's reap
+ * is a waitpid libuv performs BEFORE it emits `exit`, so the event is precisely
+ * the fact the sleep was guessing at. Windows arrives at the same place from the
+ * other side: the notification is the process handle being signalled, and the
+ * taskkill killTree spawns there makes the wait longer than any sleep would.
+ *
+ * The exitCode/signalCode guard is load-bearing: node sets them in the same
+ * breath as it emits `exit`, and `once("exit")` on a child that has already
+ * exited never fires — waiting unguarded would trade the flake for a hang.
+ *
+ * The ceiling is generous and never paid on a healthy run, but a kill that truly
+ * did not land then fails with the sentence below instead of as a bare vitest
+ * timeout that says nothing about what went wrong.
+ */
+const exited = (child: any, ms = 10_000) =>
+  child.exitCode !== null || child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve, reject) => {
+        const done = () => { clearTimeout(timer); resolve(); };
+        const timer = setTimeout(() => {
+          child.off("exit", done);
+          reject(new Error(`pid ${child.pid} was still running ${ms}ms after the fetch gave up — the kill did not land`));
+        }, ms);
+        child.once("exit", done);
+      });
+
 describe("the arguments the pre-flight hands npx", () => {
   it("names the spec as a package to install, never as a command to run", () => {
     const args = npxPrefetchArgs("ccdeck@latest");
@@ -118,7 +153,7 @@ describe("npxPrefetch against a fetch that cannot work", () => {
   it("gives up on a fetch that hangs, and leaves nothing behind downloading", async () => {
     // A dead proxy accepts the connection and never answers. Without a deadline
     // the click hangs on it until the tab gives up three minutes later.
-    let spawned: { pid?: number; killed?: boolean } | null = null;
+    let spawned: any = null;
     const got = await npxPrefetch("ccdeck@latest", {
       launch: fakeLaunch("hang"),
       timeoutMs: 300,
@@ -127,10 +162,11 @@ describe("npxPrefetch against a fetch that cannot work", () => {
     expect(got.ok).toBe(false);
     expect(got.error).toMatch(/timed out/);
     // The process is stopped, not merely abandoned: an npm still writing into
-    // the cache directory is what the next attempt reads.
-    await new Promise(r => setTimeout(r, 200));
+    // the cache directory is what the next attempt reads. Waited for by the
+    // child's own exit rather than by a clock — see `exited` and #343.
+    await exited(spawned!);
     expect(() => process.kill(spawned!.pid!, 0)).toThrow();
-  });
+  }, 20_000);
 });
 
 describe("npxPrefetch against a fetch that works", () => {
