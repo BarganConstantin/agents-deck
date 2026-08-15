@@ -227,6 +227,7 @@ describe("the hover lift on a clickable bubble", () => {
  *  0.94 where the target is 18–28px and three percent would be sub-pixel. */
 const PRESSES: [string, string][] = [
   ["button.btn:active:not(:disabled)", "0.97"],
+  [".topbar .waiting-stat:active", "0.97"],
   [".ap-manage-btn:active:not(:disabled)", "0.97"],
   [".ap-more:active", "0.94"],
   [".ap-fix:active", "0.97"],

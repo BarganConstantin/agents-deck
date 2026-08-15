@@ -49,6 +49,22 @@ export interface PromptEntry {
   text: string;
 }
 
+/** Claude Code is blocked on a human, and which chore that is. `Notification`
+ *  emits exactly two kinds and they are different jobs: `permission_prompt` is
+ *  a decision you owe a session that is still mid-turn, `idle_prompt` is a turn
+ *  that ended about a minute ago and is waiting for your next instruction. */
+export interface WaitingBlock {
+  kind: "permission" | "idle";
+  /** CC's own wording, shown verbatim — it is the only human sentence we get.
+   *  The payload carries no tool_name and no tool_input, so this and the kind
+   *  are the whole of what the deck honestly knows about the block. */
+  message: string;
+  /** When the block started, from the envelope's `receivedAt`. Never re-stamped
+   *  by a duplicate delivery, or the "waiting 4m" readout on the card resets to
+   *  zero every time a second deck's copy of the same notification lands. */
+  since: number;
+}
+
 export interface ContextBreakdown {
   msgsUser: number;
   msgsAssistant: number;
@@ -99,6 +115,17 @@ export interface AgentNodeData {
    *  turn has started and this subagent already finished). UI plays an exit
    *  animation, then drops it from the canvas. */
   exitAt?: number;
+  /** Set while Claude Code is blocked on a human. Rides ALONGSIDE `state`
+   *  rather than being a fourth AgentState, because waiting is orthogonal to
+   *  running and folding it in would destroy information in both directions: a
+   *  permission prompt arrives mid-turn and the session is still active, an
+   *  idle prompt arrives after Stop and the session is still done. Null (or
+   *  absent) whenever the session is not blocked. Only the root agent carries
+   *  it — `Notification` has no parent_tool_use_id to attribute to a subagent,
+   *  and the block is on the session as a whole. Always null for Codex, which
+   *  reconstructs its stream from rollout files and emits no notification at
+   *  all; absence of the signal there is not evidence of no block. */
+  waiting?: WaitingBlock | null;
   /** Server-derived structural breakdown of what's in the context window.
    *  Approximation: server reads the transcript JSONL + scans cwd for
    *  CLAUDE.md and emits a synthetic ContextObserved event. Only the root
@@ -142,6 +169,10 @@ export interface HookPayload {
   parent_tool_use_id?: string;
   subagent_type?: string;
   message?: string;
+  /** Claude-only, on `Notification`: which of the two blocks this is —
+   *  "permission_prompt" or "idle_prompt". `message` beside it is the sentence
+   *  CC would have printed in the terminal. */
+  notification_type?: string;
   prompt?: string;
   /** Stamped by hook.js when forwarding. Lets the reducer branch without
    *  re-sniffing payload shape. */

@@ -42,6 +42,7 @@ No config file. No account. No telemetry — nothing about your sessions is repo
 |---|---|
 | **Live DAG** | Nodes are agents, edges are spawns and tool calls. In-flight edges animate, settled ones fade. |
 | **Both providers, one canvas** | Claude Code through hooks, Codex through its rollout log. The model chip (`Opus 5`, `GPT-5.5`) tells them apart. |
+| **Blocked on you** | A permission prompt or a finished turn waiting for your next instruction sorts that session to the top of the sidebar with how long it has been stuck, and puts a count in the topbar that jumps to the oldest one. Claude Code only — Codex emits no such signal. |
 | **Click to inspect** | Any node opens its prompt, tool calls, token usage and timing. |
 | **Cost and quota, live** | Spend per model and per session, plus Claude and Codex quota windows as they refill. |
 | **Survives restarts** | Events are appended to `~/.claude/agent-dag/events.jsonl` and replayed on open. |

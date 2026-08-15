@@ -1,5 +1,5 @@
 // Event → graph reducer. Pure-ish: same events in any order = same end state.
-import type { AgentNodeData, HookEnvelope, HookPayload, TokenUsage, ToolCall } from "./types";
+import type { AgentNodeData, HookEnvelope, HookPayload, TokenUsage, ToolCall, WaitingBlock } from "./types";
 
 function emptyUsage(): TokenUsage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
@@ -466,6 +466,27 @@ export function sweepStaleTools(state: GraphState, now: number, maxMs: number): 
   return changed;
 }
 
+/** The two `notification_type` values Claude Code emits, as the chore each one
+ *  actually is. Anything else is a kind nobody here has seen and would have no
+ *  wording for, so it sets no block rather than a badge that says nothing. */
+function waitingKind(notificationType: unknown): WaitingBlock["kind"] | null {
+  if (notificationType === "permission_prompt") return "permission";
+  if (notificationType === "idle_prompt") return "idle";
+  return null;
+}
+
+/** Events that are NOT proof the session moved, and so must leave a waiting
+ *  block standing. `Notification` is the one that sets it. The three *Observed
+ *  events are the server's own transcript scans, not session traffic: it starts
+ *  one for every hook payload that carries a `transcript_path`, the notification
+ *  included, so treating them as movement would clear the block a second or two
+ *  after it was set and no badge would ever survive long enough to be read.
+ *  Everything else — a prompt, a tool call, a subagent, a Stop — is the session
+ *  moving again, which is the only evidence we get that the human answered. */
+const WAITING_KEEPERS = new Set([
+  "Notification", "ModelObserved", "ContextObserved", "UsageObserved",
+]);
+
 export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   // `seq` is only monotonic *within one server process*. A restart re-derives
   // the counter by replaying events.jsonl, so after a log rotation or an
@@ -497,6 +518,19 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   state.lastSeq = env.seq;
 
   const sessionId = p.session_id ?? "unknown";
+
+  // Clear the waiting block here rather than adding a line to eight cases. A
+  // badge that outlives the block is worse than no badge — it teaches the user
+  // to distrust the one signal the deck exists to give — and a per-case list is
+  // a list somebody forgets to extend the next time an event is added. This
+  // also carries the whole idempotency story: a replayed log re-delivers every
+  // notification, and each one is cleared again by whatever the session did
+  // next, so a tab that opens mid-block ends up blocked and a tab that opens
+  // after it was answered does not.
+  if (!WAITING_KEEPERS.has(name)) {
+    const blocked = state.agents.get(rootAgentId(sessionId));
+    if (blocked?.waiting) blocked.waiting = null;
+  }
 
   // Codex reports the session's real context window on `task_started`, and the
   // server relays it on a ModelObserved payload — the only event that carries
@@ -787,6 +821,32 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       break;
     }
     case "Notification": {
+      // The deck has always received these and always dropped them, which is
+      // why "which of the five agents is stuck on me" was the one question the
+      // canvas could not answer. Two kinds arrive and both mean the session is
+      // blocked on a human; nothing else in the payload is worth keeping (the
+      // `model.subsSig` blob alone runs to ~5KB, and there is no tool_name, no
+      // tool_input and no tool_use_id to say what the block is ON).
+      const kind = waitingKind(p.notification_type);
+      if (!kind) break;
+      // Straight to the root the way Stop does, never through resolveOwner:
+      // that function exists to attribute tool traffic to the deepest live
+      // subagent and would hang the badge on whichever Task happened to be
+      // running. The payload names no subagent, and the block is on the session
+      // as a whole in any case.
+      const root = ensureRoot(state, sessionId, now, false);
+      const message = typeof p.message === "string" ? p.message : "";
+      const prev = root.waiting;
+      // One notification is delivered more than once — a copy per deck sharing
+      // events.jsonl, plus the whole history again on every tab that opens —
+      // and each copy carries its own seq, so the seq/epoch guard lets it
+      // through. Re-stamping `since` would restart the "waiting 4m" readout
+      // every time a duplicate landed. Math.min rather than "keep whichever
+      // arrived first" so a copy delivered out of order settles on the same
+      // answer: order-independence is this reducer's stated contract.
+      root.waiting = prev && prev.kind === kind && prev.message === message
+        ? { kind, message, since: Math.min(prev.since, now) }
+        : { kind, message, since: now };
       break;
     }
   }

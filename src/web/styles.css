@@ -466,6 +466,41 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   margin-left: 1px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* How many sessions are blocked on you (#337) — the only number in this bar
+   that is a control rather than a readout, so it is shaped like the status pill
+   beside it and behaves like every other button here: the --warn edge .btn.warn
+   already uses (85% of the token, one value for both themes), the accent-free
+   hover that adds contrast rather than taking it away, and the press this
+   codebase gives every custom control. It lives outside .status because that
+   span is a role="status" live region and a control does not belong in one. */
+.topbar .waiting-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--warn) 85%, transparent);
+  color: var(--warn);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms, background 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.topbar .waiting-stat b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.topbar .waiting-stat:hover {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.topbar .waiting-stat:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .topbar .waiting-stat:active { transform: none; }
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; } 50% { opacity: 0.35; }
 }
@@ -1380,6 +1415,65 @@ button.btn.icon-btn {
   background: rgba(252,165,165,0.08);
 }
 
+/* Blocked on a human (#337). A row of its own, under the identity line and
+   above the numbers: the header is 232px of content and already spends it on
+   the state pill, the workspace name and the elapsed clock, so a fourth chip
+   there truncated the label and still overflowed the card.
+   It does not replace the state pill above it and must not read as if it did —
+   a permission prompt lands on a session that is still live, an idle prompt on
+   one that has finished, and both facts stay on the card.
+   The SENTENCE is what separates the two chores, and it is CC's own; the hue
+   reinforces it, the 1.4.1 argument the three state pills already make. Both
+   hues are the sheet's: --warn is how this app says "this one is on you",
+   --accent how it says "for information". No wash under either — 8% of --warn
+   over the node's lower stop puts its own text at 4.47:1, a third of a point
+   under AA, so the words sit straight on the gradient where control-edges
+   already holds both tokens to 4.5:1 at both stops in both themes. */
+.agent-node .waiting-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  min-width: 0;
+}
+.agent-node .waiting-row.permission {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 85%, transparent);
+}
+.agent-node .waiting-row.idle {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 85%, transparent);
+}
+/* The sentence yields first — the duration beside it is the number that decides
+   whether the user gets up, and the whole sentence is on the tooltip anyway. */
+.agent-node .waiting-said {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-node .waiting-row b {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+/* The still twin of .ap-pulse's emitter — same 5px dot, no ping. A session
+   that finished and is resting has not earned motion; the one that cannot
+   proceed without you has, and it borrows .ap-pulse outright so the app keeps
+   one idiom for "still asking" and one reduced-motion answer for it. */
+.waiting-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
 .agent-node .sub {
   color: var(--muted);
   font-size: 11px;
@@ -1958,6 +2052,15 @@ button.btn.icon-btn {
   color: var(--inflight);
   font-weight: 600;
 }
+/* Beside the live count and ahead of it, since the two answer different
+   questions and only one of them is asking you for something. */
+.session-list .sl-waiting-count {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--warn);
+  font-weight: 600;
+}
 .session-list .sl-close { width: 26px; height: 26px; font-size: 15px; }
 
 .session-list .sl-rows {
@@ -2054,6 +2157,14 @@ button.btn.icon-btn {
 .session-list .sl-row-meta b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .session-list .sl-cost b { color: var(--ok); }
 .session-list .sl-elapsed { margin-left: auto; }
+/* The alternative to .sl-elapsed, never a second chip beside it: on a blocked
+   row the session's own age decides nothing and "waiting 6m" decides whether
+   you get up, so it takes the slot and the same right edge. */
+.session-list .sl-waiting {
+  margin-left: auto;
+  color: var(--warn);
+  font-weight: 600;
+}
 
 /* ---------------- detail panel: hero + sections ---------------- */
 
