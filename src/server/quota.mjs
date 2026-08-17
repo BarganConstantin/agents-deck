@@ -13,7 +13,8 @@
 //      schedule and writes what it got; reading that file costs nothing and
 //      spends none of the budget. Used whenever it holds a recent enough row.
 //   2. The OAuth usage API directly, with the token from
-//      ~/.claude/.credentials.json. Exact and instant. Mechanism
+//      .credentials.json inside the Claude config dir — $CLAUDE_CONFIG_DIR when
+//      it is set, ~/.claude otherwise. Exact and instant. Mechanism
 //      reverse-engineered from steipete/CodexBar.
 //   3. `claude --print /usage`, parsed. Used when there is no readable token —
 //      notably on macOS, where Claude Code keeps credentials in the Keychain
@@ -27,6 +28,7 @@
 // 2 and 3 are rate-floored (SELF_POLL_MS) and gated behind the same 429
 // cooldown; 1 is not, because it is a local file read.
 import { activeAccountUsage, requestCollection } from "./claude-accounts.mjs";
+import { claudeConfigDir } from "./claude-dir.mjs";
 import { run } from "./exec.mjs";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -34,7 +36,6 @@ import { join, posix as posixPath, win32 as winPath } from "node:path";
 import { homedir } from "node:os";
 import { PRODUCT } from "./brand.mjs";
 
-const CREDS_PATH  = join(homedir(), ".claude", ".credentials.json");
 const USAGE_URL   = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
 const WIN_5H_SEC  = 18000;
@@ -43,9 +44,34 @@ const WIN_7D_SEC  = 604800;
 // 429 cooldown gate — after a rate-limit, skip the API until this passes.
 let _rateLimitedUntil = 0;
 
+/**
+ * Where Claude Code keeps the OAuth credentials this module borrows a token
+ * from.
+ *
+ * It is `.credentials.json` inside the Claude config dir, and that dir moves:
+ * CLAUDE_CONFIG_DIR replaces ~/.claude wholesale rather than overlaying it, so
+ * on a machine where it is set there is no ~/.claude to read at all. Hardcoding
+ * ~/.claude here did not fail loudly — it made readOAuthToken() return null
+ * forever, which reads exactly like "this machine keeps its credentials in the
+ * Keychain", and the quota chain quietly fell through to source 3 on every poll
+ * it was allowed to make. See src/server/claude-dir.mjs, which owns the rule
+ * and is the only place it is spelled.
+ *
+ * Resolved per call rather than frozen into a module-level constant, for the
+ * same reason claudeConfigDir() is a function: a constant captured at import
+ * time is a value nothing can observe or correct afterwards, and this module is
+ * imported lazily by the /api/quota route rather than at a point in startup
+ * anyone here controls.
+ *
+ * Exported for tests — it is the whole of the bug, and it is pure.
+ */
+export function credentialsPath() {
+  return join(claudeConfigDir(), ".credentials.json");
+}
+
 async function readOAuthToken() {
   try {
-    const raw  = await readFile(CREDS_PATH, "utf8");
+    const raw  = await readFile(credentialsPath(), "utf8");
     const auth = JSON.parse(raw)?.claudeAiOauth;
     if (!auth?.accessToken) return null;
     // expiresAt is epoch milliseconds. If expired, the CLI fallback handles it.
