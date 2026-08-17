@@ -13,8 +13,19 @@
 // The Host must now name a loopback identity as well. These pin the attack
 // itself, the loopback spellings that still have to work, and the one client
 // that is allowed a Host of any shape because it is not a browser at all.
-import { describe, it, expect } from "vitest";
+//
+// The gate was then applied to mutations only, on the reasoning that a
+// cross-site page cannot read a loopback reply. A REBOUND page can: the browser
+// resolved the attacker's name to 127.0.0.1 itself, so it calls the answer
+// same-origin and hands the body over. Every read was open to the same attack,
+// and the reads are the interesting half — GET /api/events is the whole ring
+// buffer, prompt text and Bash command lines and file contents included. The
+// second half of this file pins the read gate and pins it at the routing table,
+// where the routes actually live.
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync } from "node:fs";
+import { request, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -30,7 +41,7 @@ for (const p of [process.env.HOME, process.env.USERPROFILE, process.env.CLAUDE_C
 }
 
 // @ts-expect-error — plain .mjs module, no types
-const { isTrustedMutation } = await import("../../server/index.mjs");
+const { isTrustedMutation, isTrustedRead, startServer } = await import("../../server/index.mjs");
 
 const HOST = "127.0.0.1:4317";
 
@@ -109,5 +120,132 @@ describe("isTrustedMutation under DNS rebinding", () => {
     // otherwise parse to a loopback hostname while naming something else.
     expect(isTrustedMutation({ origin: `http://${HOST}`, host: `attacker.example@${HOST}` })).toBe(false);
     expect(isTrustedMutation({ origin: `http://${HOST}`, host: `${HOST}/attacker.example` })).toBe(false);
+  });
+});
+
+describe("isTrustedRead under DNS rebinding", () => {
+  it("refuses a rebound page's reads", () => {
+    // The same self-consistent, entirely attacker-chosen header set as above.
+    // A read carrying it used to be answered in full.
+    expect(isTrustedRead({ host: "attacker.example:4317", secFetchSite: "same-origin" })).toBe(false);
+    expect(isTrustedRead({
+      origin: "http://attacker.example:4317", host: "attacker.example:4317", secFetchSite: "same-origin",
+    })).toBe(false);
+    // A GET sends no Origin unless it is a CORS request, so fetch metadata is
+    // usually the only thing marking a read as a page's. Either one is enough.
+    expect(isTrustedRead({ origin: "http://attacker.example:4317", host: "attacker.example:4317" })).toBe(false);
+    expect(isTrustedRead({ host: "localhost.attacker.example:4317", secFetchSite: "same-origin" })).toBe(false);
+    expect(isTrustedRead({ host: "192.168.1.5:4317", secFetchSite: "same-origin" })).toBe(false);
+  });
+
+  it("lets the deck's own page read on every loopback spelling", () => {
+    expect(isTrustedRead({ host: HOST, secFetchSite: "same-origin" })).toBe(true);
+    expect(isTrustedRead({ origin: `http://${HOST}`, host: HOST, secFetchSite: "same-origin" })).toBe(true);
+    expect(isTrustedRead({ host: "localhost:4317", secFetchSite: "same-origin" })).toBe(true);
+    expect(isTrustedRead({ host: "[::1]:4317", secFetchSite: "same-origin" })).toBe(true);
+    expect(isTrustedRead({ host: "127.0.0.2:4317", secFetchSite: "same-origin" })).toBe(true);
+  });
+
+  it("lets a client that is not a browser read whatever Host it names", () => {
+    // hook/hook.js again: no Origin, no fetch metadata, nothing to rebind.
+    expect(isTrustedRead({ host: "deck.local:4317" })).toBe(true);
+    expect(isTrustedRead({ host: HOST })).toBe(true);
+    expect(isTrustedRead({ origin: "", secFetchSite: "" })).toBe(true);
+    expect(isTrustedRead()).toBe(true);
+  });
+
+  it("does not borrow the mutation gate's Sec-Fetch-Site test", () => {
+    // Deliberate, and the reason this is a separate predicate. A `cross-site`
+    // read of a loopback address is an ordinary top-level navigation — a link
+    // to the deck clicked on some other page — and the document it loads is the
+    // deck's own UI on the deck's own origin. Rebinding does not travel that
+    // way: a rebound page's own requests report `same-origin`, and what gives
+    // it away is the Host.
+    expect(isTrustedRead({ host: HOST, secFetchSite: "cross-site" })).toBe(true);
+    expect(isTrustedRead({ host: HOST, secFetchSite: "same-site" })).toBe(true);
+    expect(isTrustedMutation({ host: HOST, secFetchSite: "cross-site" })).toBe(false);
+  });
+});
+
+// Every named route, at the routing table rather than at the predicate. The
+// gate is one line in front of the table, so a route escaping it would be a
+// routing bug rather than a logic bug and the unit tests above would not see it.
+describe("the rebinding gate in front of the routing table", () => {
+  let server: Server;
+  let port = 0;
+
+  beforeAll(async () => {
+    server = await startServer({ port: 0, host: "127.0.0.1", persist: null, codex: false });
+    port = (server.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>(done => {
+      server.closeAllConnections?.();
+      server.close(() => done());
+    });
+  });
+
+  function call(path: string, headers: Record<string, string>): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path, method: "GET", headers }, res => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  // Node's global fetch cannot express this: undici treats Host as a forbidden
+  // header and silently drops it, so the request would arrive at the real
+  // address and pass. node:http sends what it is given.
+  const rebound = {
+    Host: "attacker.example:4317",
+    Origin: "http://attacker.example:4317",
+    "Sec-Fetch-Site": "same-origin",
+  };
+
+  const READS = [
+    "/api/events?since=0",        // the whole ring buffer
+    "/api/claude-accounts",       // account emails, org names, aliases
+    "/api/claude-accounts/login", // a live OAuth authorize URL
+    "/api/health",                // the absolute workspace path
+    "/api/sound-hook",            // the user's own hook command lines
+    "/api/hook-challenge?nonce=n", // a proof oracle for the deck's token
+    "/api/version",
+    "/api/quota",
+    "/api/ccusage",
+    "/api/codex-usage",
+    "/api/codex-quota",
+    "/api/cswap-auto",
+    "/events",                    // the same buffer, live
+    "/",                          // and the page itself
+    "/assets/app.js",
+  ];
+
+  it("refuses every read from a rebound page", async () => {
+    for (const path of READS) {
+      expect(await call(path, rebound), `${path} answered a rebound page`).toBe(403);
+    }
+  });
+
+  it("still answers the deck's own page", async () => {
+    const ui = {
+      Host: `127.0.0.1:${port}`,
+      Origin: `http://127.0.0.1:${port}`,
+      "Sec-Fetch-Site": "same-origin",
+    };
+    expect(await call("/api/health", ui)).toBe(200);
+    expect(await call("/api/events?since=0", ui)).toBe(200);
+    // The Host the browser sends follows the URL bar, not the socket.
+    expect(await call("/api/health", { ...ui, Host: "localhost:4317", Origin: "http://localhost:4317" })).toBe(200);
+  });
+
+  it("still answers a client that sends no browser headers at all", async () => {
+    // hook/hook.js, and the deck's own tooling. This is the shape that must not
+    // be measured against a rebinding attack it cannot be part of.
+    expect(await call("/api/health", {})).toBe(200);
+    expect(await call("/api/health", { Host: "deck.local:4317" })).toBe(200);
   });
 });
