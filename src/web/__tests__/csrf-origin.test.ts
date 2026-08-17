@@ -169,16 +169,44 @@ describe("mutations require the deck's own authority", () => {
     }
   });
 
-  it("accepts the deck's token, raw or as a challenge proof", async () => {
+  it("accepts the deck's token", async () => {
     for (const { path, body, cleared } of PROTECTED) {
       expect(await post(path, { body, headers: { "x-ccdeck-token": hookToken() } }), path).toBe(cleared);
     }
-    // The hashed form hook/hook.js already speaks. The nonce is the caller's,
-    // so the same token yields a different proof every time.
-    for (const { path, body, cleared } of PROTECTED) {
-      const nonce = `n-${path}`;
-      const proof = `${nonce}:${challengeProof(hookToken(), nonce)}`;
-      expect(await post(path, { body, headers: { "x-ccdeck-proof": proof } }), path).toBe(cleared);
+  });
+
+  it("never accepts a credential this server hands out for the asking", async () => {
+    // The regression. This gate shipped for one commit also honouring
+    // `x-ccdeck-proof: <nonce>:<challengeProof(token, nonce)>`, on the reasoning
+    // that the hashed form spares a caller repeating the secret. But
+    // GET /api/hook-challenge answers exactly that value to anybody for any
+    // nonce — it must, see handleHookChallenge — so the whole gate came down to
+    // two unauthenticated GETs and no forged header at all.
+    //
+    // Every other test here asks whether a valid credential works. This one
+    // asks the question whose absence let that through: can the caller GET a
+    // credential out of the server it is trying to get past.
+    const nonce = "abc";
+    const oracle = await new Promise<string>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: `/api/hook-challenge?nonce=${nonce}`, method: "GET" }, res => {
+        let out = "";
+        res.setEncoding("utf8");
+        res.on("data", c => { out += c; });
+        res.on("end", () => resolve(JSON.parse(out).proof));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    // The route still answers freely, because hook/hook.js challenges the port
+    // before it trusts it and a deck that demanded credentials first could not
+    // be told apart from a stranger refusing to answer.
+    expect(oracle).toBe(challengeProof(hookToken(), nonce));
+
+    // And that answer buys nothing here, on any route, in any spelling.
+    for (const { path, body } of PROTECTED) {
+      expect(await post(path, { body, headers: { "x-ccdeck-proof": `${nonce}:${oracle}` } }), path).toBe(401);
+      expect(await post(path, { body, headers: { "x-ccdeck-proof": oracle } }), path).toBe(401);
+      expect(await post(path, { body, headers: { "x-ccdeck-token": oracle } }), path).toBe(401);
     }
   });
 
@@ -202,19 +230,18 @@ describe("mutations require the deck's own authority", () => {
 
   it("refuses a credential that is merely the right shape", async () => {
     const probe = { path: "/api/claude-accounts/admin", body: '{"action":"__probe__"}' };
-    const nonce = "n";
-    for (const headers of [
-      { "x-ccdeck-token": "0".repeat(64) },                                // right length, wrong bytes
-      { "x-ccdeck-token": "" },
-      { "x-ccdeck-token": hookToken().slice(0, -1) },                      // one byte short
-      { "x-ccdeck-proof": challengeProof(hookToken(), nonce) },            // no nonce to check it against
-      { "x-ccdeck-proof": `${nonce}:` },
-      { "x-ccdeck-proof": `${nonce}:${challengeProof(hookToken(), "other")}` }, // proof of another nonce
-      { "x-ccdeck-proof": `${nonce}:${challengeProof("0".repeat(64), nonce)}` }, // proof of another token
-      { "x-ccdeck-proof": `${"n".repeat(300)}:${challengeProof(hookToken(), "n".repeat(300))}` }, // nonce past the cap
+    for (const token of [
+      "0".repeat(64),                        // right length, wrong bytes
+      "",
+      hookToken().slice(0, -1),              // one byte short
+      `${hookToken()}x`,                     // one byte long
+      challengeProof(hookToken(), "n"),      // a hash of the token is not the token
     ]) {
-      expect(await post(probe.path, { body: probe.body, headers }), JSON.stringify(headers)).toBe(401);
+      expect(await post(probe.path, { body: probe.body, headers: { "x-ccdeck-token": token } }), token).toBe(401);
     }
+    // Surrounding whitespace is the client's business, not a signal — the same
+    // reading isTrustedMutation gives the Host header.
+    expect(await post(probe.path, { body: probe.body, headers: { "x-ccdeck-token": ` ${hookToken()} ` } })).toBe(400);
   });
 
   it("keeps the hook's ingest open, because the hook is not ours to upgrade", async () => {

@@ -1698,9 +1698,20 @@ export function challengeProof(token, nonce) {
 //
 // The nonce is the caller's, so the answer proves knowledge of the token
 // without disclosing it, and proves it for this exchange only. Answering
-// freely is safe: a caller that can reach this port can already read the
-// discovery file that holds the token, being the same user on the same
-// machine, and the response is a hash the browser cannot read cross-origin.
+// freely is what the exchange requires: the hook is asking whether the process
+// on this port is the deck that wrote the discovery file, and it asks precisely
+// because it does not yet know — a deck that demanded credentials before
+// answering could not be told apart from a stranger that refuses.
+//
+// So this route is an oracle, and it must stay one. That makes its answer
+// useless as a credential FOR this server, and nothing here may ever accept it
+// as one: a caller who can GET this can obtain a valid proof for any nonce, so
+// a gate honouring proofs is a gate honouring anybody. See presentsDeckToken,
+// which takes the token itself and refuses the hashed form for this reason.
+//
+// What the free answer does NOT give away is the token: the response is a
+// one-way hash of it, and after the read gate above a rebound page cannot see
+// even that.
 function handleHookChallenge(_req, res, url) {
   const nonce = url.searchParams.get("nonce") ?? "";
   if (!nonce || nonce.length > 256) return send(res, 400, { error: "bad nonce" });
@@ -1903,13 +1914,11 @@ function secretEquals(given, expected) {
   return timingSafeEqual(a, b);
 }
 
-// Does this request carry proof of the deck's own token?
+// Does this request carry the deck's own token?
 //
-// Two spellings, both the caller's choice. `x-ccdeck-token` is the token
-// itself, which is all a local process needs since it read the token out of a
-// file only it can open anyway. `x-ccdeck-proof: <nonce>:<hex>` is the hashed
-// form hook/hook.js already speaks — see challengeProof — for a caller that
-// would rather not repeat the secret on every request.
+// One spelling, `x-ccdeck-token`, carrying the token itself. That is all a
+// local process needs, because the only way it can hold the token is to have
+// read it out of a file only it can open.
 //
 // The token is HOOK_TOKEN, fresh per deck and written to the discovery file at
 // mode 0600. That mode is the whole of the access control: the answer to "who
@@ -1917,19 +1926,27 @@ function secretEquals(given, expected) {
 // runs as and nobody else. On Windows the chmod is a best-effort no-op, so
 // there the file's protection is the per-user ACL on the profile directory it
 // sits in rather than a mode bit; the token still works identically.
+//
+// The hashed challengeProof form is deliberately NOT accepted here, and this
+// is the paragraph that must be read before anyone adds it. GET
+// /api/hook-challenge?nonce=… answers challengeProof(HOOK_TOKEN, nonce) to any
+// caller for any nonce, by design — so accepting a proof as a credential means
+// the server hands out its own credentials on request, and two unauthenticated
+// GETs are a complete bypass of everything below. This gate shipped that way
+// for one commit; the regression test in csrf-origin.test.ts pins it shut.
+//
+// The premise that makes the oracle safe is the one this gate rejects, which is
+// exactly why the two cannot share a secret: the challenge is the deck proving
+// itself TO the hook, not the hook proving itself to the deck. hook/hook.js
+// already holds the token — it read the same 0600 file — and challenges the
+// port to find out whether the process listening there is really the deck that
+// wrote it, or something else that inherited the port number from a stale
+// discovery file. Nothing travels in the other direction, so no caller ever
+// needed the hashed form as a way IN, and a client entitled to mutate holds the
+// token itself anyway.
 function presentsDeckToken(headers = {}) {
   const raw = headers["x-ccdeck-token"];
-  if (typeof raw === "string" && secretEquals(raw.trim(), HOOK_TOKEN)) return true;
-
-  const proof = headers["x-ccdeck-proof"];
-  if (typeof proof !== "string") return false;
-  // The nonce is the caller's and may be anything but a colon-free suffix, so
-  // the LAST colon is the separator.
-  const cut = proof.lastIndexOf(":");
-  if (cut <= 0) return false;
-  const nonce = proof.slice(0, cut).trim();
-  if (!nonce || nonce.length > 256) return false;
-  return secretEquals(proof.slice(cut + 1).trim(), challengeProof(HOOK_TOKEN, nonce));
+  return typeof raw === "string" && secretEquals(raw.trim(), HOOK_TOKEN);
 }
 
 // Is this the deck's own page in the user's browser?
