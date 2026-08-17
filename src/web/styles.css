@@ -1688,6 +1688,43 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   flex-shrink: 0;
 }
 
+/* The "this deck cannot see approval prompts on this session" row (#398).
+   Same geometry as .waiting-row so the two occupy the slot identically, and
+   deliberately the QUIETEST styling of the three: --muted, no border, a hollow
+   dot and no pulse. The other two rows report something that happened to the
+   session; this one reports a limit of the program, which is worth saying once
+   and worth never competing with a real alarm for attention. It borrows
+   .waiting-said for truncation rather than restating it, so the sentence yields
+   the same way. */
+.agent-node .approval-blind-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 3px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  min-width: 0;
+  color: var(--muted);
+  font-style: italic;
+}
+.agent-node .approval-blind-said {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Hollow, where .waiting-dot is filled: the deck has no signal here, and the
+   mark says so in the same channel the other two rows use. */
+.approval-blind-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+}
+
 .agent-node .sub {
   color: var(--muted);
   font-size: 11px;

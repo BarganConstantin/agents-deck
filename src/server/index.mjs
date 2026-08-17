@@ -782,8 +782,14 @@ function maybeResolveCodex(payload) {
 //   event_msg/task_complete            → Stop (the turn finished)
 //   event_msg/turn_aborted             → Stop (the turn was interrupted)
 //   turn_context / response_item.model → model snapshot (ModelObserved on change)
+//   turn_context.approval_policy       → session snapshot, spread onto every
+//                                        payload below (#398); no event of its own
 // There is deliberately no SessionEnd here: Codex writes no session-close
 // record, so the end of a SESSION is still inferred by sweepStaleSessions.
+// Nor is there anything that maps to `Notification`, and no synthetic one is
+// invented: Codex writes no approval record to a rollout at all, so the deck
+// cannot see a Codex session blocked on a human and does not pretend to — see
+// codex-approval.ts for the evidence and for what is said instead of guessing.
 // Events are emitted with source "codex" so pushEvent skips the Claude-only
 // transcript enrichment (which needs transcript_path / hook events) but still
 // broadcasts them exactly like a hook event, and persists them when this deck is
@@ -791,6 +797,10 @@ function maybeResolveCodex(payload) {
 // entirely additive — the Claude hook flow is untouched.
 const codexFileState = new Map();      // path -> { offset, sid, cwd, skip, seenAt }
 const codexSessionModel = new Map();   // sid -> last model string
+// sid -> the `approval_policy` of the newest `turn_context` seen on this
+// session. See codexObjToPayload for why this is read and what it is NOT used
+// for; #398 for why the deck holds it at all.
+const codexSessionApproval = new Map(); // sid -> last approval_policy string
 // How long a rollout's tail cursor is kept after it stops showing up in the
 // listing. The listing covers two day-directories, so anything missing from it
 // is at least a day old and will never be appended to again.
@@ -894,12 +904,44 @@ function codexItemText(item) {
 export function codexObjToPayload(obj, sid, cwd) {
   const type = obj && obj.type;
   const pl = (obj && obj.payload) || {};
-  const base = { session_id: sid, cwd, provider: "codex" };
   const model = codexSessionModel.get(sid);
+  // Rides on every payload this function returns, exactly as `model` does and
+  // for the same reason: it is a property of the SESSION rather than of any one
+  // event, the rollout restates it on every turn, and a field spread onto each
+  // payload needs no event of its own and self-heals on the next line the
+  // watcher reads. The reducer stamps it on the root beside `contextWindow`.
+  const approval_policy = codexSessionApproval.get(sid);
+  const base = { session_id: sid, cwd, provider: "codex", approval_policy };
 
   // Track model from turn_context / response_item before mapping events.
-  if (type === "turn_context" && typeof pl.model === "string") {
-    codexSessionModel.set(sid, pl.model);
+  if (type === "turn_context") {
+    if (typeof pl.model === "string") codexSessionModel.set(sid, pl.model);
+    // #398: the deck used to read `model` out of this record and drop
+    // everything else, and `approval_policy` was the field that mattered most
+    // among the discarded ones. It is the ONLY recorded fact anywhere in a
+    // rollout that says whether this session is even capable of stopping to ask
+    // a human: at "never" Codex denies an escalation outright rather than
+    // prompting, so a quiet session there is genuinely working, while at
+    // "on-request" / "on-failure" / "untrusted" a quiet one may be parked on a
+    // prompt the deck will never see.
+    //
+    // It is read to SAY that, and deliberately not to infer a block from it —
+    // see codex-approval.ts. Codex persists no approval record of any kind (58
+    // turn_contexts and ~1,100 records across the rollouts on this machine
+    // carry no approval-shaped type; the persist filter keeps every *_end and
+    // drops every request/begin — patch_apply_end with no patch_apply_begin,
+    // web_search_end with no begin, item_completed with no item_started), so a
+    // "waiting" state derived from this plus a pending call would be a guess
+    // wearing the clothes of a measurement.
+    //
+    // Written on the record even when the value is missing or not a string, so
+    // a future Codex that renames or drops the field clears the stale answer
+    // rather than pinning the session to whatever it last said.
+    if (typeof pl.approval_policy === "string" && pl.approval_policy) {
+      codexSessionApproval.set(sid, pl.approval_policy);
+    } else {
+      codexSessionApproval.delete(sid);
+    }
     return null;
   }
   if (type === "response_item" && typeof pl.model === "string") {
@@ -1213,6 +1255,7 @@ function forgetSession(sid) {
   codexRolloutPathBySid.delete(sid);
   lastCodexUsageReadAt.delete(sid);
   codexSessionModel.delete(sid);
+  codexSessionApproval.delete(sid);
 }
 
 function touchSession(sid) {
