@@ -799,6 +799,26 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     if (root) root.contextWindow = p.model_context_window;
   }
 
+  // The session's approval policy, for the same reason and in the same place:
+  // Codex restates it on every `turn_context` and the watcher spreads it onto
+  // every payload, so it lands here above the branches that return early.
+  //
+  // Guarded on being a non-empty string rather than assigned unconditionally,
+  // because the field is absent from a Claude payload and from a Codex payload
+  // emitted before the first `turn_context` of the session was read — and
+  // absence there means "not known yet", not "the policy was withdrawn". A
+  // session that really does change policy mid-flight restates it on the next
+  // turn's `turn_context`, which is the write that supersedes this one.
+  //
+  // It goes on the ROOT and not on `owner`: the policy governs the session, and
+  // stamping it on whichever agent happened to own the event would leave the
+  // answer on a subagent that gets pruned. `resolveOwner` has not run yet in any
+  // case — this sits above the early-returning enrichment branches on purpose.
+  if (typeof p.approval_policy === "string" && p.approval_policy) {
+    const root = state.agents.get(sessionId);
+    if (root) root.approvalPolicy = p.approval_policy;
+  }
+
   // ModelObserved is a synthetic enrichment event emitted by the server
   // after it scans the root session's transcript file. Apply to the ROOT
   // agent only — subagents may run under a different model (Sonnet child

@@ -782,8 +782,14 @@ function maybeResolveCodex(payload) {
 //   event_msg/task_complete            → Stop (the turn finished)
 //   event_msg/turn_aborted             → Stop (the turn was interrupted)
 //   turn_context / response_item.model → model snapshot (ModelObserved on change)
+//   turn_context.approval_policy       → session snapshot, spread onto every
+//                                        payload below (#398); no event of its own
 // There is deliberately no SessionEnd here: Codex writes no session-close
 // record, so the end of a SESSION is still inferred by sweepStaleSessions.
+// Nor is there anything that maps to `Notification`, and no synthetic one is
+// invented: Codex writes no approval record to a rollout at all, so the deck
+// cannot see a Codex session blocked on a human and does not pretend to — see
+// codex-approval.ts for the evidence and for what is said instead of guessing.
 // Events are emitted with source "codex" so pushEvent skips the Claude-only
 // transcript enrichment (which needs transcript_path / hook events) but still
 // broadcasts them exactly like a hook event, and persists them when this deck is
@@ -791,6 +797,10 @@ function maybeResolveCodex(payload) {
 // entirely additive — the Claude hook flow is untouched.
 const codexFileState = new Map();      // path -> { offset, sid, cwd, skip, seenAt }
 const codexSessionModel = new Map();   // sid -> last model string
+// sid -> the `approval_policy` of the newest `turn_context` seen on this
+// session. See codexObjToPayload for why this is read and what it is NOT used
+// for; #398 for why the deck holds it at all.
+const codexSessionApproval = new Map(); // sid -> last approval_policy string
 // How long a rollout's tail cursor is kept after it stops showing up in the
 // listing. The listing covers two day-directories, so anything missing from it
 // is at least a day old and will never be appended to again.
@@ -894,12 +904,44 @@ function codexItemText(item) {
 export function codexObjToPayload(obj, sid, cwd) {
   const type = obj && obj.type;
   const pl = (obj && obj.payload) || {};
-  const base = { session_id: sid, cwd, provider: "codex" };
   const model = codexSessionModel.get(sid);
+  // Rides on every payload this function returns, exactly as `model` does and
+  // for the same reason: it is a property of the SESSION rather than of any one
+  // event, the rollout restates it on every turn, and a field spread onto each
+  // payload needs no event of its own and self-heals on the next line the
+  // watcher reads. The reducer stamps it on the root beside `contextWindow`.
+  const approval_policy = codexSessionApproval.get(sid);
+  const base = { session_id: sid, cwd, provider: "codex", approval_policy };
 
   // Track model from turn_context / response_item before mapping events.
-  if (type === "turn_context" && typeof pl.model === "string") {
-    codexSessionModel.set(sid, pl.model);
+  if (type === "turn_context") {
+    if (typeof pl.model === "string") codexSessionModel.set(sid, pl.model);
+    // #398: the deck used to read `model` out of this record and drop
+    // everything else, and `approval_policy` was the field that mattered most
+    // among the discarded ones. It is the ONLY recorded fact anywhere in a
+    // rollout that says whether this session is even capable of stopping to ask
+    // a human: at "never" Codex denies an escalation outright rather than
+    // prompting, so a quiet session there is genuinely working, while at
+    // "on-request" / "on-failure" / "untrusted" a quiet one may be parked on a
+    // prompt the deck will never see.
+    //
+    // It is read to SAY that, and deliberately not to infer a block from it —
+    // see codex-approval.ts. Codex persists no approval record of any kind (58
+    // turn_contexts and ~1,100 records across the rollouts on this machine
+    // carry no approval-shaped type; the persist filter keeps every *_end and
+    // drops every request/begin — patch_apply_end with no patch_apply_begin,
+    // web_search_end with no begin, item_completed with no item_started), so a
+    // "waiting" state derived from this plus a pending call would be a guess
+    // wearing the clothes of a measurement.
+    //
+    // Written on the record even when the value is missing or not a string, so
+    // a future Codex that renames or drops the field clears the stale answer
+    // rather than pinning the session to whatever it last said.
+    if (typeof pl.approval_policy === "string" && pl.approval_policy) {
+      codexSessionApproval.set(sid, pl.approval_policy);
+    } else {
+      codexSessionApproval.delete(sid);
+    }
     return null;
   }
   if (type === "response_item" && typeof pl.model === "string") {
@@ -1267,6 +1309,7 @@ function forgetSession(sid) {
   codexRolloutPathBySid.delete(sid);
   lastCodexUsageReadAt.delete(sid);
   codexSessionModel.delete(sid);
+  codexSessionApproval.delete(sid);
 }
 
 function touchSession(sid) {
@@ -1390,7 +1433,125 @@ async function writeResume(res, frame) {
   });
 }
 
+// What a redacted occurrence of the deck's token is replaced with. A visible
+// marker rather than an empty string, because the reader of a mangled Bash
+// output deserves to know the deck did it and why, and because the UI renders
+// payload strings verbatim — a silent hole would look like a truncated tool
+// response and get debugged as one.
+const TOKEN_REDACTED = "[redacted: ccdeck token]";
+
+/**
+ * Take the deck's own token back out of an event, before anything stores it.
+ *
+ * #366 made HOOK_TOKEN the one credential separating "may read" from "may
+ * mutate", and there is a path that copies it into a store needing no
+ * credential to read. `POST /api/event` is deliberately open — hook/hook.js is
+ * installed outside this package, into the user's ~/.claude, so requiring a
+ * credential there would silence every session whose hook predates that change
+ * — while `GET /api/events`, `GET /events` and events.jsonl are all readable
+ * without one. So an agent session that merely LOOKS at the discovery file puts
+ * the token into the ring buffer, and that is not an exotic act: `cat
+ * ~/.claude/agent-dag/<pid>.json`, a `Read` of it, or a plain `grep -r
+ * ~/.claude` all do it, and CC records both the tool input and the tool
+ * response. From the buffer it is served to exactly the two callers #366 was
+ * written for — the other local UID and the sandboxed subprocess — neither of
+ * which can open the discovery file itself but both of which reach the API. For
+ * them this turned "cannot mutate" back into "can mutate", the token read out
+ * of the event log being the whole of the new gate. What keeps those two out of
+ * the discovery file itself — a mode bit on Unix, the profile directory's ACL
+ * on Windows, where the chmod is a no-op — is spelled out at presentsDeckToken.
+ *
+ * Why this sits in pushEvent and not in handleEventIngest, which is where the
+ * report first put it. Events reach the buffer through more than one door:
+ * handleEventIngest is the hook's, emitCodexEvent is the Codex rollout
+ * watcher's — those events never pass through an HTTP handler at all —
+ * replayLog is the boot replay's, `/api/clear` pushes its own marker, and six
+ * enrichment sites push synthetic events off the back of a transcript read.
+ * Redacting at the ingest handler covers one of those and leaves the next route
+ * somebody adds uncovered. pushEvent is the one point every event passes
+ * through exactly once, so the check is written once and cannot be forgotten.
+ *
+ * Why a walk over the string values rather than
+ * `JSON.stringify(payload).includes(token)`, which is the obvious one-liner.
+ * Measured rather than assumed, on 4.7k real payloads out of a 21MB
+ * events.jsonl (mean 5KB serialized): the walk costs 1.3–3.6 µs per event and
+ * serialize-then-search costs 14–48 µs, the same order as the JSON.parse the
+ * ingest path already pays for the body. Serializing here would also defeat the
+ * deliberate optimization below, which skips serializing ENTIRELY when nothing
+ * is subscribed and nothing is being logged — a headless deck, and the boot
+ * replay of a log that only rotates at 50MB. The walk allocates nothing at all
+ * until it finds something.
+ *
+ * Iterative rather than recursive on purpose. The payload arrives from
+ * JSON.parse of a body capped at 5MB, which is free to nest as deeply as it
+ * likes, and a recursive scan would be a new way to overflow the stack inside
+ * the request listener — where nothing catches it.
+ *
+ * Scope is the token and nothing else in the discovery file. pid, port,
+ * workspace, the log path and startedAt are not credentials — /api/health
+ * already answers with the workspace path — and redacting the workspace would
+ * mangle the `cwd` of every honest event the deck draws.
+ *
+ * What this does NOT catch, stated plainly so nobody mistakes it for more. A
+ * token split across two string fields, or across two events, survives — but
+ * every substring search has that shape, and the halves are individually
+ * worthless: secretEquals is byte-exact, so a partial token authenticates
+ * nothing. Case is not folded for the same reason; HOOK_TOKEN is lowercase hex
+ * and an uppercased copy would not authenticate either.
+ *
+ * And this is not a new oracle. A caller who can POST here and read
+ * /api/events can post a guess and watch whether it comes back redacted, which
+ * tells them precisely what `x-ccdeck-token: <guess>` on any protected route
+ * already tells them — against 256 bits with no structure to search.
+ *
+ * Returns the payload, because a top-level JSON string is a legal body for
+ * `POST /api/event` and a primitive cannot be redacted in place.
+ */
+function redactDeckToken(raw) {
+  // Read at call time, not at definition time: HOOK_TOKEN is declared far
+  // below this line and nothing calls pushEvent during module evaluation.
+  const token = HOOK_TOKEN;
+  if (typeof raw === "string") return raw.includes(token) ? raw.replaceAll(token, TOKEN_REDACTED) : raw;
+  if (raw === null || typeof raw !== "object") return raw;
+
+  const stack = [raw];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    // Arrays and objects are walked separately because an indexed loop over an
+    // array is markedly cheaper than `for…in` over one, and this runs on every
+    // event: a single PostToolUse response can be an array of thousands.
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const v = node[i];
+        if (typeof v === "string") {
+          if (v.includes(token)) node[i] = v.replaceAll(token, TOKEN_REDACTED);
+        } else if (v !== null && typeof v === "object") stack.push(v);
+      }
+    } else {
+      // `for…in` is safe on these: they come from JSON.parse or from an object
+      // literal in this file, so the prototype chain is Object.prototype, which
+      // has nothing enumerable. A `"__proto__"` key in the posted JSON becomes
+      // an OWN data property — JSON.parse does not run the setter — so it both
+      // enumerates here and takes the assignment below as an ordinary write,
+      // leaving the prototype alone.
+      for (const k in node) {
+        const v = node[k];
+        if (typeof v === "string") {
+          if (v.includes(token)) node[k] = v.replaceAll(token, TOKEN_REDACTED);
+        } else if (v !== null && typeof v === "object") stack.push(v);
+      }
+    }
+  }
+  return raw;
+}
+
 function pushEvent(raw, source, opts = {}) {
+  // First, before anything below can see it: the deck's own credential does not
+  // belong in a store that is served without one. Every entry point to the
+  // buffer, the SSE fan-out and events.jsonl passes through here, so this is
+  // the single line that keeps it out of all three. See redactDeckToken.
+  raw = redactDeckToken(raw);
+
   // Synchronous enrichment: if we already know this session's model, stamp
   // it on the payload so the client's recursive scanner picks it up.
   if (raw && typeof raw === "object" && raw.session_id && !raw.model) {
