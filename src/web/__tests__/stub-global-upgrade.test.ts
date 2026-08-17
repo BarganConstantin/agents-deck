@@ -227,14 +227,21 @@ describe("npm i -g ccdeck — the install that could not update itself", () => {
 
 describe("the install shapes that were already right, and stay untouched", () => {
   it("leaves a plain global install on the name it was published under", () => {
+    // Both rows used to expect `agents-deck`, and the `agent-dag` half of that
+    // was #389: the same defect as the stub's, reached without a layout. There
+    // is no host above either of these — `lib` holds no package.json — so this
+    // file's rule correctly declines to answer, and the fallback it declines
+    // TO was a default parameter no caller in the deck ever passes. It is the
+    // manifest now (see installedName), which CI renames per published name, so
+    // the two rows answer differently because they ARE different packages: an
+    // `agent-dag` user told to `npm i -g agents-deck@latest` got a second,
+    // unrelated global install and kept their old binary.
     for (const pkg of ["agents-deck", "agent-dag"]) {
       const pkgRoot = layout("global", { pkg });
-      // No host above it — `lib` holds no package.json — so the published name
-      // is still the answer, and the command is byte-for-byte what it was.
       expect(hostPackage(pkgRoot), pkg).toBeNull();
-      expect(upgradeName(pkgRoot), pkg).toBe("agents-deck");
-      expect(upgradeCommand(pkgRoot), pkg).toBe("npm i -g agents-deck@latest");
-      expect(npmArgv(pkgRoot)[2], pkg).toBe("agents-deck@latest");
+      expect(upgradeName(pkgRoot), pkg).toBe(pkg);
+      expect(upgradeCommand(pkgRoot), pkg).toBe(`npm i -g ${pkg}@latest`);
+      expect(npmArgv(pkgRoot)[2], pkg).toBe(`${pkg}@latest`);
     }
   });
 
