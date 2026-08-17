@@ -92,7 +92,22 @@ function CostBar({ cost }: { cost: CostBreakdown }) {
     );
   };
   return (
-    <div className="cost-bar" aria-label="Cost breakdown">
+    // role="img", and it is what makes the aria-label beside it exist at all
+    // (#381). #381 reported this defect on two panel roots; a sweep of every
+    // aria-label in the bundle found it three more times, all of them this bar,
+    // which is written out three times in three files (that duplication is
+    // #374's). A <div> with no role resolves to `generic`, and a generic
+    // element cannot be named — the label has been dropped on the floor here
+    // since the bar was written.
+    // img is the right role for THIS one and the wrong role for the usage
+    // history's chart, which looks identical and is not: img makes the whole
+    // subtree presentational, which is a lie when the subtree holds focusable
+    // buttons and the plain truth when it holds four coloured spans that
+    // nothing can reach. See UsageHistoryModal for the other half of that.
+    // What the label SAYS — a category rather than the figures the segments
+    // are drawn from — is a separate question and a copy one; this is the
+    // change that makes it possible for it to say anything.
+    <div className="cost-bar" role="img" aria-label="Cost breakdown">
       {seg(cost.input, "cb-input", "input")}
       {seg(cost.output, "cb-output", "output")}
       {seg(cost.cacheRead, "cb-cache-r", "cache read")}
@@ -525,13 +540,39 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
 
   const refreshAll = () => { refreshQuota(); refreshCodex(); };
 
+  // One string, used as both the ↻'s tooltip and its accessible name (#381).
+  // The button's whole content is a single glyph, so `title` was the only name
+  // it had — a valid last-resort source, and one that touch users never see and
+  // that some screen readers are configured never to read. Sharing the string
+  // rather than writing a second one also keeps 2.5.3 satisfied by
+  // construction: the name a voice-control user says is the words the tooltip
+  // shows, per provider, and cannot drift into promising a section that is not
+  // rendered.
+  const refreshLabel = providers.claude && providers.codex
+    ? "Refresh Claude + Codex quota"
+    : providers.codex ? "Refresh Codex quota"
+      : "Refresh Claude quota";
+
   return (
     // The id is the target of the topbar toggle's aria-controls. It is spelled
     // the same as the class on purpose: one name for the region, so the button
     // that opens it cannot point somewhere else after a rename.
-    <div className="usage-panel" id="usage-panel" aria-label="Usage">
+    //
+    // <aside>, not <div> (#381). The aria-label below has been here since the
+    // panel was written and did nothing at all: a <div> with no role resolves
+    // to `generic`, and the accessibility tree drops the name off a generic
+    // element rather than exposing an unnamed nameless box. #373 saw this shape
+    // and called it a naming defect rather than a state one, which is what it
+    // is — the label was never wrong, it had nothing to attach to. An <aside>
+    // outside any sectioning content is a `complementary` landmark, which does
+    // take a name, and complementary is what this panel is: spend beside the
+    // canvas, openable and closable without changing what the canvas shows.
+    <aside className="usage-panel" id="usage-panel" aria-label="Usage">
       <div className="up-header">
-        <h3>Usage</h3>
+        {/* h2, under the topbar's h1 (#381). Same level as the other panels'
+            titles, and the four `up-section-title`s below stepped from h4 to h3
+            with it, so the panel reads h1 → h2 → h3 with nothing skipped. */}
+        <h2>Usage</h2>
         {burnRate && <span className="up-rate">{burnRate}</span>}
         <div className="up-header-right">
           {/* Named after what is actually below it, and gone when neither
@@ -545,11 +586,8 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
             className="btn up-refresh-btn"
             onClick={refreshAll}
             disabled={anyLoading}
-            title={
-              providers.claude && providers.codex ? "Refresh Claude + Codex quota"
-                : providers.codex ? "Refresh Codex quota"
-                  : "Refresh Claude quota"
-            }
+            aria-label={refreshLabel}
+            title={refreshLabel}
           >{anyLoading ? "…" : "↻"}</button>
           )}
           <button
@@ -565,7 +603,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
       {/* ── Claude quota ── */}
       {providers.claude && (
       <section className="up-section up-quota-section">
-        <h4 className="up-section-title">
+        <h3 className="up-section-title">
           Claude quota
           {/* Where the numbers came from, on hover. Anthropic's usage endpoint
               allows ~28-30 calls an hour per account, shared by every tool on
@@ -575,7 +613,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
           {claudeAge && !quotaLoading && (
             <span className="up-section-age" title={quotaSourceHint(quota?.source)}>{claudeAge}</span>
           )}
-        </h4>
+        </h3>
         {quota?.ok ? (
           <div className="up-quota-bars">
             {quota.session5hPct != null && (
@@ -623,7 +661,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
           CLI it has no reason to install. */}
       {providers.codex && (
       <section className="up-section up-quota-section">
-        <h4 className="up-section-title">
+        <h3 className="up-section-title">
           Codex quota
           {codexQuota?.ok && codexQuota.planLabel && (
             <span className="up-plan-badge">{codexQuota.planLabel}</span>
@@ -631,7 +669,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
           {codexAge && !codexLoading && (
             <span className="up-section-age" title="Fetched from the Codex usage endpoint">{codexAge}</span>
           )}
-        </h4>
+        </h3>
         {codexQuota?.ok ? (
           <div className="up-quota-bars">
             {codexQuota.windows?.map(w => (
@@ -770,7 +808,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
 
           {modelRows.length > 0 && (
             <section className="up-section">
-              <h4 className="up-section-title">By model</h4>
+              <h3 className="up-section-title">By model</h3>
               <table className="up-table">
                 <thead>
                   <tr>
@@ -802,7 +840,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
 
           {sessionRows.length > 0 && (
             <section className="up-section">
-              <h4 className="up-section-title">By session</h4>
+              <h3 className="up-section-title">By session</h3>
               <div className="up-sessions">
                 {sessionRows.map(s => (
                   <div className="up-session-row" key={s.sessionId}>
@@ -849,6 +887,6 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
       ) : (
         <div className="up-empty">No usage data yet.<br />Start a Claude Code or Codex session.</div>
       )}
-    </div>
+    </aside>
   );
 }

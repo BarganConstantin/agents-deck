@@ -155,12 +155,25 @@ export default function UsageHistoryModal({ onClose }: Props) {
             <div className="uh-title">Usage history</div>
             <div className="uh-sub">via ccusage · local Claude / Codex logs</div>
           </div>
-          <div className="uh-range" role="tablist" aria-label="Range">
+          {/* Not a tablist (#381). role="tab" is a promise about keyboard
+              behaviour — one tab stop for the whole strip, arrow keys between
+              the members, and each tab pointing at a tabpanel it controls —
+              and this strip implements none of the three: every button is its
+              own tab stop and there is no panel, only the same chart redrawn
+              over a different range. A screen reader told to expect arrow keys
+              that do nothing is worse off than one told nothing.
+              Not a radiogroup either, which is the obvious swap and carries
+              exactly the same unmet contract: radio in a radiogroup is arrow
+              keys and a roving tabindex too. group + aria-pressed is the shape
+              the canvas category chips already use, for the reason spelled out
+              at that bar in App.tsx — it names the set, states each member, and
+              promises no keyboard model that is not here. */}
+          <div className="uh-range" role="group" aria-label="Range">
             {PRESETS.map(p => (
               <button
                 key={p}
-                role="tab"
-                aria-selected={rangeDays === p}
+                type="button"
+                aria-pressed={rangeDays === p}
                 className={`uh-range-btn${rangeDays === p ? " on" : ""}`}
                 onClick={() => { setRangeDays(p); setSelected(null); }}
               >{p}d</button>
@@ -207,15 +220,37 @@ export default function UsageHistoryModal({ onClose }: Props) {
               <Stat label="cache reads"  val={fmtTokens(cacheRead)} />
             </div>
 
-            <div className="uh-chart" role="img" aria-label="Daily cost by model">
+            {/* role="group", not role="img" (#381). role="img" declares that
+                the subtree is one graphic, so every descendant is pruned from
+                the accessibility tree — but pruning the tree does not empty the
+                tab order, so what this actually produced was up to ninety
+                focusable buttons that announced nothing at all when they took
+                focus. That is the same shape as the tool-bubble finding in
+                #367: reachable and silent, which is worse than either being
+                unreachable or being read out.
+                group keeps the only thing the role was really being used for —
+                the bars are named as one set rather than as loose controls —
+                and leaves each day to speak for itself below. */}
+            <div className="uh-chart" role="group" aria-label="Daily cost by model">
               {days.map(d => {
                 const h = maxCost > 0 ? (d.totalCost / maxCost) * 100 : 0;
                 const isSel = d.period === selected;
+                // The bar's only text is `06-14`, a day with no month and no
+                // figure. The tooltip has carried the whole answer all along;
+                // this is that same sentence where a name is read from, and it
+                // is built from the same two values rather than a second copy.
+                const dayLabel = `${d.period}, ${fmtCost(d.totalCost)}`;
                 return (
                   <button
                     key={d.period}
                     className={`uh-bar-col${isSel ? " sel" : ""}`}
                     onClick={() => setSelected(isSel ? null : d.period)}
+                    /* A toggle, and pressed is the honest word for it: clicking
+                       the selected day clears the breakdown below rather than
+                       navigating anywhere, exactly like the canvas category
+                       chips this deck already models. */
+                    aria-pressed={isSel}
+                    aria-label={dayLabel}
                     title={`${d.period} · ${fmtCost(d.totalCost)}`}
                     style={{ flexBasis: `${100 / days.length}%` }}
                   >
