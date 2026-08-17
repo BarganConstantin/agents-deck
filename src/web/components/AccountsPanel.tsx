@@ -11,7 +11,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import AddAccountDialog from "./AddAccountDialog";
 import { commandOutput, explainCommandFailure, explainFailure } from "../admin-failure";
 import { type SwapNote, manageAfterMove, slotChoices } from "../account-move";
-import { aliasSave } from "../alias-save";
+import { ALIAS_MAX_LENGTH, aliasSave } from "../alias-save";
 import { PRODUCT } from "../brand";
 import {
   type Failure,
@@ -507,7 +507,12 @@ export default function AccountsPanel({ onClose }: Props) {
             <div key={a.num} className={`ap-account${a.active ? " active" : ""}${a.disabled ? " disabled" : ""}`}>
               <div className="ap-account-head">
                 <span className="ap-num">{a.num}</span>
-                {a.alias && <span className="ap-alias">{a.alias}</span>}
+                {/* The alias is now clipped with an ellipsis so a long one
+                    cannot widen the panel, which means the row can be showing
+                    less than the whole name — so the whole name goes in a
+                    title. `.ap-email` beside it has carried one since it was
+                    given the same treatment. */}
+                {a.alias && <span className="ap-alias" title={a.alias}>{a.alias}</span>}
                 <span className="ap-email" title={a.org ?? undefined}>{a.email}</span>
                 {/* aria-controls only while the block exists: an IDREF that
                     resolves to nothing is not a relationship, it is a dangling
@@ -616,6 +621,12 @@ export default function AccountsPanel({ onClose }: Props) {
                       value={aliasDraft}
                       onChange={e => setAliasDraft(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter") doAlias(a.num, a.alias); }}
+                      /* The store's own bound, stated where the typing happens
+                         rather than discovered from a `bad_value` after a
+                         round trip. See ALIAS_MAX_LENGTH for why it matches the
+                         server exactly and why it is not what protects the
+                         panel's width. */
+                      maxLength={ALIAS_MAX_LENGTH}
                       /* An example, not a narration of the empty state: "no
                          alias" reads as a field whose value is those two words. */
                       placeholder="e.g. work"

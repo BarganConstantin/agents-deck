@@ -3149,8 +3149,28 @@ button.tool.clickable:last-child { border-bottom: none; }
   color: var(--muted);
 }
 
+/* The margin has to come out of the width, not sit beside it. `.cost-bar`
+   declares `width: 100%`, which resolves against THIS panel's content box —
+   278px, the 280px fixed width less its two borders — and the 14px of margin on
+   each side is then laid outside that width, so the bar's margin box measured
+   306px inside a 278px box. `overflow-y: auto` on `.usage-panel` computes
+   `overflow-x` to `auto` as well (a box cannot scroll one axis and let the
+   other overflow visibly), so the panel became the one horizontally scrollable
+   container in the app: 28px of scrollable overflow on every render, with the
+   cache-write segment — the last one in the bar and the priciest token class —
+   running 14px past the panel's content edge and under the border.
+   `width: auto` on a block-level flex container resolves against the space
+   REMAINING after the margins, which is the 250px that `.qb-track` and
+   `.up-table` beside it already occupy, so the bar lines up with them instead
+   of overhanging. Scoped here rather than on `.cost-bar` itself because this is
+   the only placement that carries a margin; the detail hero and the session
+   summary use the bar flush against their own padding, where `100%` is right.
+   The arithmetic is also why the defect is platform-independent: the 28px is
+   pure margin, so a classic 15px scrollbar on Windows or Linux narrows the
+   content box and leaves exactly the same 28px hanging off it. */
 .usage-panel .cost-bar {
   margin: 4px 14px 10px;
+  width: auto;
   border-radius: 3px;
 }
 
@@ -3611,10 +3631,43 @@ button.tool.clickable:last-child { border-bottom: none; }
   color: var(--muted);
   min-width: 9px;
 }
+/* Two text spans share this row and only one of them was told it may be cut.
+   `.ap-email` below carries the full `min-width: 0` + `overflow: hidden` +
+   ellipsis set; the alias — the one string here a person types — carried none
+   of it, so `min-width: auto` floored it at its min-content width and an
+   unbroken name simply pushed the row wider than the 288px column. Measured:
+   the panel starts scrolling sideways at a 16-character alias and reaches
+   22148px of scrollable width at 2000 characters, taking `⋯` and the active
+   badge out of the panel with it. The store's own writer already rejects
+   anything over 64 characters, but the deck only READS that store — `cswap
+   alias` on the command line writes it — so the rule, not the field, is what
+   has to hold at an absurd length.
+
+   Ellipsis rather than wrapping: this row is a single centred line holding a
+   number, two labels, a disclosure and a badge, and letting the alias wrap
+   would trade unbounded width for unbounded height — a 2000-character name
+   would be a forty-line row. The full text stays reachable through the `title`
+   the span now carries.
+
+   The `max-width` is the second half, and it is what a plain ellipsis does not
+   give. `.ap-email` is `flex: 1 1 0%`, so its flex base size is zero and the
+   shrink algorithm — which distributes shrinkage in proportion to base size —
+   hands it none: an alias free to grow takes the whole text area and leaves the
+   email rendering at 0px, present in the DOM and invisible on screen. Clamping
+   the alias freezes it at its max and the remaining free space goes to the
+   email, so both stay legible. 40% of this row's 259px content box is ~104px,
+   about seventeen characters at this size — well past any alias the field's
+   own `e.g. work` placeholder invites, so in the ordinary case the clamp never
+   binds and the row renders exactly as it did. */
 .ap-alias {
   font-size: 11px;
   font-weight: 600;
   color: var(--text);
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ap-email {
   font-size: 10.5px;
