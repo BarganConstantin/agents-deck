@@ -8,7 +8,7 @@ import { extname, join, resolve, dirname as pdirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
 import { invokedName } from "./invoked-as.mjs";
@@ -1698,9 +1698,20 @@ export function challengeProof(token, nonce) {
 //
 // The nonce is the caller's, so the answer proves knowledge of the token
 // without disclosing it, and proves it for this exchange only. Answering
-// freely is safe: a caller that can reach this port can already read the
-// discovery file that holds the token, being the same user on the same
-// machine, and the response is a hash the browser cannot read cross-origin.
+// freely is what the exchange requires: the hook is asking whether the process
+// on this port is the deck that wrote the discovery file, and it asks precisely
+// because it does not yet know — a deck that demanded credentials before
+// answering could not be told apart from a stranger that refuses.
+//
+// So this route is an oracle, and it must stay one. That makes its answer
+// useless as a credential FOR this server, and nothing here may ever accept it
+// as one: a caller who can GET this can obtain a valid proof for any nonce, so
+// a gate honouring proofs is a gate honouring anybody. See presentsDeckToken,
+// which takes the token itself and refuses the hashed form for this reason.
+//
+// What the free answer does NOT give away is the token: the response is a
+// one-way hash of it, and after the read gate above a rebound page cannot see
+// even that.
 function handleHookChallenge(_req, res, url) {
   const nonce = url.searchParams.get("nonce") ?? "";
   if (!nonce || nonce.length > 256) return send(res, 400, { error: "bad nonce" });
@@ -1752,6 +1763,41 @@ export function requestUrl(rawUrl) {
   catch { return null; }
 }
 
+// Is this request allowed to be answered at all, whatever it asks for?
+//
+// The rebinding gate below was reached only by mutations, on the reasoning that
+// a cross-site page cannot read a loopback reply. That is true of a genuinely
+// cross-origin page and false of a rebound one: the browser resolved
+// attacker.example to 127.0.0.1 itself, so it calls the reply same-origin and
+// hands the body to the page. Every read was therefore open to exactly the
+// attack the mutation gate was written to stop — and the reads are where the
+// secrets are. GET /api/events is the whole ring buffer: prompt text, the Bash
+// command lines the agent ran, the paths and contents it wrote, the contents of
+// every file it read back. /api/claude-accounts names the accounts,
+// /api/claude-accounts/login carries a live OAuth authorize URL, /api/sound-hook
+// the user's own hook command lines, /api/health the absolute workspace path.
+//
+// So the Host check runs for every method now. What it asks is only the
+// rebinding question — did this request arrive addressed to a name that can
+// only ever be this machine — and it asks it of browser-shaped requests alone,
+// meaning anything carrying an Origin or fetch metadata. A client sending
+// neither is not a page and has no ambient authority to borrow: that is
+// hook/hook.js, a plain Node http.request from the user's own machine, and it
+// keeps reaching the deck under whatever name it used before.
+//
+// Deliberately not part of this: the Sec-Fetch-Site test that isTrustedMutation
+// applies. `cross-site` on a read is an ordinary top-level navigation — a link
+// to http://localhost:4317 clicked on any page — and the document it loads is
+// the deck's own UI on the deck's own origin, which is not an attack and used
+// to work. Rebinding does not need that test either: a rebound page's requests
+// report `same-origin`, and it is the Host that gives it away.
+export function isTrustedRead({ origin, host, secFetchSite } = {}) {
+  const browserShaped = (typeof origin === "string" && origin !== "")
+    || (typeof secFetchSite === "string" && secFetchSite.trim() !== "");
+  if (!browserShaped) return true;
+  return isLoopbackHost(host);
+}
+
 // Is this mutating request allowed to be acted on?
 //
 // The deck binds 127.0.0.1, which sounds private but is reachable from every
@@ -1795,8 +1841,10 @@ export function isTrustedMutation({ origin, host, secFetchSite } = {}) {
   const hasOrigin = typeof origin === "string" && origin !== "";
   if (!hasOrigin && !site) return true;
   // Either header present means a browser sent this, so the rebinding gate
-  // applies even to the shape that carries fetch metadata but no Origin.
-  if (!isLoopbackHost(host)) return false;
+  // applies even to the shape that carries fetch metadata but no Origin. Every
+  // request reaching this line is browser-shaped by the test just above, so
+  // isTrustedRead here is exactly its isLoopbackHost half.
+  if (!isTrustedRead({ origin, host, secFetchSite })) return false;
   return hasOrigin ? originMatchesHost(origin, host) : true;
 }
 
@@ -1841,6 +1889,127 @@ function originMatchesHost(origin, host) {
   const fromOrigin = dropDefaultPort(parsed.host.toLowerCase(), parsed.protocol);
   const fromHost = dropDefaultPort(host.trim().toLowerCase(), parsed.protocol);
   return fromOrigin !== "" && fromOrigin === fromHost;
+}
+
+// Mutating routes that ask nothing of the caller beyond the gates above.
+//
+// Only the hook's ingest, and only because hook/hook.js is installed OUTSIDE
+// this package — it lives in the user's ~/.claude and is loaded by whatever
+// Claude Code session is already running. Requiring a credential here would
+// stop every event from every session whose hook predates this change, on a
+// machine where nothing is obviously broken and nothing says why, until each
+// one is reinstalled. It also carries no credential and destroys nothing: the
+// worst a caller does with it is draw a session on the canvas that is not
+// there. See the handshake in hook/hook.js for the authentication that does
+// run on this path, which is the deck proving itself to the hook.
+const OPEN_MUTATIONS = new Set(["/api/event"]);
+
+// Constant-time comparison of two secrets, and a length test that is not.
+// Lengths differ freely in public — a mismatched one only says "not this
+// token" — but timingSafeEqual throws rather than answering false when they do.
+function secretEquals(given, expected) {
+  const a = Buffer.from(String(given ?? ""), "utf8");
+  const b = Buffer.from(String(expected ?? ""), "utf8");
+  if (a.length === 0 || a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+// Does this request carry the deck's own token?
+//
+// One spelling, `x-ccdeck-token`, carrying the token itself. That is all a
+// local process needs, because the only way it can hold the token is to have
+// read it out of a file only it can open.
+//
+// The token is HOOK_TOKEN, fresh per deck and written to the discovery file at
+// mode 0600. That mode is the whole of the access control: the answer to "who
+// may do this" is "whoever can read that file", which is the user this deck
+// runs as and nobody else. On Windows the chmod is a best-effort no-op, so
+// there the file's protection is the per-user ACL on the profile directory it
+// sits in rather than a mode bit; the token still works identically.
+//
+// The hashed challengeProof form is deliberately NOT accepted here, and this
+// is the paragraph that must be read before anyone adds it. GET
+// /api/hook-challenge?nonce=… answers challengeProof(HOOK_TOKEN, nonce) to any
+// caller for any nonce, by design — so accepting a proof as a credential means
+// the server hands out its own credentials on request, and two unauthenticated
+// GETs are a complete bypass of everything below. This gate shipped that way
+// for one commit; the regression test in csrf-origin.test.ts pins it shut.
+//
+// The premise that makes the oracle safe is the one this gate rejects, which is
+// exactly why the two cannot share a secret: the challenge is the deck proving
+// itself TO the hook, not the hook proving itself to the deck. hook/hook.js
+// already holds the token — it read the same 0600 file — and challenges the
+// port to find out whether the process listening there is really the deck that
+// wrote it, or something else that inherited the port number from a stale
+// discovery file. Nothing travels in the other direction, so no caller ever
+// needed the hashed form as a way IN, and a client entitled to mutate holds the
+// token itself anyway.
+function presentsDeckToken(headers = {}) {
+  const raw = headers["x-ccdeck-token"];
+  return typeof raw === "string" && secretEquals(raw.trim(), HOOK_TOKEN);
+}
+
+// Is this the deck's own page in the user's browser?
+//
+// A strict subset of isTrustedMutation, which every request here has already
+// passed: an Origin must actually be present — a browser sends one on every
+// POST, including a same-origin one — it must name this very server, the Host
+// must be a loopback identity, and any fetch metadata must say `same-origin`.
+// `none` is excluded on purpose: that is a top-level navigation the user typed
+// or a form submitted from one, never the UI's own fetch.
+function isDeckUiRequest({ origin, host, secFetchSite } = {}) {
+  const site = typeof secFetchSite === "string" ? secFetchSite.trim().toLowerCase() : "";
+  if (site !== "" && site !== "same-origin") return false;
+  if (typeof origin !== "string" || origin === "") return false;
+  if (!isLoopbackHost(host)) return false;
+  return originMatchesHost(origin, host);
+}
+
+// May this request change something?
+//
+// Everything above this line is about the browser: whether a page chose the
+// request, and whether it was addressed to this machine. None of it asks who
+// the caller is, and for a client that is not a browser at all nothing did —
+// a request carrying no Origin and no fetch metadata was waved through on the
+// reasoning that a process able to POST here can already run anything as the
+// user. That holds on a single-user laptop and fails twice elsewhere. Loopback
+// is not scoped to a UID, so on a shared box or a multi-tenant container every
+// other account on the machine can reach this port; and a sandboxed subprocess
+// denied the credential store but allowed loopback egress — the ordinary shape
+// of an agent's Bash sandbox — reaches the same credentials through the API.
+// `curl -XPOST localhost:4317/api/claude-accounts/admin -d '{"action":"share"}'`
+// answered with the account's live OAuth refresh token in the clear, and the
+// same request reached account remove and import, the live account switch, a
+// global `npm i -g`, the restart and the event log.
+//
+// So a mutation must now be either of two things:
+//
+//   - the user's own browser tab, recognised by the headers a page cannot
+//     forge and the deck's own loopback address (isDeckUiRequest), or
+//   - a client holding the deck's token, which it can only have read from the
+//     0600 discovery file (presentsDeckToken).
+//
+// What this does NOT do, stated plainly so nobody mistakes it for more: the
+// browser clause rests on headers that page script cannot set but any local
+// program can. A local attacker who adds `Origin` and `Sec-Fetch-Site` to the
+// request is back through. That is not a gap left by laziness — there is no
+// fix for it here. Authenticating the tab would mean giving the tab a secret,
+// and every channel from this process to a browser on the same machine is
+// readable by any other process on that machine: a token in the served
+// index.html is read by the same `curl http://localhost:4317/` that the gate
+// is meant to stop, and a token in the URL the deck opens is read out of the
+// browser's argv by `ps`. What is closed is the free pass — a request that
+// presents nothing at all no longer changes anything — and what is opened is
+// the honest door, so a script of the user's own authenticates by reading the
+// token instead of impersonating a page.
+function isAuthorizedMutation(req) {
+  const headers = req?.headers ?? {};
+  if (presentsDeckToken(headers)) return true;
+  return isDeckUiRequest({
+    origin: headers.origin,
+    host: headers.host,
+    secFetchSite: headers["sec-fetch-site"],
+  });
 }
 
 // A request handler rejected. Two audiences, two different amounts of detail:
@@ -1908,15 +2077,37 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     // would be an uncaughtException inside the listener — i.e. the whole deck.
     if (!url) return send(res, 400, { error: "bad request target" });
 
-    // Every route below that changes something is a POST, so one gate in front
-    // of the whole table covers them all — and covers any route added later
-    // without the author having to remember. See isTrustedMutation.
+    // Three gates in front of the whole table, so every route is covered and
+    // any route added later is covered too, without the author having to
+    // remember. They ask three different questions and they run in the order
+    // that answers the cheapest first.
+
+    // Was this addressed to this machine? Every method, because a rebound page
+    // reads a reply as readily as it writes a request. See isTrustedRead.
+    if (!isTrustedRead({
+      origin: req.headers.origin,
+      host: req.headers.host,
+      secFetchSite: req.headers["sec-fetch-site"],
+    })) {
+      return send(res, 403, { error: "cross-site request blocked" });
+    }
+
+    // Did a page choose this? Mutations only — the same-site read this refuses
+    // is an ordinary navigation. See isTrustedMutation.
     if (req.method !== "GET" && req.method !== "HEAD" && !isTrustedMutation({
       origin: req.headers.origin,
       host: req.headers.host,
       secFetchSite: req.headers["sec-fetch-site"],
     })) {
       return send(res, 403, { error: "cross-site request blocked" });
+    }
+
+    // And who is asking? Refusing by default is the point: a mutating route
+    // added later is protected until someone deliberately lists it as open,
+    // which is the direction this has to fail in. See isAuthorizedMutation.
+    if (req.method !== "GET" && req.method !== "HEAD"
+      && !OPEN_MUTATIONS.has(url.pathname) && !isAuthorizedMutation(req)) {
+      return send(res, 401, { error: "unauthenticated" });
     }
 
     // `?persist=0` — another deck was elected to write this event to the log
