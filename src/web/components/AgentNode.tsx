@@ -2,6 +2,7 @@ import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
 import { billedInputTokens, cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel, UNPRICED_LABEL } from "../pricing";
+import { codexApprovalTell } from "../codex-approval";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
@@ -125,6 +126,31 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
           name and the elapsed clock; a fourth item there pushed the label to an
           ellipsis and still overflowed. A blocked session has earned a line. */}
       {data.waiting && <WaitingRow waiting={data.waiting} now={now} />}
+
+      {/* The same slot, for the sessions that can never fill it (#398). A Codex
+          session emits no notification and its rollout carries no approval
+          record, so `data.waiting` is structurally always null here and this
+          card, the sidebar, the topbar count, the tab title and the favicon are
+          all silent whether or not the session is parked on a prompt.
+
+          Rendering nothing let that silence read as "all clear", which is the
+          one reading it cannot support. So the card says what it does not know,
+          in the place the answer would have gone — the shape #416 gave a model
+          with no published rate. It is deliberately NOT an inference that the
+          session is blocked: codex-approval.ts holds why that inference is
+          unsound and why nothing here reaches the alarm counters. It also stays
+          quiet on the common case — a session at approval_policy "never" cannot
+          be blocked at all — so it is rare enough to be worth reading. */}
+      {(() => {
+        const tell = codexApprovalTell(data);
+        if (!tell) return null;
+        return (
+          <div className="approval-blind-row" title={tell.detail}>
+            <span className="approval-blind-dot" aria-hidden />
+            <span className="approval-blind-said">{tell.label}</span>
+          </div>
+        );
+      })()}
 
       {data.tools.length > 0 && <ToolRateSpark tools={data.tools} now={now} />}
 
