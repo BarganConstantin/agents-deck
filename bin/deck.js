@@ -75,8 +75,9 @@ if (flags.uninstall) {
 
 const port = Number(flags.port ?? process.env.AGENT_DAG_PORT ?? 4317);
 // Default = machine-wide (capture every CC session on this box). Pass
-// `--workspace <path>` (or `--scope`) to restrict to a single tree.
-const workspace = flags.workspace != null
+// `--workspace <path>` (or `--scope`) to restrict to a single tree. Canonicalized
+// just below, once the module that owns that rule is loaded.
+const rawWorkspace = flags.workspace != null
   ? flags.workspace
   : (flags.scope ? process.cwd() : "");
 const openBrowser = flags.noOpen !== true;
@@ -99,8 +100,17 @@ const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
 // the watcher tails, and the watcher lives in that module. Recomputing the path
 // here is how the banner came to print ~/.codex/sessions on machines whose
 // sessions are somewhere else entirely — see the row further down.
-const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR } =
+const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR, canonicalWorkspace } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
+
+// Resolved here rather than left as typed, for the reason the events log above
+// is: the discovery file publishes this path, and the hook that reads it runs in
+// a process whose cwd is the agent's — so a relative `--workspace ./sub` meant
+// one directory to the Codex watcher inside this process and a different one per
+// agent to the hook. One canonical spelling, computed in the one process that
+// knows what the user meant, is what both capture paths compare against. See
+// canonicalWorkspace.
+const workspace = canonicalWorkspace(rawWorkspace);
 
 // Whether the server starts the Codex rollout watcher. Nothing is installed
 // and no directory is created either way — Codex hooks are not used any more,
