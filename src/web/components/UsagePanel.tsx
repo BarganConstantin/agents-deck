@@ -2,7 +2,7 @@
 // across all sessions, by model and by session. Toggled via $ button
 // in the topbar or the U keyboard shortcut.
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { costForUsage, fmtCost, fmtCostRate, type CostBreakdown } from "../pricing";
+import { costForUsage, fmtCost, fmtCostRate, ratesForModel, UNPRICED_LABEL, type CostBreakdown } from "../pricing";
 import { PRODUCT } from "../brand";
 import type { GraphState } from "../reducer";
 import type { AgentState } from "../types";
@@ -53,6 +53,9 @@ interface ModelRow {
   cacheCreateTokens: number;
   cost: CostBreakdown;
   agentCount: number;
+  /** False when this build holds no rate for the model — the row's tokens are
+   *  real and its dollars are unknowable, which is not the same as zero. */
+  priced: boolean;
 }
 
 interface SessionRow {
@@ -62,7 +65,16 @@ interface SessionRow {
   cost: number;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens on this session that no rate could be applied to. Non-zero and a
+   *  `cost` of zero is a session nothing here can price; non-zero beside a
+   *  non-zero cost is a mixed session whose figure is a floor, not a total. */
+  unpricedTokens: number;
 }
+
+/** The model key for an agent that has not reported one yet. Kept out of the
+ *  display: the map needs a key and the reader needs a word, and `__unknown__`
+ *  is only the first of those. */
+const UNKNOWN_MODEL = "__unknown__";
 
 function CostBar({ cost }: { cost: CostBreakdown }) {
   const total = cost.total;
@@ -386,7 +398,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
     let totalIn = 0, totalOut = 0, totalCacheR = 0, totalCacheC = 0;
 
     for (const a of state.agents.values()) {
-      const key = a.model ?? "__unknown__";
+      const key = a.model ?? UNKNOWN_MODEL;
       const c = costForUsage(a.usage, a.model);
       const row = modelMap.get(key);
       if (row) {
@@ -409,6 +421,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
           cacheCreateTokens: a.usage.cacheCreateTokens,
           cost: { ...c },
           agentCount: 1,
+          priced: ratesForModel(a.model) != null,
         });
       }
       totalCostAcc.total     += c.total;
@@ -422,7 +435,14 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
       totalCacheC += a.usage.cacheCreateTokens;
     }
 
-    const byModel = Array.from(modelMap.values()).sort((a, b) => b.cost.total - a.cost.total);
+    // Cost first, then tokens. Every unpriced row costs exactly zero, so
+    // without the tiebreak they arrive at the bottom of the table in Map
+    // insertion order — which is the order their agents happened to be observed
+    // in, and reads as no order at all. Tokens are the only magnitude those
+    // rows have.
+    const byModel = Array.from(modelMap.values()).sort((a, b) =>
+      (b.cost.total - a.cost.total)
+      || ((b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens)));
 
     let liveCost = 0, liveSec = 0;
     for (const a of state.agents.values()) {
@@ -443,15 +463,23 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
 
   const bySessions = useMemo((): SessionRow[] => {
     const roots: SessionRow[] = [];
+    /** A session's tokens that no rate could be applied to, counted per agent
+     *  because a session can mix providers — a Claude root that spawned a Codex
+     *  subagent prices one and not the other. */
+    const unpriced = (a: { usage: { inputTokens: number; outputTokens: number }; model?: string }) =>
+      ratesForModel(a.model) == null ? a.usage.inputTokens + a.usage.outputTokens : 0;
+
     for (const a of state.agents.values()) {
       if (a.kind !== "root") continue;
       let cost = costForUsage(a.usage, a.model).total;
       let inT = a.usage.inputTokens, outT = a.usage.outputTokens;
+      let unpricedT = unpriced(a);
       for (const sub of state.agents.values()) {
         if (sub.sessionId !== a.sessionId || sub.kind === "root") continue;
         cost += costForUsage(sub.usage, sub.model).total;
         inT  += sub.usage.inputTokens;
         outT += sub.usage.outputTokens;
+        unpricedT += unpriced(sub);
       }
       roots.push({
         sessionId: a.sessionId,
@@ -460,13 +488,31 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
         cost,
         inputTokens: inT,
         outputTokens: outT,
+        unpricedTokens: unpricedT,
       });
     }
-    return roots.sort((a, b) => b.cost - a.cost).slice(0, 12);
+    // Same tiebreak as byModel, and it matters more here: this list is cut at
+    // twelve, so before the fallback an unpriced session — however large — sat
+    // at cost zero among every other zero and could be cut for a row with
+    // fewer tokens than it.
+    return roots
+      .sort((a, b) => (b.cost - a.cost)
+        || ((b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens)))
+      .slice(0, 12);
   }, [state, state.lastSeq]);
 
   const hasCost = totalCost.total > 0;
   const totalTokenSum = totalTokens.in + totalTokens.out;
+  // Rows worth a line, which is not the same question as rows worth a dollar.
+  // Both tables used to filter on `cost > 0`, and in a deck holding one priced
+  // Claude session and any number of unpriced Codex ones that filter was
+  // invisible: `hasCost` was true, so the tables rendered, and every Codex row
+  // was dropped out of them while its tokens stayed in the strip above. The
+  // panel's own headline number then matched no visible row — the arithmetic
+  // was right and there was nothing on screen to reconcile it against.
+  const modelRows   = byModel.filter(m => m.cost.total > 0 || (m.inputTokens + m.outputTokens) > 0);
+  const sessionRows = bySessions.filter(s => s.cost > 0 || (s.inputTokens + s.outputTokens) > 0);
+  const hasUnpriced = modelRows.some(m => !m.priced);
 
   const anyLoading = quotaLoading || codexLoading;
   // Per section, not per panel. The two quotas come from different places and
@@ -629,13 +675,6 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
               />
             )}
 
-            {/* token-count from local files + credits */}
-            {codexUsage?.ok && codexUsage.window7d && codexUsage.window7d.sessionCount > 0 && (
-              <div className="up-quota-sub">
-                {fmtTokens(codexUsage.window7d.totalTokens)} tokens · {codexUsage.window7d.sessionCount} session
-                {codexUsage.window7d.sessionCount !== 1 ? "s" : ""} (7d)
-              </div>
-            )}
             {codexQuota.creditsBalance && !codexQuota.creditsUnlimited && (
               <div className="up-quota-sub up-credits">
                 credits: ${codexQuota.creditsBalance}
@@ -670,28 +709,66 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
         ) : (
           <div className="up-quota-na up-quota-loading">Checking…</div>
         )}
+
+        {/* The 7-day token count, from the rollout files on this disk. It sits
+            OUTSIDE the three quota branches above, which is the whole point:
+            until #400 it was nested in the success branch, so the one number in
+            this section that needs no token, no account and no network was
+            withheld whenever the network call failed — on `no_token`, on
+            `api_key_mode`, on an expired refresh, on blocked egress. The poll
+            ran every 60s regardless and its answer was thrown away.
+            Measured on this machine, cold cache, three rounds: /api/codex-usage
+            takes 2-4ms and makes zero outbound requests; /api/codex-quota takes
+            991-1299ms across two authenticated HTTPS GETs to chatgpt.com. The
+            fast local number was waiting on the slow remote one for permission
+            to render.
+            The 5h window goes in the title rather than on the line: the server
+            has computed it since this file was written and nothing has ever
+            read it, and this panel is 280px wide (#369) — a second visible
+            figure costs more than it says. */}
+        {codexUsage?.ok && codexUsage.window7d && codexUsage.window7d.sessionCount > 0 && (
+          <div
+            className="up-quota-sub"
+            title={`Counted from the rollout files under CODEX_HOME — no network, no account${
+              codexUsage.window5h ? `\nlast 5h: ${fmtTokens(codexUsage.window5h.totalTokens)} tokens · ${codexUsage.window5h.sessionCount} session${codexUsage.window5h.sessionCount !== 1 ? "s" : ""}` : ""
+            }`}
+          >
+            {fmtTokens(codexUsage.window7d.totalTokens)} tokens · {codexUsage.window7d.sessionCount} session
+            {codexUsage.window7d.sessionCount !== 1 ? "s" : ""} (7d)
+          </div>
+        )}
       </section>
       )}
 
-      {/* ── Cost + tokens ── */}
-      {hasCost ? (
+      {/* ── Cost + tokens ──
+          Gated on TOKENS, not on cost. The two tables used to live inside a
+          `hasCost` branch, which meant a deck of nothing but unpriced sessions
+          fell through to a two-number strip and a hint, with no per-model and
+          no per-session breakdown at all — the reader could see that 4.2M
+          tokens existed and nothing about where they went. Cost is what is
+          conditional now: the headline and the bar appear when there is money
+          to report, and the breakdown appears whenever there is anything to
+          break down. */}
+      {totalTokenSum > 0 ? (
         <>
-          <div className="up-total">
-            <span className="up-total-value">{fmtCost(totalCost.total)}</span>
-            <span className="up-total-label">total spend</span>
-          </div>
-          <CostBar cost={totalCost} />
-
-          {totalTokenSum > 0 && (
-            <div className="up-tokens-row">
-              <span className="up-tok"><span className="up-k">in</span>{fmtTokens(totalTokens.in)}</span>
-              <span className="up-tok"><span className="up-k">out</span>{fmtTokens(totalTokens.out)}</span>
-              {totalTokens.cacheR > 0 && <span className="up-tok"><span className="up-k">cache r</span>{fmtTokens(totalTokens.cacheR)}</span>}
-              {totalTokens.cacheC > 0 && <span className="up-tok"><span className="up-k">cache c</span>{fmtTokens(totalTokens.cacheC)}</span>}
-            </div>
+          {hasCost && (
+            <>
+              <div className="up-total">
+                <span className="up-total-value">{fmtCost(totalCost.total)}</span>
+                <span className="up-total-label">total spend</span>
+              </div>
+              <CostBar cost={totalCost} />
+            </>
           )}
 
-          {byModel.filter(m => m.cost.total > 0).length > 0 && (
+          <div className="up-tokens-row">
+            <span className="up-tok"><span className="up-k">in</span>{fmtTokens(totalTokens.in)}</span>
+            <span className="up-tok"><span className="up-k">out</span>{fmtTokens(totalTokens.out)}</span>
+            {totalTokens.cacheR > 0 && <span className="up-tok"><span className="up-k">cache r</span>{fmtTokens(totalTokens.cacheR)}</span>}
+            {totalTokens.cacheC > 0 && <span className="up-tok"><span className="up-k">cache c</span>{fmtTokens(totalTokens.cacheC)}</span>}
+          </div>
+
+          {modelRows.length > 0 && (
             <section className="up-section">
               <h4 className="up-section-title">By model</h4>
               <table className="up-table">
@@ -703,11 +780,19 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {byModel.filter(m => m.cost.total > 0).map(m => (
+                  {modelRows.map(m => (
                     <tr key={m.model}>
-                      <td className="up-model-name" title={m.model}>{shortModel(m.model)}</td>
+                      {/* `__unknown__` is the map's key for an agent that has
+                          not reported a model yet, and it is not a word. The
+                          row still belongs here — its tokens are in the strip
+                          above — but under a name a person can read. */}
+                      <td className="up-model-name" title={m.model === UNKNOWN_MODEL ? "no model reported yet" : m.model}>
+                        {m.model === UNKNOWN_MODEL ? "unknown" : shortModel(m.model)}
+                      </td>
                       <td className="up-num">{fmtTokens(m.inputTokens + m.outputTokens)}</td>
-                      <td className="up-num up-cost-val">{fmtCost(m.cost.total)}</td>
+                      {m.priced
+                        ? <td className="up-num up-cost-val">{fmtCost(m.cost.total)}</td>
+                        : <td className="up-num up-unpriced">{UNPRICED_LABEL}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -715,11 +800,11 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
             </section>
           )}
 
-          {bySessions.filter(s => s.cost > 0).length > 0 && (
+          {sessionRows.length > 0 && (
             <section className="up-section">
               <h4 className="up-section-title">By session</h4>
               <div className="up-sessions">
-                {bySessions.filter(s => s.cost > 0).map(s => (
+                {sessionRows.map(s => (
                   <div className="up-session-row" key={s.sessionId}>
                     {/* Same dot and the same hidden word as the session list
                         (#373) — this row is a <div>, so its state is read as
@@ -734,20 +819,32 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
                     <span className="vis-hidden">{stateLabel(s.state)}</span>
                     <span className="up-session-label">{s.label}</span>
                     <span className="up-session-tokens">{fmtTokens(s.inputTokens + s.outputTokens)}</span>
-                    <span className="up-session-cost">{fmtCost(s.cost)}</span>
+                    {/* A mixed session keeps its figure and gains a title: the
+                        dollars are real, they are just not all of them, and a
+                        floor presented as a total is the one thing this panel
+                        must not print without saying so. */}
+                    {s.cost > 0
+                      ? (
+                        <span
+                          className="up-session-cost"
+                          title={s.unpricedTokens > 0
+                            ? `${fmtTokens(s.unpricedTokens)} tokens in this session are on an unpriced model, so this is a floor`
+                            : undefined}
+                        >{fmtCost(s.cost)}{s.unpricedTokens > 0 ? "+" : ""}</span>
+                      )
+                      : <span className="up-session-cost up-unpriced">{UNPRICED_LABEL}</span>}
                   </div>
                 ))}
               </div>
             </section>
           )}
-        </>
-      ) : totalTokenSum > 0 ? (
-        <>
-          <div className="up-tokens-row">
-            <span className="up-tok"><span className="up-k">in</span>{fmtTokens(totalTokens.in)}</span>
-            <span className="up-tok"><span className="up-k">out</span>{fmtTokens(totalTokens.out)}</span>
-          </div>
-          <div className="up-hint">Cost appears once a known model is detected.</div>
+
+          {hasUnpriced && (
+            <div className="up-hint">
+              “{UNPRICED_LABEL}” means this build holds no published rate for that model —
+              those tokens are counted above and their dollars are not.
+            </div>
+          )}
         </>
       ) : (
         <div className="up-empty">No usage data yet.<br />Start a Claude Code or Codex session.</div>

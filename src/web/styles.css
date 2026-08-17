@@ -1712,6 +1712,13 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .agent-node .meta .tokens-meta b { color: var(--accent); }
 .agent-node .meta .cost-meta { color: var(--ok); display: inline-flex; align-items: baseline; gap: 4px; }
 .agent-node .meta .cost-meta b { color: var(--ok); }
+/* The card's version of the same marker. It deliberately does NOT carry
+   .cost-meta: that class is --ok on both itself and its <b>, and the point of
+   this element is that there is no figure to paint green. */
+.agent-node .meta .cost-unpriced {
+  color: var(--muted);
+  font-style: italic;
+}
 .agent-node .meta .cost-meta .cost-rate {
   color: var(--muted);
   font-size: 9.5px;
@@ -3288,6 +3295,17 @@ button.tool.clickable:last-child { border-bottom: none; }
   color: var(--ok);
   min-width: 36px;
   text-align: right;
+}
+
+/* "not priced", in the slot a dollar figure would have taken. Not --ok: green
+   is this panel's colour for money, and a phrase painted in it reads as an
+   amount rather than as the absence of one. Italic for the same reason — the
+   cell holds a state where every other cell in its column holds a value.
+   Declared after .up-cost-val and .up-session-cost because it shares their
+   specificity and has to win the colour; the geometry of both is kept. */
+.up-unpriced {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .up-hint {

@@ -830,12 +830,22 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
         // Codex emits `cached_input_tokens` (single underscore); Claude
         // transcripts use `cache_read_input_tokens` / `cache_creation_…`.
         // Accept both shapes — whichever provider's reader emitted this.
+        //
+        // The cache-WRITE line took both spellings only from #400 on. Codex has
+        // carried `cache_write_input_tokens` in every `total_token_usage` object
+        // this machine holds, and it arrives here verbatim from the rollout, but
+        // the read below asked for Claude's spelling alone and so dropped it —
+        // which mattered because gpt-5.6 is the first OpenAI family to publish a
+        // separate cache-write price ($6.25/Mtok on sol), and a rate with no
+        // token count to multiply is a line item pinned at $0.00 forever.
         root.usage.inputTokens = Number(u.input_tokens ?? 0);
         root.usage.outputTokens = Number(u.output_tokens ?? 0);
         root.usage.cacheReadTokens = Number(
           u.cache_read_input_tokens ?? u.cached_input_tokens ?? 0,
         );
-        root.usage.cacheCreateTokens = Number(u.cache_creation_input_tokens ?? 0);
+        root.usage.cacheCreateTokens = Number(
+          u.cache_creation_input_tokens ?? u.cache_write_input_tokens ?? 0,
+        );
         // Overwrite, not merge: these are cumulative totals for the whole
         // transcript, so a pass that saw no split must clear a stale one.
         const ttl = cacheTtlSplit(u);
