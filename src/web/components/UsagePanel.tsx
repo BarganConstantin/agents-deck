@@ -462,7 +462,10 @@ export default function UsagePanel({ state, now, onClose }: Props) {
   const refreshAll = () => { refreshQuota(); refreshCodex(); };
 
   return (
-    <div className="usage-panel" aria-label="Usage">
+    // The id is the target of the topbar toggle's aria-controls. It is spelled
+    // the same as the class on purpose: one name for the region, so the button
+    // that opens it cannot point somewhere else after a rename.
+    <div className="usage-panel" id="usage-panel" aria-label="Usage">
       <div className="up-header">
         <h3>Usage</h3>
         {burnRate && <span className="up-rate">{burnRate}</span>}

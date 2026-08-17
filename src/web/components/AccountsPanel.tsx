@@ -417,7 +417,8 @@ export default function AccountsPanel({ onClose }: Props) {
   };
 
   return (
-    <div className="accounts-panel" aria-label="Claude accounts">
+    // Named for the topbar toggle's aria-controls — see UsagePanel.
+    <div className="accounts-panel" id="accounts-panel" aria-label="Claude accounts">
       <div className="ap-header">
         <h3>Accounts</h3>
         <div className="ap-header-right">

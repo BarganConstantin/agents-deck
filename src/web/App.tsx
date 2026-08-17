@@ -2355,15 +2355,35 @@ function Inner() {
               </button>
             );
           })()}
+          {/* aria-expanded, not aria-pressed. This shows and hides a region
+              that follows it in the DOM and it leaves focus exactly where it
+              was — the disclosure pattern, which is what the accounts panel's
+              ⋯ menu already models below. "Pressed" would claim the button is
+              a setting that stays on; what it actually reports is whether the
+              thing it points at is on screen.
+              aria-controls only while the panel is mounted, for the reason
+              AccountsPanel spells out: an IDREF that resolves to nothing is a
+              dangling pointer rather than a relationship, and closed is exactly
+              when there is nothing to point at.
+              The `primary` class is gone from all five of these. The state is
+              the ARIA attribute now and the stylesheet reads it there, so the
+              pixels and the accessibility tree cannot drift apart. */}
           <button
-            className={`btn icon-btn ${usagePanelOpen ? "primary" : ""}`}
+            className="btn icon-btn"
             onClick={() => setUsagePanelOpen(o => !o)}
             title={`${usagePanelOpen ? "Hide" : "Show"} usage panel (U)`}
             aria-label="Toggle usage panel"
+            aria-expanded={usagePanelOpen}
+            aria-controls={usagePanelOpen ? "usage-panel" : undefined}
           >$</button>
+          {/* The one genuine aria-pressed of the five, and it was already
+              carrying it. This installs or removes a Stop hook on disk: there
+              is no region it discloses and nothing on screen appears when it
+              goes on, so "expanded" would be a promise of content that does not
+              exist. A setting that is on or off is what "pressed" means. */}
           {soundOn !== null && (
             <button
-              className={`btn icon-btn ${soundOn ? "primary" : ""}`}
+              className="btn icon-btn"
               onClick={(e) => {
                 // Shift-click restores the user's own hooks. A modifier rather
                 // than another button: it is a one-off recovery, not a control
@@ -2406,28 +2426,46 @@ function Inner() {
               </svg>
             </button>
           )}
+          {/* Same disclosure as the usage panel — a sidebar that opens beside
+              the canvas and takes no focus with it. */}
           <button
-            className={`btn icon-btn ${accountsPanelOpen ? "primary" : ""}`}
+            className="btn icon-btn"
             onClick={toggleAccountsPanel}
             title={`${accountsPanelOpen ? "Hide" : "Show"} accounts (A)`}
             aria-label="Toggle accounts panel"
+            aria-expanded={accountsPanelOpen}
+            aria-controls={accountsPanelOpen ? "accounts-panel" : undefined}
           >
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <circle cx="7" cy="4.6" r="2.4" />
               <path d="M2.4 12c0-2.3 2.1-3.7 4.6-3.7s4.6 1.4 4.6 3.7" />
             </svg>
           </button>
+          {/* And the third, sharing the left slot with accounts. */}
           <button
-            className={`btn icon-btn ${sessionListOpen ? "primary" : ""}`}
+            className="btn icon-btn"
             onClick={toggleSessionList}
             title={`${sessionListOpen ? "Hide" : "Show"} session list (L)`}
             aria-label="Toggle session list"
+            aria-expanded={sessionListOpen}
+            aria-controls={sessionListOpen ? "session-list" : undefined}
           >☰</button>
+          {/* The odd one out, and deliberately given neither aria-pressed nor
+              aria-expanded. What this opens is a modal — role="dialog"
+              aria-modal="true" behind a full-screen scrim, with the focus trap
+              #371 added — so while it is open this button cannot be clicked,
+              cannot be tabbed to, and aria-modal has removed the whole topbar
+              from the accessibility tree. A state whose `true` no reader can
+              ever reach is worse than no state: it would be a value announced
+              only in the one case it is not needed. The label already says
+              "Open" rather than "Toggle"; aria-haspopup is the part that was
+              missing, and it says what kind of thing opens. */}
           <button
-            className={`btn icon-btn ${usageHistoryOpen ? "primary" : ""}`}
+            className="btn icon-btn"
             onClick={() => setUsageHistoryOpen(o => !o)}
             title="Usage history — ccusage (H)"
             aria-label="Open usage history"
+            aria-haspopup="dialog"
           >
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
               <line x1="3" y1="11.5" x2="3" y2="7" />
@@ -2640,20 +2678,35 @@ function Inner() {
           </div>
         )}
         {presentCats.length > 1 && (
+          /* role="group", not role="toolbar". A toolbar is a promise about
+             keyboard behaviour — one tab stop for the whole set, arrow keys
+             between the members — and this bar implements none of it: every
+             chip is its own tab stop, which is the right shape for a handful
+             of independent filters and the wrong shape to call a toolbar.
+             Claiming the role told a screen reader to expect arrow keys that
+             do nothing, which is a worse answer than not claiming it. group
+             keeps the thing the role was actually being used for: the set is
+             named, so the chips are heard as one control and not seven. */
           <div
             ref={catBarRef}
             className={`cat-filter-bar${catBarOccluded ? " occluded" : ""}`}
-            role="toolbar"
+            role="group"
             aria-label="Filter tools by category"
           >
             {presentCats.map(c => {
               const off = hiddenCats.has(c);
               return (
+                /* aria-pressed, because a chip really is a toggle: it does not
+                   reveal anything, it turns a filter on and off. Pressed means
+                   the category is showing, which is the state the chip's own
+                   name and emoji describe — the label is "edit", not "hide
+                   edit", so pressed has to mean "edit is on". */
                 <button
                   key={c}
                   type="button"
                   className={`cat-filter${off ? " off" : ""}`}
                   onClick={() => toggleCat(c)}
+                  aria-pressed={!off}
                   title={`${off ? "Show" : "Hide"} ${DETAIL_CAT_LABEL[c]} tools`}
                 >
                   <span className="cat-emoji">{DETAIL_CAT_EMOJI[c]}</span>
