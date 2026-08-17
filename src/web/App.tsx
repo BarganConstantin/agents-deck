@@ -171,6 +171,18 @@ type VersionInfo = {
    *  Deliberately separate from `name` above, which is the upgrade target: for
    *  a global install that is the published package whichever bin was run. */
   invokedAs?: string | null;
+  /** The second line of that notice, already written: the command to type next
+   *  time under npx, and the reassurance that it is on the PATH already for an
+   *  install — the same one ships all three. Null when there is nothing to say,
+   *  which is every shape where `invokedAs` above is null too.
+   *
+   *  A string rather than a flag, and computed on the server rather than here,
+   *  because the browser has no honest way to tell those two apart on its own —
+   *  the field it used to guess from (`upgradeMode`) answers whether this copy
+   *  may install over itself, which `AGENTS_DECK_NO_INSTALL=1` turns off for
+   *  npx and global installs alike. The terminal row renders this same string
+   *  from this same function, which is what keeps the two surfaces one answer. */
+  renameFix?: string | null;
 };
 
 // Said in the UI's voice, not npm's. Each of these is a decision we made on
@@ -2620,19 +2632,24 @@ function Inner() {
         <div className="ver-banner" role="status">
           <span className="ver-dot" />
           <strong>{oldName} still works — the deck is called {PRODUCT} now.</strong>
-          {/* The half people do not expect. A global install already put a
-              ccdeck on the PATH — the same install ships all three commands —
-              so there is nothing to fetch and nothing to uninstall, only a
-              different word to type. Under npx there is no such install, and
-              the command itself is the whole answer. `upgradeMode` is npx only
-              where this copy runs from an npx cache, and every other value it
-              can take here is a global install: a checkout never reports a
-              name at all, so it never reaches this branch. */}
-          <span className="ver-sub">
-            {version?.upgradeMode === "npx"
-              ? `Run npx ${PRODUCT} next time.`
-              : `${PRODUCT} already works here — same install, no download.`}
-          </span>
+          {/* The half people do not expect, and the half this must not get
+              wrong: a global install already put a ccdeck on the PATH — the
+              same install ships all three commands — so there is nothing to
+              fetch and nothing to uninstall, only a different word to type,
+              while under npx there is no such install and `npx ccdeck` is the
+              whole answer. Telling the second group the first line sends them
+              to a `command not found`.
+
+              So it is not decided here. This branch used to read
+              `upgradeMode === "npx"`, which sounds like the same question and
+              is a different one — it says whether an in-app `npm i -g` is
+              allowed, and `AGENTS_DECK_NO_INSTALL=1` makes it null for npx runs
+              too, at which point every npx user who opted out of installs got
+              the global-install line (#363). The server sends the sentence the
+              terminal prints, from the same function, and no string here can
+              drift from it. Rendered only when it is there: a missing field is
+              a server that could not say, and silence beats a guess. */}
+          {version?.renameFix ? <span className="ver-sub">{version.renameFix}</span> : null}
           <button type="button" aria-label="Dismiss" className="ver-close" onClick={dismissOldName}>×</button>
         </div>
       ) : null}
