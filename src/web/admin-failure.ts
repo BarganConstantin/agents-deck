@@ -149,18 +149,24 @@ export const CCUSAGE_REASONS: Record<string, string> = {
   timeout: "ccusage took more than 90 seconds and was stopped — a narrower range usually finishes",
   bad_output: "ccusage ran but printed no usage data — try again, and run ccusage daily --json in a terminal if it keeps happening",
   run_failed: "ccusage could not report usage — try again",
+  // The route refusing a `since`/`until` that is not a YYYYMMDD date. The modal
+  // only ever sends presetSince()'s output, so this is unreachable from the deck
+  // itself and is here for the build that talks to a server it does not match.
+  bad_range: "that date range is not a YYYYMMDD date — reopen the modal and pick one of the presets",
   // The browser's own failure, not the server's: the deck never answered, so
   // there is no reason code to send and the client writes this one itself.
   unreachable: "the deck did not answer — check it is still running, then try again",
 };
 
 // The one remedy that only ever arrives inside ccusage's own bytes, the same
-// exception KEYCHAIN is above. The npx fallback runs through a shell, so a
-// machine without npx never produces a spawn error for us to code: /bin/sh
-// exits 127 with "npx: command not found", dash writes "npx: not found", and
-// cmd.exe writes "'npx' is not recognized as an internal or external command".
-// All three reach us as run_failed carrying the shell's line, and "ccusage
-// could not report usage" is true, useless, and unfixable by trying again.
+// exception KEYCHAIN is above. A machine without npx says so in four different
+// ways depending on how the fallback was launched: spawned directly it is a
+// plain "spawn npx ENOENT", and through cmd.exe on Windows it is "'npx.cmd' is
+// not recognized as an internal or external command" — with the two shell
+// spellings, /bin/sh's "npx: command not found" and dash's "npx: not found",
+// still reachable from an older deck. All four arrive as run_failed carrying
+// that line, and "ccusage could not report usage" is true, useless, and
+// unfixable by trying again.
 const NO_NPX =
   "ccusage could not be started — npx is not on this deck's PATH. Install Node's npm/npx, or put ccusage on PATH yourself";
 

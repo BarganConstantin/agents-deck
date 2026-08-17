@@ -10,9 +10,10 @@
 // of them itself — and the modal answers from the reason map, the same ranking
 // switch-failure-text.test.ts pins for claude-swap: the map speaks and the CLI's
 // own bytes stay evidence on the title. These pin both halves, and the one case
-// that only ever arrives inside those bytes: the npx fallback runs through a
-// shell, so a machine without npx reports it as sh's, dash's or cmd.exe's
-// wording rather than as a spawn error anyone can code.
+// that only ever arrives inside those bytes: a machine without npx words it
+// differently depending on how the fallback was launched — a plain spawn error,
+// cmd.exe's "is not recognized", or, from a deck old enough to have used a
+// shell, sh's or dash's own line.
 import { describe, it, expect, afterAll } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -140,8 +141,11 @@ describe("what the modal shows for a failed run", () => {
   });
 
   it("ends every reason it knows in something the reader can do", () => {
+    // The alternation is the list of remedies actually in use, not a style
+    // rule — a new reason belongs on it only once its sentence really does end
+    // in an action the reader can take.
     for (const [reason, sentence] of Object.entries(CCUSAGE_REASONS)) {
-      expect(`${reason}: ${/try again|unset|narrower/.test(sentence)}`).toBe(`${reason}: true`);
+      expect(`${reason}: ${/try again|unset|narrower|reopen/.test(sentence)}`).toBe(`${reason}: true`);
     }
   });
 
@@ -167,14 +171,18 @@ describe("what the modal shows for a failed run", () => {
 });
 
 describe("the missing-npx fallback, which every platform words differently", () => {
-  // The npx path runs with shell:true, so the shell is what reports it and the
-  // reason is only ever run_failed. All three of these are the same machine.
+  // Whatever launched the fallback is what reports the absence, and the reason
+  // is only ever run_failed. Every line below is the same machine. The first
+  // three are what a deck that still used `shell: true` produced, and they stay
+  // here because a browser can be newer than the deck it is talking to; the last
+  // two are what the shell-free spawn produces now — a spawn error off Windows,
+  // and cmd.exe's own verdict on the .cmd shim on it.
   const SHELLS = [
     ["dash, Debian's /bin/sh", "/bin/sh: 1: npx: not found"],
     ["bash", "sh: npx: command not found"],
     ["zsh", "zsh: command not found: npx"],
-    ["cmd.exe", "'npx' is not recognized as an internal or external command,\r\noperable program or batch file."],
-    ["a spawn that never reached a shell", "spawn npx ENOENT"],
+    ["cmd.exe", "'npx.cmd' is not recognized as an internal or external command,\r\noperable program or batch file."],
+    ["a direct spawn, off Windows", "spawn npx ENOENT"],
   ] as const;
 
   it("says npx is missing and what to install, on every platform's wording", () => {
