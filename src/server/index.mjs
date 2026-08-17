@@ -1138,17 +1138,89 @@ function queuedBytes(res) {
   return own + sock;
 }
 
+/** Hang up on a client we have decided not to keep. `delete` on a response
+ *  that never made it into the set — the resume path below hangs up on clients
+ *  before they are subscribed — is a harmless no-op. */
+function dropSse(res) {
+  sseClients.delete(res);
+  // Destroying the socket is what makes the request emit 'close', which is
+  // where the ping interval is cleared.
+  try { res.destroy(); } catch {}
+  try { res.socket?.destroy(); } catch {}
+}
+
 /** Write one SSE frame, hanging up on a client too far behind to keep. */
 function writeSse(res, frame) {
   try {
     res.write(frame);
     if (queuedBytes(res) <= MAX_CLIENT_BUFFER_BYTES) return;
   } catch { /* already dead — drop it below */ }
-  sseClients.delete(res);
-  // Destroying the socket is what makes the request emit 'close', which is
-  // where the ping interval is cleared.
-  try { res.destroy(); } catch {}
-  try { res.socket?.destroy(); } catch {}
+  dropSse(res);
+}
+
+// How long a resuming client is given to accept the bytes already queued for
+// it before the deck concludes it is not reading at all. Generous on purpose:
+// what it has to work through is a full MAX_CLIENT_BUFFER_BYTES, the link may
+// be an `ssh -L` tunnel rather than loopback, and dropping a client that is
+// merely slow costs it the whole replay. A tab that is genuinely frozen will
+// not accept a byte in any budget, so the only thing a long one buys it is a
+// few more seconds of holding its own buffer. The environment override exists
+// so the tests can pin the drop without sitting through the real budget.
+const REPLAY_DRAIN_MS = Number(process.env.AGENTS_DECK_REPLAY_DRAIN_MS) > 0
+  ? Number(process.env.AGENTS_DECK_REPLAY_DRAIN_MS)
+  : 30_000;
+
+/**
+ * Write one frame of the resume stream under the same ceiling the live path
+ * obeys, waiting rather than dropping when the client is at it. Resolves true
+ * while the client is worth keeping, false once it is not.
+ *
+ * Waiting is the whole difference from writeSse, and the replay is why. The
+ * live path writes one frame per event, so a full buffer there means the
+ * client stopped reading and the only answer is to hang up. Here the burst is
+ * ours: the loop below hands the socket the entire ring buffer in one turn of
+ * the event loop, so even a client reading at full speed sees its buffer fill
+ * — nothing has drained it yet, because nothing could. Dropping on that would
+ * hang up on healthy clients, and hang up on them again every time they came
+ * back: EventSource reconnects with the same Last-Event-ID, meets the same
+ * oversized replay, and is dropped again 1.5 seconds later, forever. So we
+ * stop writing until the socket has taken what it already has, and only give
+ * up on a client that takes nothing at all for REPLAY_DRAIN_MS.
+ *
+ * The wait is on write()'s completion callback rather than on a 'drain' event:
+ * 'drain' only follows a write that was answered false, and a frame can push
+ * queuedBytes past the cap while still being answered true, the socket's own
+ * pending bytes being one of the two terms in that sum. The callback fires
+ * once this chunk —
+ * and therefore everything queued ahead of it — has reached the OS, which is
+ * exactly the condition being waited for. It also fires, with an error we do
+ * not need to read, if the response is destroyed underneath us, so this cannot
+ * hang on a client that goes away.
+ */
+async function writeResume(res, frame) {
+  // Below the cap this is the plain write it has always been. The `await` in
+  // the caller costs a microtask and nothing else: the checkpoint drains
+  // before the loop can accept I/O, so no live event can slip between two
+  // replay frames the way it could across a real wait.
+  if (queuedBytes(res) <= MAX_CLIENT_BUFFER_BYTES) {
+    try { res.write(frame); return true; } catch { return false; }
+  }
+  return new Promise(resolve => {
+    let settled = false;
+    const done = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    // Unref'd so a client that stopped reading can never be the reason the
+    // process stays alive, and cleared on every path out so a completed replay
+    // leaves no timer behind.
+    const timer = setTimeout(() => done(false), REPLAY_DRAIN_MS);
+    timer.unref?.();
+    try { res.write(frame, () => done(!res.destroyed)); }
+    catch { done(false); }
+  });
 }
 
 function pushEvent(raw, source, opts = {}) {
@@ -1373,32 +1445,91 @@ function handleSse(req, res) {
   });
   res.write(`retry: 1500\n\n`);
 
-  // Resume: replay events after Last-Event-ID. Marked with `replay:true`
-  // on the envelope so the client can suppress turn-cleanup side effects
-  // (exitAt stamping, autofit churn) until the live stream takes over.
-  // Without this the reducer's UserPromptSubmit handler treats replayed
-  // events as a real new turn — hiding prior-turn subagents using the
-  // event's stale receivedAt, which collides with wall-clock visibility
-  // gates and yields the "nodes appear then vanish" symptom on refresh.
-  const lastId = Number(req.headers["last-event-id"] ?? 0);
-  for (const e of events) {
-    if (e.seq <= lastId) continue;
-    const tagged = { ...e, replay: true };
-    res.write(`id: ${e.seq}\nevent: hook\ndata: ${JSON.stringify(tagged)}\n\n`);
-  }
-  // Sentinel: tells client "ring buffer drained, live stream starts now".
-  res.write(`event: replay-end\ndata: {}\n\n`);
+  // A stale or absent id replays the whole ring, and so does a malformed one:
+  // Number("nonsense") is NaN, every `seq <= NaN` is false, and the catch-up
+  // loop below would rather compare against a number.
+  const asked = Number(req.headers["last-event-id"] ?? 0);
+  const lastId = Number.isFinite(asked) ? asked : 0;
 
+  // The replay waits on the socket now, so it can no longer be part of this
+  // synchronous handler. Nothing is waiting on the result here — the response
+  // is already committed to a 200 and its own failure path is to hang up — so
+  // start it, keep the router's contract of returning nothing, and make sure a
+  // rejection ends the stream rather than the process.
+  resumeSse(req, res, lastId).catch(() => dropSse(res));
+}
+
+/**
+ * Drain the ring buffer into a newly connected client, then subscribe it.
+ *
+ * Two things had to change when this stopped being one synchronous burst.
+ * `close` is registered before the first frame, because a tab closed mid-replay
+ * has to stop it. And the replay repeats until it reaches the live tail: an
+ * actual wait lets pushEvent run, and an event that lands after we have walked
+ * past its place but before the client is in `sseClients` would otherwise be in
+ * neither stream — a hole the client cannot even ask for again, its last id
+ * having moved past it.
+ */
+async function resumeSse(req, res, lastId) {
+  let sentThrough = lastId;
+  let ping = null;
+  let closed = false;
+  req.on("close", () => {
+    closed = true;
+    if (ping) clearInterval(ping);
+    sseClients.delete(res);
+  });
+
+  for (;;) {
+    // A snapshot per pass, because a wait lets pushEvent splice the head of
+    // `events` off, and iterating an array being spliced from the front skips
+    // entries. Events evicted that way are gone for this client, which is the
+    // same bargain every resume against a rotated ring already makes.
+    const batch = events.slice();
+    for (const e of batch) {
+      if (e.seq <= sentThrough) continue;
+      if (closed || res.destroyed) return;
+      // Marked with `replay:true` on the envelope so the client can suppress
+      // turn-cleanup side effects (exitAt stamping, autofit churn) until the
+      // live stream takes over. Without this the reducer's UserPromptSubmit
+      // handler treats replayed events as a real new turn — hiding prior-turn
+      // subagents using the event's stale receivedAt, which collides with
+      // wall-clock visibility gates and yields the "nodes appear then vanish"
+      // symptom on refresh.
+      const tagged = { ...e, replay: true };
+      if (!await writeResume(res, `id: ${e.seq}\nevent: hook\ndata: ${JSON.stringify(tagged)}\n\n`)) {
+        return dropSse(res);
+      }
+      sentThrough = e.seq;
+    }
+    // Caught up with the tail as it stands right now. Reached in one pass
+    // unless a wait let new events in, and it terminates for the same reason
+    // the client is still here at all: either it is taking bytes, in which case
+    // loopback outruns any hook, or it is not, in which case writeResume gives
+    // up on it.
+    if (events.length === 0 || events[events.length - 1].seq <= sentThrough) break;
+  }
+
+  if (closed || res.destroyed) return;
+
+  // Sentinel: tells client "ring buffer drained, live stream starts now". It
+  // goes out under the same rule as the frames before it, so a client that has
+  // just been handed a large replay is not hung up on over the last 30 bytes of
+  // it before it has had the chance to read any.
+  //
+  // Subscribing before waiting on that write, rather than after, is what closes
+  // the last hole: writeResume puts the bytes on the socket before it returns,
+  // so the sentinel still precedes every live frame, and an event pushed while
+  // we wait reaches this client through the live fan-out instead of falling
+  // into the gap between the two. If the wait then ends in a drop, dropSse
+  // takes it back out of the set — the same exit writeSse uses.
+  const flushed = writeResume(res, `event: replay-end\ndata: {}\n\n`);
   sseClients.add(res);
   // Through writeSse like every other frame: on a client that has stopped
   // reading, the ping is the one thing still being written between events, and
   // it is what eventually reveals the socket as unrecoverable.
-  const ping = setInterval(() => writeSse(res, `: ping\n\n`), 15000);
-
-  req.on("close", () => {
-    clearInterval(ping);
-    sseClients.delete(res);
-  });
+  ping = setInterval(() => writeSse(res, `: ping\n\n`), 15000);
+  if (!await flushed) dropSse(res);
 }
 
 // True only when a supervisor is listening AND the event log is being written.
