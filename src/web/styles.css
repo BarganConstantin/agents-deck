@@ -595,6 +595,21 @@ button.btn.icon-btn {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-dim);
 }
+/* The ring every other input on this deck draws, which this field was the only
+   one missing. `outline: none` above sits at (0,1,1) on a rule that also
+   carries the field's layout, so it beat the global :focus-visible at (0,1,0)
+   on specificity AND on source order, and the companion line up there restores
+   only outline-offset — nothing put the outline back. What was left to confirm
+   focus was the border stepping --ctl-edge → --accent, 2.74:1 in dark and
+   1.67:1 in light, over an --accent-dim glow at 1.89:1 / 1.37:1. `/` focuses
+   this field, so in light that tint was a keyboard user's entire answer.
+   Declared exactly as .ap-manage-input:focus-visible and .aa-field
+   input:focus-visible declare it — one focus language, not a second one — and
+   `outline: none` stays for the pointer. */
+.search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .search-clear {
   position: absolute;
   right: 4px;
@@ -747,11 +762,14 @@ button.btn.icon-btn {
      is the fallback, and it must survive any future user-select:none above. */
   user-select: text;
 }
+/* --text, not --muted, for the reason .up-quota-hint code is: a dim foreground
+   sized for --panel, re-bedded on --line, is 4.14:1 in dark — under AA at 10px
+   uppercase, which is the least forgiving type in this banner. 11.39:1 now. */
 .ver-banner .ver-cmd-hint {
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text);
   background: var(--line);
   border-radius: 999px;
   padding: 2px 7px;
@@ -929,7 +947,7 @@ button.btn.icon-btn {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.02em;
   cursor: pointer;
-  transition: background 120ms, color 120ms, opacity 120ms,
+  transition: background 120ms, color 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .cat-filter .cat-emoji { font-size: 13px; line-height: 1; }
@@ -945,12 +963,24 @@ button.btn.icon-btn {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* "Off" is carried by the colour tier and the greyed emoji, never by opacity.
+   `opacity: 0.38` faded the whole chip, its label included, to 1.72:1 in dark
+   and 1.87:1 on white, and the hover that lifted it to 0.8 still only reached
+   3.51:1 in dark — so the one chip on this bar you could not read was the chip
+   you click to bring a category back, which is not the inactive control 1.4.3
+   excuses. No alpha rescues it either: --muted is 4.80:1 against this bar's own
+   translucent fill at FULL opacity in dark, so every fade lands under AA (0.8 is
+   3.51:1, 0.9 is 4.12:1). Dropping it leaves 4.80:1 dark / 7.67:1 light at rest,
+   and the pointer now lifts the label to --text (13.20:1 / 18.42:1) instead of
+   dimming it — a hover that takes contrast away is not a hover, which is the
+   same rule control-edges.test.ts holds the bordered controls to.
+   Whether "off" also wants a channel that survives colour blindness is #370's
+   question about toggle state, not this one's about contrast. */
 .cat-filter.off {
-  opacity: 0.38;
   color: var(--muted);
 }
 .cat-filter.off .cat-emoji { filter: grayscale(0.7); }
-.cat-filter.off:hover { opacity: 0.8; }
+.cat-filter.off:hover { color: var(--text); }
 
 /* ---------------- detail panel ---------------- */
 
@@ -1497,8 +1527,20 @@ button.btn.icon-btn {
   flex: 0 0 auto;
   overflow: visible;
 }
+/* The idle tier is --muted here and --muted-dim in light, which is the whole of
+   the fix and needs the reason spelled out. --muted-dim is 2.45:1 against the
+   node's lower gradient stop in dark, under the 3:1 that 1.4.11 asks of a meter
+   with no printed equivalent: the per-second counts live in a title and the
+   visible label says `60s` and nothing more, so unlike .qb-pct, .ss-tt-count,
+   .uh-model-cost or .up-tokens-row this bar cannot fall back on its own number,
+   and 1.4.11's redundancy exception does not reach it. --muted is 4.91:1 and
+   leaves the ramp pointing the right way (idle 4.91 < active 6.30 < latest
+   10.73). Light is NOT lifted with it: --muted-dim already measures 3.44:1 on
+   that stop, and --muted's 7.21:1 there would make the bar that means "nothing
+   ran" the loudest one in the chart, above both active (4.10:1) and latest
+   (6.39:1) — a meter reading backwards to buy a floor it already cleared. */
 .tool-spark-bar {
-  fill: var(--muted-dim);
+  fill: var(--muted);
   transition: fill 200ms;
 }
 .tool-spark-bar.active { fill: var(--accent); opacity: 0.72; }
@@ -1514,6 +1556,10 @@ button.btn.icon-btn {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+/* Keeps the idle tier where it measured fine — see the note on .tool-spark-bar.
+   The two rules below carry an extra class each, so they out-specify this one
+   whatever the order: the active and latest bars stay theirs in light. */
+:root[data-theme="light"] .tool-spark-bar { fill: var(--muted-dim); }
 :root[data-theme="light"] .tool-spark-bar.active { fill: var(--accent); opacity: 0.85; }
 :root[data-theme="light"] .tool-spark-bar.latest {
   fill: var(--inflight);
@@ -3108,7 +3154,21 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-radius: 3px;
   transition: width 400ms ease;
 }
-/* Pace "green line" — vertical marker at the expected-usage position. */
+/* Pace "green line" — vertical marker at the expected-usage position.
+   Separated from the fill with the surface, not with black. Deficit means
+   actual > expected, so the marker always lands INSIDE the fill, and its --err
+   against the fill's own colour is 1.14:1 over --accent, 1.32:1 over --warn
+   and — once the limit is reached and the fill is --err too — exactly 1.00:1,
+   a marker painted on itself. The old `0 0 2px rgba(0,0,0,0.5)` halo did some
+   work against the pale dark fills and none at all on light, where black over
+   --err is 2.12:1. A 1px --panel ring is the one colour every fill on this bar
+   is far from: 10.85 / 12.55 / 9.54 in dark and 5.93 / 5.43 / 6.47 in light
+   against --accent / --warn / --err, and 9.54–12.89 against the marker itself
+   in both themes, so the boundary reads in every state while the hue goes on
+   carrying deficit-vs-surplus. .qb-track clips the ring top and bottom
+   (overflow: hidden), which leaves exactly the two vertical edges that matter.
+   "Where should I be by now" is the one number in this panel printed nowhere
+   on screen — it lives in a title — so the marker is all there is. */
 .qb-pace-marker {
   position: absolute;
   top: 0;
@@ -3116,7 +3176,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   width: 2px;
   margin-left: -1px;
   border-radius: 1px;
-  box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 1px var(--panel);
   transition: left 400ms ease;
   z-index: 2;
 }
@@ -3163,8 +3223,19 @@ button.tool.clickable:last-child { border-bottom: none; }
   color: var(--muted);
 }
 .up-quota-hint { color: var(--text-dim); }
+/* A chip that paints --line under itself has to pay for it. This one inherits
+   --text-dim — a foreground budgeted against --panel — and then lifts the bed
+   to --line, which spends exactly the contrast the token was sized for:
+   4.14:1 dark / 3.62:1 light, under the 4.5:1 that 10.5px body copy needs, in
+   both themes. And this is the CLI command that makes the quota section work
+   at all, the text a user reads precisely when the panel is empty. --text on
+   --line is 11.39:1 / 11.86:1. The size and the lifted bed already say
+   "secondary"; the colour does not have to say it a third time — the same call
+   .ap-manage-btn made when its buttons rose to --text rather than its labels
+   sinking below it. .ver-cmd-hint has the identical defect and the same fix. */
 .up-quota-hint code {
   background: var(--line);
+  color: var(--text);
   padding: 0 3px;
   border-radius: 3px;
   font-size: 10.5px;
