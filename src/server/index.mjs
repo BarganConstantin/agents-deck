@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { CODEX_SESSIONS_DIR, STOP, walkRolloutDays } from "./codex-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
 import { invokedName, renameNotice } from "./invoked-as.mjs";
 import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
@@ -634,17 +635,17 @@ function maybeResolveContext(payload) {
 //                              output_tokens, reasoning_output_tokens,
 //                              total_tokens}}}}
 // We resolve the rollout path lazily (cache sid→path), then read the tail
-// for usage + model. CODEX_HOME overrides ~/.codex.
-const CODEX_HOME = process.env.CODEX_HOME
-  ? resolve(process.env.CODEX_HOME)
-  : join(homedir(), ".codex");
-// Exported because bin/deck.js prints this path in the boot banner, and it used
-// to build its own `join(homedir(), ".codex", "sessions")` for the purpose —
-// which ignored CODEX_HOME and so named a directory that does not exist on any
+// for usage + model. CODEX_HOME overrides ~/.codex, and codex-dir.mjs owns that
+// rule for every module on the Codex side — this one used to spell it inline,
+// which is how five modules ended up with three spellings of it (#375).
+//
+// Re-exported because bin/deck.js prints this path in the boot banner, and it
+// used to build its own `join(homedir(), ".codex", "sessions")` for the purpose
+// — which ignored CODEX_HOME and so named a directory that does not exist on any
 // machine that sets it. Handing out the binding the watcher itself reads, rather
 // than a second computation of the same rule, is what makes the printed path and
 // the tailed path unable to disagree.
-export const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
+export { CODEX_SESSIONS_DIR };
 const codexRolloutPathBySid = new Map();
 const lastCodexUsageReadAt = new Map();
 const pendingCodexUsageReads = new Set();
@@ -653,34 +654,19 @@ const CODEX_READ_THROTTLE_MS = 2500;
 async function findCodexRolloutPath(sid) {
   const cached = codexRolloutPathBySid.get(sid);
   if (cached) return cached;
-  // Walk year → month → day → files. Codex includes the sid in the filename
-  // (rollout-...-<sid>.jsonl) so a directory-scoped match is enough.
-  const tryYears = async () => {
-    try { return await readdir(CODEX_SESSIONS_DIR); } catch { return []; }
-  };
-  const years = (await tryYears()).sort().reverse(); // newest first
-  for (const y of years) {
-    let months;
-    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); }
-    catch { continue; }
-    for (const m of months) {
-      let days;
-      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); }
-      catch { continue; }
-      for (const d of days) {
-        const dayDir = join(CODEX_SESSIONS_DIR, y, m, d);
-        let files;
-        try { files = await readdir(dayDir); } catch { continue; }
-        const hit = files.find(f => f.includes(sid) && f.endsWith(".jsonl"));
-        if (hit) {
-          const full = join(dayDir, hit);
-          codexRolloutPathBySid.set(sid, full);
-          return full;
-        }
-      }
-    }
-  }
-  return null;
+  // Walk year → month → day → files, newest first. Codex includes the sid in the
+  // filename (rollout-...-<sid>.jsonl) so a directory-scoped match is enough.
+  // The walk itself lives in codex-dir.mjs, shared with the watcher's listing
+  // below and with codex-usage.mjs, so all three read one tree the same way.
+  let found = null;
+  await walkRolloutDays((dayDir, files) => {
+    const hit = files.find(f => f.includes(sid) && f.endsWith(".jsonl"));
+    if (!hit) return;
+    found = join(dayDir, hit);
+    return STOP;
+  });
+  if (found) codexRolloutPathBySid.set(sid, found);
+  return found;
 }
 
 /** Tail-read a Codex rollout JSONL. Returns the last token_count info block
@@ -844,25 +830,13 @@ async function readLiveDecks() {
 // of history every tick.
 async function listRecentCodexRollouts() {
   const out = [];
-  let years;
-  try { years = (await readdir(CODEX_SESSIONS_DIR)).filter(d => /^\d{4}$/.test(d)).sort().reverse(); }
-  catch { return out; }
   let dayDirs = 0;
-  for (const y of years) {
-    let months;
-    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); } catch { continue; }
-    for (const m of months) {
-      let days;
-      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); } catch { continue; }
-      for (const d of days) {
-        const dir = join(CODEX_SESSIONS_DIR, y, m, d);
-        let files;
-        try { files = await readdir(dir); } catch { continue; }
-        for (const f of files) if (f.endsWith(".jsonl")) out.push(join(dir, f));
-        if (++dayDirs >= 2) return out;
-      }
-    }
-  }
+  await walkRolloutDays((dir, files) => {
+    for (const f of files) if (f.endsWith(".jsonl")) out.push(join(dir, f));
+    // Two day-directories deep is the whole point of this listing: it runs every
+    // tick, and anything older than that is a session no process will append to.
+    if (++dayDirs >= 2) return STOP;
+  });
   return out;
 }
 
