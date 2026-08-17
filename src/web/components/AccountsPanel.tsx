@@ -588,7 +588,7 @@ export default function AccountsPanel({ onClose }: Props) {
                         than dropped for an aria-label, because the association
                         is what a screen reader and voice control both use, and
                         2.5.3 has nothing to disagree with once no label shows. */}
-                    <label className="ap-vh" htmlFor={`ap-alias-${a.num}`}>Alias</label>
+                    <label className="vis-hidden" htmlFor={`ap-alias-${a.num}`}>Alias</label>
                     <input
                       id={`ap-alias-${a.num}`}
                       className="ap-manage-input"
@@ -621,7 +621,7 @@ export default function AccountsPanel({ onClose }: Props) {
                       the consequence per option, and a button called `share` is
                       not clarified by being told it is the share row. */}
                   <div className="ap-manage-acts">
-                    <label className="ap-vh" htmlFor={`ap-slot-${a.num}`}>Slot</label>
+                    <label className="vis-hidden" htmlFor={`ap-slot-${a.num}`}>Slot</label>
                     <span className="ap-field">
                       <select
                         id={`ap-slot-${a.num}`}

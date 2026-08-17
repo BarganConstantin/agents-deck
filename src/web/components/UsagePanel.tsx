@@ -7,7 +7,7 @@ import { PRODUCT } from "../brand";
 import type { GraphState } from "../reducer";
 import type { AgentState } from "../types";
 import { fmtTokens } from "../token-format";
-import { shortModel } from "./AgentNode";
+import { shortModel, stateLabel } from "./AgentNode";
 
 // ── Quota types ────────────────────────────────────────────────────────────
 interface QuotaData {
@@ -684,7 +684,17 @@ export default function UsagePanel({ state, now, onClose }: Props) {
               <div className="up-sessions">
                 {bySessions.filter(s => s.cost > 0).map(s => (
                   <div className="up-session-row" key={s.sessionId}>
+                    {/* Same dot and the same hidden word as the session list
+                        (#373) — this row is a <div>, so its state is read as
+                        part of the line rather than as a control's name, but it
+                        was the same silence either way. Two defects here, not
+                        one: the dot also matched no rule at all, because every
+                        `.sl-dot` selector was scoped to `.session-list` and
+                        this panel is that sidebar's sibling. It was drawn as a
+                        zero-sized empty span, so this list reported the state
+                        in no channel whatsoever. */}
                     <span className={`sl-dot state-${s.state}`} aria-hidden />
+                    <span className="vis-hidden">{stateLabel(s.state)}</span>
                     <span className="up-session-label">{s.label}</span>
                     <span className="up-session-tokens">{fmtTokens(s.inputTokens + s.outputTokens)}</span>
                     <span className="up-session-cost">{fmtCost(s.cost)}</span>

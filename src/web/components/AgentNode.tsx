@@ -148,9 +148,24 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
   );
 }
 
+/** The one word this app uses for a session's state, wherever it says it.
+ *
+ *  It was inline in StatePill until #373, where the session list and the usage
+ *  panel gained a spoken copy of the same fact — their dot carries the state
+ *  and a dot cannot be read aloud. Two ternaries would have been two
+ *  vocabularies waiting to disagree: a card that says `live` beside a row that
+ *  says `running` is one state with two names, and a reader who uses both
+ *  surfaces has to learn that they mean the same thing. Same argument, and the
+ *  same shape, as waitingSentence below.
+ *
+ *  `err` rather than `failed` even in text nobody sees, for that reason exactly
+ *  — it is the word on the card, so it is the word in the row. */
+export function stateLabel(state: AgentNodeData["state"]): string {
+  return state === "active" ? "live" : state === "done" ? "done" : "err";
+}
+
 function StatePill({ state }: { state: AgentNodeData["state"] }) {
-  const label = state === "active" ? "live" : state === "done" ? "done" : "err";
-  return <span className={`state-pill state-${state}`}>{label}</span>;
+  return <span className={`state-pill state-${state}`}>{stateLabel(state)}</span>;
 }
 
 /** What a blocked session says for itself, on the card, in the row and in the

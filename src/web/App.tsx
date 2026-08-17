@@ -3213,6 +3213,14 @@ function CostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
   );
 }
 
+/** What a tool call's outcome is called, in the words this app already prints
+ *  for one: ToolModal writes `in-flight…` where the duration goes while a call
+ *  is open and tags its Response section `error` when it failed. A tool call is
+ *  not a session, so this is deliberately not stateLabel's vocabulary — `err`
+ *  is the word on a session card and `error` is the word on a tool, and those
+ *  two surfaces already said it that way before #373 touched either. */
+const TOOL_STATUS_LABEL = { inflight: "in-flight", done: "done", err: "error" } as const;
+
 function ToolRow({ t, now, onClick }: { t: ToolCall; now: number; onClick: () => void }) {
   const status = t.endedAt == null ? "inflight" : t.ok === false ? "err" : "done";
   const dur = (t.endedAt ?? now) - t.startedAt;
@@ -3220,7 +3228,18 @@ function ToolRow({ t, now, onClick }: { t: ToolCall; now: number; onClick: () =>
   return (
     <button className="tool clickable" title={t.inputPreview || t.name} onClick={onClick}>
       <span className="name">
-        <span className={`status-dot ${status}`} />
+        {/* The dot said nothing here — an empty <span> that was not even marked
+            decorative — so a failed call and a finished one both announced
+            "Bash 1.2s" and differed by red against green, the one pair a
+            red-green CVD cannot separate at all (#373). The dot is explicitly
+            decoration now, because the stylesheet draws its ✓ and × with
+            `content:` and generated content IS spoken by some readers: without
+            aria-hidden the row would say the mark and then the word.
+            The word leads, where the dot is, for the reason the session list
+            gives — the accessible name is the contents in DOM order, so
+            "error Bash 1.2s" is read in the order it is seen. */}
+        <span className={`status-dot ${status}`} aria-hidden />
+        <span className="vis-hidden">{TOOL_STATUS_LABEL[status]}</span>
         {t.name}
       </span>
       <span style={{ color: "var(--muted)" }}>{durLabel}</span>
