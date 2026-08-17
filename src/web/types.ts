@@ -126,6 +126,26 @@ export interface AgentNodeData {
    *  reconstructs its stream from rollout files and emits no notification at
    *  all; absence of the signal there is not evidence of no block. */
   waiting?: WaitingBlock | null;
+  /** When this session was last heard from: the newest `receivedAt` of any
+   *  event carrying its session id, whichever agent that event was attributed
+   *  to. Only the root carries it, for the same reason only the root carries
+   *  `waiting` — a subagent's tool call is still the session moving, and being
+   *  stale is a property of the session as a whole.
+   *
+   *  Nothing else on this type answers the question. `startedAt` never advances
+   *  after the first event, `endedAt` is set only by a Stop the dead session
+   *  never sent, and the `lastActivity` SessionList derives from
+   *  `endedAt ?? startedAt` therefore stands still for the entire life of a
+   *  RUNNING session — which is precisely the window `sweepStaleSessions` has
+   *  to measure. */
+  lastEventAt?: number;
+  /** Set when `sweepStaleSessions` settled this root, rather than a `Stop` or a
+   *  `SessionEnd` doing it honestly. The flag is what lets a late event undo the
+   *  guess: a session reaped after 90 minutes of silence and then heard from
+   *  again was alive the whole time, and goes straight back to `active`. Without
+   *  it there is no way to tell a reaped root from a genuinely finished one, and
+   *  a transcript scan landing after a real `Stop` would un-finish the session. */
+  reaped?: boolean;
   /** Server-derived structural breakdown of what's in the context window.
    *  Approximation: server reads the transcript JSONL + scans cwd for
    *  CLAUDE.md and emits a synthetic ContextObserved event. Only the root

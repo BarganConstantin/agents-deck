@@ -36,7 +36,7 @@ import { PRODUCT } from "./brand";
 import { ambientSignal, FAVICON_HREF, type AmbientSignal } from "./ambient";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
-import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, sweepStaleTools, type GraphState } from "./reducer";
+import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, STALE_SESSION_MS, sweepStaleSessions, sweepStaleTools, type GraphState } from "./reducer";
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
 import { SESSION_GROUP_TYPE, minimapNodeColor } from "./minimap";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
@@ -1230,6 +1230,14 @@ function Inner() {
       const t = Date.now();
       setNow(t);
       let changed = sweepStaleTools(stateRef.current, t, STALE_TOOL_MS);
+      // And the session above those tools, when nothing at all has been heard
+      // from it in STALE_SESSION_MS. A terminal killed while a permission prompt
+      // was up sends no final event, so its root stays `active` and its
+      // `waiting` block stays lit — on the tab title and the favicon, which have
+      // no age printed on them to give the staleness away. Runs on this tick
+      // rather than one of its own: the periodic mechanism the three sweeps
+      // below already share is the whole of what this needed.
+      if (sweepStaleSessions(stateRef.current, t, STALE_SESSION_MS)) changed = true;
       // Prune long-finished agents so memory doesn't grow over multi-day
       // sessions. Keeps most-recent AGENT_CAP — past 5 minutes since done.
       if (pruneOldAgents(stateRef.current, t, AGENT_CAP, AGENT_GRACE_MS)) changed = true;
