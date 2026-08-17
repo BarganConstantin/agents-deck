@@ -37,6 +37,7 @@ import { PRODUCT } from "./brand";
 import { ambientSignal, FAVICON_HREF, type AmbientSignal } from "./ambient";
 import { blockedSessions, runningSessionCount } from "./ambient-counts";
 import { blockedAnnouncement, nextAnnouncement } from "./block-announce";
+import { categoryFor, type ToolCategory } from "./tool-taxonomy";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, STALE_SESSION_MS, sweepStaleSessions, sweepStaleTools, type GraphState } from "./reducer";
@@ -388,10 +389,14 @@ function exportSessionJson(state: GraphState, sessionId: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Tool categories used both by the detail-panel strip and the canvas
-// filter chips. Same buckets ToolBursts uses internally (kept in sync
-// manually — small enough that a shared module isn't worth it).
-type DetailCategory = "file" | "shell" | "web" | "agent" | "task" | "plan" | "mcp" | "other";
+// Tool categories used both by the detail-panel strip and the canvas filter
+// chips. These are the buckets ToolBursts tints its bubbles by, and they used
+// to be a second copy of that table living here, "kept in sync manually —
+// small enough that a shared module isn't worth it". It was not: when Codex
+// renamed its shell tool to `exec` the copy here went on filing it under
+// "other" while the canvas coloured it grey, and the two were only ever going
+// to drift again (#417). Both now read the one table in tool-taxonomy.ts.
+type DetailCategory = ToolCategory;
 const DETAIL_CAT_EMOJI: Record<DetailCategory, string> = {
   file: "📁", shell: "⚡", web: "🌐", agent: "🤖",
   task: "📋", plan: "🧭", mcp: "🔌", other: "✨",
@@ -400,28 +405,9 @@ const DETAIL_CAT_LABEL: Record<DetailCategory, string> = {
   file: "file", shell: "shell", web: "web", agent: "agent",
   task: "task", plan: "plan", mcp: "mcp", other: "other",
 };
-const DETAIL_TOOL_CAT: Record<string, DetailCategory> = {
-  Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
-  Glob: "file", Grep: "file", LS: "file", NotebookEdit: "file",
-  Bash: "shell", PowerShell: "shell",
-  // Codex shell tools
-  shell: "shell", exec_command: "shell", shell_command: "shell",
-  write_stdin: "shell", wait: "shell",
-  // Codex file-edit tool
-  apply_patch: "file",
-  // Codex planning tool
-  update_plan: "task",
-  WebFetch: "web", WebSearch: "web",
-  Task: "agent", Agent: "agent",
-  TodoWrite: "task", TaskCreate: "task", TaskUpdate: "task",
-  TaskList: "task", TaskGet: "task", TaskOutput: "task", TaskStop: "task",
-  EnterPlanMode: "plan", ExitPlanMode: "plan", AskUserQuestion: "plan",
-  Skill: "plan", Workflow: "plan",
-};
-function detailCategoryFor(name: string): DetailCategory {
-  if (name.startsWith("mcp__")) return "mcp";
-  return DETAIL_TOOL_CAT[name] ?? "other";
-}
+/** The detail panel's name for the shared bucket lookup. Kept as a local alias
+ *  purely so the call sites below read the way they always have. */
+const detailCategoryFor = categoryFor;
 
 function matchesQuery(a: AgentNodeData, q: string): boolean {
   if (!q) return true;

@@ -1005,7 +1005,7 @@ export function codexObjToPayload(obj, sid, cwd) {
       return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: input, tool_use_id: pl.call_id, model };
     }
     if (pl.type === "custom_tool_call") {
-      return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: { patch: pl.input }, tool_use_id: pl.call_id, model };
+      return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: codexCustomToolInput(pl.name, pl.input), tool_use_id: pl.call_id, model };
     }
     // #397: the outcome, not just the fact that an outcome arrived. This used
     // to hardcode "PostToolUse" for both output types, and the reducer derives
@@ -1025,6 +1025,60 @@ export function codexObjToPayload(obj, sid, cwd) {
     }
   }
   return null;
+}
+
+/**
+ * Wrap a `custom_tool_call`'s raw input under the key that describes what it
+ * actually is.
+ *
+ * WHY THIS IS NOT JUST `{ patch: input }` ANY MORE (#417). Codex's
+ * `custom_tool_call` container carries a bare string and nothing that says what
+ * kind of string it is — the tool's NAME is the only discriminator. When this
+ * branch was written the container had exactly one inhabitant, `apply_patch`,
+ * so it hardcoded `patch` and was right. It is no longer the only inhabitant,
+ * and on 0.147 it is not even the common one:
+ *
+ *   CLI      custom_tool_call name   count
+ *   0.144.5  exec                       77
+ *   0.144.5  apply_patch                 2
+ *   0.147.0  exec                        6
+ *
+ * Eighty-three shell scripts were therefore filed on the deck as patches. The
+ * client's `commandStringOf` reads `cmd` / `command` / `script` and never
+ * `patch`, so no Codex call could show what it ran; `extractFilePath` mean-
+ * while reads `patch` and tried to find a `*** Update File:` header in a
+ * JavaScript program. Keying off the name fixes both directions at once.
+ *
+ * WHY `exec` GETS `script` AND NOT `command`. Because it is not a command. The
+ * `exec` tool takes a small JavaScript program that calls into a `tools.*` API
+ * — 83 of 83 inputs on this machine start with `const `, none parses as JSON,
+ * all are multi-line — and Codex's own result wrapper calls it one, prefixing
+ * the output with "Script completed" / "Script failed" rather than an exit code
+ * (the line #397 reads). Filing a program under `command` would make the deck
+ * draw the first token of the program as the command that ran, which is the
+ * word `const` on every Codex call in the session. `script` is both true and
+ * already understood by the client, which digs the real command out of the
+ * program from there.
+ *
+ * WHY THE FALLBACK IS `input` AND NOT A GUESS. A name this function has never
+ * heard of is a string whose meaning is unknown, and the one thing worse than
+ * showing it under a neutral key is showing it under a confident wrong one —
+ * that is the whole of this bug, repeated. `input` claims nothing; the tool's
+ * own name still reaches the bubble, so an unrecognised Codex tool degrades to
+ * "a tool I cannot read the arguments of" instead of "a patch".
+ */
+const CODEX_CUSTOM_TOOL_INPUT_KEY = {
+  // A `*** Begin Patch … *** End Patch` document (2/2 observed, both 0.144.5).
+  // Unchanged, and it has to stay unchanged: the client's extractFilePath()
+  // pulls the edited file's path out of `input.patch` for the sub-bubble.
+  apply_patch: "patch",
+  // A JavaScript program. See above.
+  exec: "script",
+};
+
+function codexCustomToolInput(name, input) {
+  const key = CODEX_CUSTOM_TOOL_INPUT_KEY[name] ?? "input";
+  return { [key]: input };
 }
 
 /**
