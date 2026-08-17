@@ -48,7 +48,7 @@ No config file. No account. No telemetry — nothing about your sessions is repo
 | **Survives restarts** | Events are appended to `~/.claude/agent-dag/events.jsonl` and replayed on open. |
 | **Accounts without a terminal** | Sign a new Claude account in, share one to another machine, rename, reorder, remove — from the panel. |
 | **Knows when it is stale** | Node caches modules at startup, so an upgraded-while-running deck keeps executing old code. This one says so, and can restart itself when nothing is running. |
-| **Workspace scoping** | `--scope` for the current directory, `--workspace <path>` for any subtree. |
+| **Workspace scoping** | `--scope` for the current directory, `--workspace <path>` for any subtree — for Claude Code and Codex alike. |
 
 ## How it works
 
@@ -120,6 +120,8 @@ ccdeck [options]
       --uninstall          Remove ccdeck's hooks from settings files
   -h, --help               Show this help
 ```
+
+`--workspace` is a filter this deck applies to itself, not a claim on the sessions it matches: **every** running deck whose workspace contains a session's directory draws that session, so a machine-wide deck and one scoped to `~/proj` both show the agents working inside `~/proj`. It reads the same way on both capture paths — Claude Code's hook and Codex's rollout files — and the events log still gets exactly one copy of each event, whichever decks are up. A relative path is resolved against the directory you start the deck in, and once, so both paths scope to the same tree.
 
 Environment:
 

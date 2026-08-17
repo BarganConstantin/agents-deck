@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // agent-dag hook forwarder. Invoked by Claude Code or Codex CLI as a command
 // hook. Reads stdin (event JSON), tags it with the provider passed via
-// `--provider <name>`, finds the matching agent-dag server via per-workspace
-// discovery files in <claude config dir>/agent-dag/, makes that server prove it
-// is the deck the file describes, and POSTs the payload. Dead instances are
-// cleaned up.
+// `--provider <name>`, finds every agent-dag server whose workspace contains the
+// session — via the discovery files in <claude config dir>/agent-dag/ — makes
+// each one prove it is the deck its file describes, and POSTs the payload. Dead
+// instances are cleaned up.
 "use strict";
 
 const fs = require("fs");
@@ -84,6 +84,36 @@ function cwdInWorkspace(cwd, workspace, platform = process.platform) {
   // A root ("C:\", "/") already ends in the separator; appending a second one
   // would match nothing.
   return a.startsWith(b.endsWith(p.sep) ? b : b + p.sep);
+}
+
+/**
+ * Does a deck scoped to `workspace` capture a session running in `cwd`? This is
+ * the whole of what `--workspace` means, and it is a question about ONE deck: it
+ * asks nothing about the others that may also be up, so a deck's answer never
+ * depends on who else is running.
+ *
+ * An empty workspace is the default — machine-wide — and captures everything.
+ * It is answered before cwdInWorkspace rather than passed to it because
+ * p.resolve("") is the resolving process's own cwd, which here is the agent's,
+ * so an unscoped deck would be silently scoped to whatever directory the user
+ * happened to run their agent in.
+ *
+ * A session that never said where it runs is inside no workspace, so only an
+ * unscoped deck sees it. Unreachable from main(), which exits before this on a
+ * payload with no cwd — it is here because the rule has to be stated the same
+ * way on both sides to be pinned against the other one.
+ *
+ * src/server/log-writer.mjs answers this same question, for the sessions the
+ * server builds itself out of Codex's rollout files, under the name
+ * codexCwdInWorkspace — this script is copied out of the package and run
+ * standalone, so it cannot import that copy. A test walks one table of paths
+ * through both: a disagreement between them is `--workspace` meaning two
+ * different things depending on which CLI produced the session.
+ */
+function capturesSession(cwd, workspace, platform = process.platform) {
+  if (!workspace || typeof workspace !== "string") return true;
+  if (!cwd || typeof cwd !== "string") return false;
+  return cwdInWorkspace(cwd, workspace, platform);
 }
 
 function isAlive(pid) {
@@ -315,7 +345,24 @@ function main() {
     } catch { return process.exit(0); }
     if (!files.length) return process.exit(0);
 
-    const matches = [];
+    // Every deck whose workspace contains this cwd, and nothing else decides it.
+    //
+    // This used to sort the matches by how long each deck's workspace path was
+    // and deliver only to the longest — so a deck scoped to /Users/x/proj TOOK
+    // that tree's sessions away from a machine-wide deck, which then sat there
+    // showing nothing while `--all` promised it captured every session on this
+    // machine. Nothing documented that, and the server's own Codex capture never
+    // did it: each deck tails the rollout files itself and evaluates its own
+    // workspace, so a Codex session inside a scoped tree appeared on both decks
+    // while the Claude session beside it appeared on one. One flag, one path,
+    // two answers.
+    //
+    // The fan-out is the documented meaning and the one kept: `--workspace` says
+    // which sessions a deck captures, not which sessions it takes from the decks
+    // around it. It is also what electWriters below already assumes — several
+    // decks drawing one event is the case it exists to keep from being written
+    // to one log several times.
+    const targets = [];
     for (const file of files) {
       let d;
       try { d = JSON.parse(fs.readFileSync(path.join(DIR, file), "utf8")); } catch { continue; }
@@ -329,29 +376,25 @@ function main() {
         continue;
       }
 
-      if (d.workspace === "") {
-        matches.push({ d, wsLen: 0 });
-        continue;
-      }
-      const ws = normPath(d.workspace);
-      if (cwdInWorkspace(resolvedCwd, ws)) {
-        matches.push({ d, wsLen: ws.length });
-      }
+      // "" is machine-wide and must never reach normPath: resolving it would
+      // produce this hook's own cwd — the agent's — and scope a deck that asked
+      // for no scope at all. Any other spelling is canonicalized here, which is
+      // now a second pass over a path bin/deck.js already canonicalized before
+      // publishing it — kept because a deck old enough to have published a
+      // relative one is still entitled to its events.
+      const ws = d.workspace === "" ? "" : normPath(d.workspace);
+      if (capturesSession(resolvedCwd, ws)) targets.push(d);
     }
 
-    if (!matches.length) return process.exit(0);
-
-    matches.sort((a, b) => b.wsLen - a.wsLen);
-    const bestLen = matches[0].wsLen;
-    const targets = matches.filter(m => m.wsLen === bestLen);
+    if (!targets.length) return process.exit(0);
 
     // One deck per events log records this event; the others only draw it.
-    const writers = electWriters(targets.map(m => m.d));
+    const writers = electWriters(targets);
 
     let pending = targets.length;
     const done = () => { if (--pending <= 0) process.exit(0); };
 
-    for (const { d } of targets) deliver(d, taggedInput, writers.has(d), done);
+    for (const d of targets) deliver(d, taggedInput, writers.has(d), done);
   });
 }
 
@@ -360,5 +403,5 @@ function main() {
 // require() it exports the rules it decides by — matching, election, the
 // handshake — and starts nothing, which is what lets them be tested without a
 // 1.5s exit timer in the test runner.
-module.exports = { cwdInWorkspace, foldsCase, electWriters, challengeProof, requiresProof };
+module.exports = { capturesSession, cwdInWorkspace, foldsCase, electWriters, challengeProof, requiresProof };
 if (require.main === module) main();
