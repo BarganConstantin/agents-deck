@@ -462,7 +462,12 @@ describe("the 7-day token line does not wait on an authenticated round trip", ()
   });
 
   it("keeps polling it on its own timer, which is what makes that worth doing", () => {
-    expect(panel).toMatch(/const \{ data: codexUsage \} = useCodexUsage\(\);/);
+    // The argument is deliberately not pinned. #402 gates the hook on
+    // `providers.codex` so a Claude-only machine stops polling an endpoint that
+    // can only answer empty — that is a different question from this one, which
+    // is only that the line has a hook of its own rather than riding on the
+    // authenticated quota call.
+    expect(panel).toMatch(/const \{ data: codexUsage \} = useCodexUsage\([^)]*\);/);
     expect(panel).toMatch(/fetch\("\/api\/codex-usage"\)/);
   });
 
