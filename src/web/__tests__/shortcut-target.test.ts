@@ -3,11 +3,15 @@
 // focused toolbar button ran preventDefault and toggled pause, and a canceled
 // Space keydown also suppresses the button's activation, so the keyboard user
 // paused the stream instead of pressing the button. The version banner's
-// dismiss span and the clickable tool bursts are role="button" with their own
-// Space handler, so one press did two unrelated things. And with one of the
+// dismiss span and the clickable tool bursts were role="button" with their own
+// Space handler, so one press did two unrelated things — both have since become
+// what they actually are, a real <button> and plain aria-hidden decoration, but
+// the rule below is what protects the next one. And with one of the
 // accounts panel's <select>s focused — that panel opens by default — a bare
 // "c" reached Clear, which truncates events.jsonl with no confirmation.
-// These pin which focused targets get to keep their keystrokes.
+// These pin which focused targets get to keep their keystrokes. The one target
+// that is exempt from all of it — an agent card, which wears role="button"
+// only because React Flow put it there — is canvas-keyboard.test.ts's.
 import { describe, it, expect } from "vitest";
 import { isTypingTarget, ownsKeystroke, type FocusTarget } from "../shortcuts";
 
@@ -55,7 +59,7 @@ describe("ownsKeystroke", () => {
     expect(ownsKeystroke(el("SPAN", { isContentEditable: true }))).toBe(true);
   });
 
-  it("exempts the dismiss span and the tool bursts, which are spans wearing role=button", () => {
+  it("exempts anything wearing role=button, whatever tag it was built out of", () => {
     expect(ownsKeystroke(el("SPAN", { role: "button" }))).toBe(true);
     expect(ownsKeystroke(el("DIV", { role: "button" }))).toBe(true);
   });
