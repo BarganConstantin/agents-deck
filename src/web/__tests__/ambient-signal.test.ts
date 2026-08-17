@@ -27,12 +27,23 @@
 // effect sits on the SSE path, where `running` churns constantly under a title
 // that is not moving.
 //
-// Plain node, no DOM — so this tests the pure function, reads the two source
+// The fourth is WHAT COUNTS, which is the one this file got wrong. #348
+// narrowed the alarm to `permission` blocks and left `idle` out of it; this
+// file kept its own hand-written copy of the old expression and was not touched
+// by that commit, so from #348 until #377 the suite asserted the superseded
+// counting as correct behaviour — a green test standing over exactly the
+// regression it was written to catch. The copy is gone: the counting cases
+// below call ambient-counts.ts, which is the same module App.tsx and
+// SessionList.tsx count with, so there is nothing left here that can drift from
+// what ships.
+//
+// Plain node, no DOM — so this tests the pure functions, reads the two source
 // files as text, and drives the reducer directly for the counting.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ambientSignal, FAVICON_HREF, type AmbientIcon } from "../ambient";
+import { blockedSessions, runningSessionCount } from "../ambient-counts";
 import { PRODUCT } from "../brand";
 import { applyEvent, initialState, pruneOldAgents } from "../reducer";
 import type { GraphState } from "../reducer";
@@ -246,10 +257,20 @@ describe("what App.tsx does with it", () => {
     expect(app).toContain("if (prev?.icon !== next.icon) {");
   });
 
-  it("counts what the canvas holds rather than keeping a tally", () => {
-    // pruneOldAgents evicts agents from the map outright, so any count
-    // maintained alongside it would outlive what it was counting.
-    expect(app).toContain("for (const a of stateRef.current.agents.values())");
+  it("counts through the shared module rather than spelling the rule out again", () => {
+    // Not style policing. The rule was inline here once, a copy of it was
+    // inline in SessionList.tsx and a third copy was inline in THIS file, and
+    // #348 reached two of the three — which is how the suite ended up
+    // certifying the counting it was supposed to forbid. One call site per
+    // surface, one definition, and the cases below exercise the definition.
+    expect(app, "App.tsx counts blocked sessions inline again")
+      .toContain("blockedSessions(stateRef.current.agents.values())");
+    expect(app, "App.tsx counts running sessions inline again")
+      .toContain("runningSessionCount(stateRef.current.agents.values())");
+    // The counts are derived per frame from the map the canvas draws from.
+    // pruneOldAgents evicts agents outright, so a tally maintained alongside it
+    // would outlive the thing it was counting; the eviction case below proves
+    // the behaviour, and this keeps a tally from creeping back in beside it.
     expect(app).not.toMatch(/set(Waiting|Running)Count/);
   });
 });
@@ -257,9 +278,14 @@ describe("what App.tsx does with it", () => {
 // ── the counts, driven through the reducer ──────────────────────────────────
 //
 // The two numbers the signal is given come from the agents map, and the map is
-// the thing that forgets. These cases are the edges #338 named: an evicted
+// the thing that forgets. These cases are the edges #338 named — an evicted
 // session must not leave a phantom in the title, and a replay must land on the
-// truth rather than on the sum of what it replayed.
+// truth rather than on the sum of what it replayed — plus the one #348 added,
+// which is that only a permission block is an alarm at all.
+//
+// Real hook payloads through the real reducer into the real counters, so the
+// whole path from "CC sent a notification" to "the tab says (1) ccdeck" is
+// pinned end to end and no step of it is a restatement of another step.
 
 const PERMISSION = { notification_type: "permission_prompt", message: "Claude needs your permission" };
 const IDLE = { notification_type: "idle_prompt", message: "Claude is waiting for your input" };
@@ -276,15 +302,21 @@ function send(state: GraphState, session: string, payload: HookPayload, received
   return applyEvent(state, env);
 }
 
-/** Exactly what App.tsx's two memos compute, over the same map. */
+/** What App.tsx's two memos compute — by calling them, not by restating them.
+ *
+ *  This used to be a hand-written loop under the comment "exactly what App.tsx's
+ *  two memos compute", and the comment was true when it was written and false
+ *  ten commits later: #348 narrowed the alarm to permission blocks in App.tsx
+ *  and SessionList.tsx, and a mirror nobody knew to update went on counting
+ *  every block. A mirror is a promise the compiler does not check, so there is
+ *  no mirror any more — `blockedSessions` and `runningSessionCount` here are the
+ *  functions the app itself runs, which makes reverting the rule a change these
+ *  cases fail on rather than one they bless. */
 function counts(state: GraphState): { waiting: number; running: number } {
-  let waiting = 0;
-  const running = new Set<string>();
-  for (const a of state.agents.values()) {
-    if (a.kind === "root" && a.waiting) waiting++;
-    if (a.state === "active") running.add(a.sessionId);
-  }
-  return { waiting, running: running.size };
+  return {
+    waiting: blockedSessions(state.agents.values()).length,
+    running: runningSessionCount(state.agents.values()),
+  };
 }
 
 describe("the counts the signal is handed", () => {
@@ -319,19 +351,65 @@ describe("the counts the signal is handed", () => {
     expect(ambientSignal(counts(state)).title).toBe(`(2) ${PRODUCT}`);
   });
 
+  it("says nothing at all for a session that merely ended its turn", () => {
+    // #348, and the case this file used to assert the opposite of. CC sends an
+    // idle_prompt about a minute after Stop on every session that finishes and
+    // is not picked straight back up, which on the log #348 was measured
+    // against outnumbered permission prompts 16 to 5 — so counting it lit the
+    // title and the favicon amber for roughly three quarters of the time they
+    // were lit at all, over sessions whose nodes already read `done`. Three
+    // surfaces worth having only while they are rare.
+    seq = 0;
+    let state = send(initialState(), "s1", { hook_event_name: "SessionStart", cwd: "/repo" });
+    state = send(state, "s1", { hook_event_name: "UserPromptSubmit", prompt: "go" });
+    state = send(state, "s1", { hook_event_name: "Stop" }, 3_000);
+    state = send(state, "s1", { hook_event_name: "Notification", ...IDLE }, 4_000);
+    expect(ambientSignal(counts(state))).toEqual({ title: PRODUCT, icon: "idle" });
+    // Not a claim that the block was dropped: it is on the root, it prints on
+    // the card and it sorts the sidebar above the running rows. It just does
+    // not shout, and this asserts both halves so a fix that quiets idle by
+    // discarding it fails here.
+    expect(state.agents.get("s1")?.waiting?.kind).toBe("idle");
+  });
+
+  it("adds up only the permission blocks when both kinds are on the board", () => {
+    // The mixed board is the one that separates "counts the right kind" from
+    // "counts nothing", and a suite that only ever shows it one kind at a time
+    // passes under either mistake.
+    seq = 0;
+    let state = initialState();
+    for (const s of ["s1", "s2", "s3"]) {
+      state = send(state, s, { hook_event_name: "SessionStart", cwd: "/repo" });
+      state = send(state, s, { hook_event_name: "UserPromptSubmit", prompt: "go" });
+    }
+    state = send(state, "s1", { hook_event_name: "Notification", ...PERMISSION });
+    state = send(state, "s2", { hook_event_name: "Notification", ...IDLE });
+    state = send(state, "s3", { hook_event_name: "Notification", ...IDLE });
+    expect(counts(state).waiting).toBe(1);
+    expect(ambientSignal(counts(state))).toEqual({ title: `(1) ${PRODUCT}`, icon: "waiting" });
+  });
+
   it("leaves no phantom in the title when an old session is evicted", () => {
-    // Two finished sessions, each sitting on the idle prompt CC sends about a
-    // minute after Stop — done, blocked, and therefore both counted AND
-    // evictable. pruneOldAgents drops the oldest out of the map once it is over
-    // cap, so a title kept as a running tally would report a session that is no
-    // longer anywhere on the canvas, with nothing left to click through to.
+    // Two finished sessions, each sitting on a permission prompt raised before
+    // the turn ended — done, blocked, and therefore both counted AND evictable.
+    // pruneOldAgents drops the oldest out of the map once it is over cap, so a
+    // title kept as a running tally would report a session that is no longer
+    // anywhere on the canvas, with nothing left to click through to.
+    //
+    // Stop lands BEFORE the notification so the roots keep `state: "done"` and
+    // an `endedAt`, which is what makes them prunable at all — Notification does
+    // not touch either field, so the block rides on a finished session the way
+    // an unanswered prompt does when the human walks away mid-turn. The kind is
+    // orthogonal to the eviction property being tested here; it is permission
+    // because permission is what the count is of, and a case built on idle
+    // proves nothing about a counter that correctly ignores idle.
     seq = 0;
     let state = initialState();
     for (const s of ["s1", "s2"]) {
       state = send(state, s, { hook_event_name: "SessionStart", cwd: "/repo" });
       state = send(state, s, { hook_event_name: "UserPromptSubmit", prompt: "go" });
       state = send(state, s, { hook_event_name: "Stop" }, 3_000);
-      state = send(state, s, { hook_event_name: "Notification", ...IDLE }, 4_000);
+      state = send(state, s, { hook_event_name: "Notification", ...PERMISSION }, 4_000);
     }
     expect(ambientSignal(counts(state))).toEqual({ title: `(2) ${PRODUCT}`, icon: "waiting" });
 

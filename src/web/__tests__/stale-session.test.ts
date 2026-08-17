@@ -38,6 +38,7 @@ import {
   type GraphState,
 } from "../reducer";
 import { ambientSignal } from "../ambient";
+import { blockedSessions } from "../ambient-counts";
 import type { HookEnvelope, HookPayload } from "../types";
 
 const SESSION = "sess-350";
@@ -74,16 +75,14 @@ function blocked(): GraphState {
 
 const root = (state: GraphState) => state.agents.get(SESSION)!;
 
-/** #348's rule, re-derived from the same shape App.tsx and SessionList.tsx
- *  count over. Deliberately not imported: what is being pinned is that the
- *  counters fall to zero without either call site being changed. */
-function alarms(state: GraphState): number {
-  let n = 0;
-  for (const a of state.agents.values()) {
-    if (a.kind === "root" && a.waiting?.kind === "permission") n++;
-  }
-  return n;
-}
+/** How many alarms this board is raising, through the counter the app itself
+ *  runs. What is being pinned here is that the number falls to zero without
+ *  either CALL SITE being changed — the sweep does it by clearing the block in
+ *  the reducer — and asking ambient-counts.ts is what makes that a claim about
+ *  the shipped counter rather than about a copy of it. #377 is the bill for the
+ *  other choice: a re-derived counter that #348 never reached went on asserting
+ *  the superseded rule as correct for thirty releases. */
+const alarms = (state: GraphState): number => blockedSessions(state.agents.values()).length;
 
 describe("a session that is still being heard from", () => {
   it("keeps its permission block standing far past the threshold", () => {

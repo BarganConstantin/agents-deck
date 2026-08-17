@@ -35,6 +35,7 @@ import { readStored } from "./storage";
 import { THEME_KEY, storedTheme, type Theme } from "./theme";
 import { PRODUCT } from "./brand";
 import { ambientSignal, FAVICON_HREF, type AmbientSignal } from "./ambient";
+import { blockedSessions, runningSessionCount } from "./ambient-counts";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, STALE_SESSION_MS, sweepStaleSessions, sweepStaleTools, type GraphState } from "./reducer";
@@ -47,7 +48,7 @@ import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
-import type { AgentNodeData, HookEnvelope, ToolCall, WaitingBlock } from "./types";
+import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
   if (typeof window === "undefined") return "";
@@ -2070,43 +2071,28 @@ function Inner() {
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
-  /** Sessions blocked on a human, longest-blocked first — which is the one the
-   *  count's own click goes to. Only roots carry `waiting`, so no session can
-   *  be counted twice.
+  /** The two numbers the topbar chip and the tab strip are driven from —
+   *  sessions blocked on a human, longest-blocked first, and sessions with an
+   *  agent still moving. Both are recomputed from the agents map on every frame
+   *  rather than kept as a tally, because the map is the thing that forgets;
+   *  ambient-counts.ts holds that reasoning along with why only a `permission`
+   *  block is an alarm.
    *
-   *  PERMISSION ONLY, and that is the difference between an alarm and noise.
-   *  Both kinds are a human being waited on, but only one is urgent: a
-   *  permission prompt is a session that cannot proceed until you decide, while
-   *  an idle prompt is a turn that ended and has not been picked back up — the
-   *  node is already `done` and says so more quietly. On this machine's log the
-   *  split ran 16 idle to 5 permission, so counting both put three quarters
-   *  noise into the topbar chip, the tab title and the favicon, which are the
-   *  three surfaces whose whole value is that they are rare. Idle keeps its row,
-   *  its card line, its sort position and its tooltip; it just stops raising an
-   *  alarm. */
-  const waitingSessions = useMemo(() => {
-    const blocked: Array<{ id: string; label: string; waiting: WaitingBlock }> = [];
-    for (const a of stateRef.current.agents.values()) {
-      if (a.kind === "root" && a.waiting?.kind === "permission") {
-        blocked.push({ id: a.id, label: a.label, waiting: a.waiting });
-      }
-    }
-    return blocked.sort((x, y) => x.waiting.since - y.waiting.since);
-  }, [stateRef.current, stateRef.current.lastSeq]);
-  /** Sessions with an agent still working — the other half of what the tab
-   *  strip reports. Counted over the map the canvas draws from, on every frame,
-   *  rather than kept as a tally: the map forgets. pruneOldAgents (reducer.ts)
-   *  evicts old `done` agents outright, and a number that was only ever
-   *  incremented would go on reporting sessions that are no longer on the board
-   *  — a tab claiming work with nothing behind it to click through to. Sessions
-   *  rather than agents, so a fan-out of six subagents is still one. */
-  const runningSessions = useMemo(() => {
-    const live = new Set<string>();
-    for (const a of stateRef.current.agents.values()) {
-      if (a.state === "active") live.add(a.sessionId);
-    }
-    return live.size;
-  }, [stateRef.current, stateRef.current.lastSeq]);
+   *  In a module rather than inline here because a rule that is spelled out
+   *  inside a React component is a rule a bare-node suite cannot call, and what
+   *  cannot be called gets copied instead. It was, twice, and #348 reached the
+   *  original and not the copies — so the suite spent thirty releases asserting
+   *  the superseded counting as correct (#377). The tests now import these two
+   *  functions, which is what makes a change to the rule a failing test rather
+   *  than a passing one. */
+  const waitingSessions = useMemo(
+    () => blockedSessions(stateRef.current.agents.values()),
+    [stateRef.current, stateRef.current.lastSeq],
+  );
+  const runningSessions = useMemo(
+    () => runningSessionCount(stateRef.current.agents.values()),
+    [stateRef.current, stateRef.current.lastSeq],
+  );
   // The tab strip — the only surface of this deck that is on screen while the
   // deck is not. The rule lives in ambient.ts, where it can be tested; this is
   // the DOM write the rule is not allowed to own.
