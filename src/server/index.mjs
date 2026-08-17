@@ -785,12 +785,17 @@ function maybeResolveCodex(payload) {
 // object {timestamp, type, payload}; we map the relevant ones to the same
 // synthetic hook payloads the reducer already understands:
 //   session_meta                       → SessionStart
-//   event_msg/user_message             → UserPromptSubmit
+//   event_msg/user_message             → UserPromptSubmit (Codex ≤ 0.144)
+//   event_msg/item_completed/UserMessage → UserPromptSubmit (Codex ≥ 0.147)
 //   response_item/function_call        → PreToolUse
 //   response_item/function_call_output → PostToolUse
 //   event_msg/token_count              → UsageObserved
 //   event_msg/task_started (+window)   → ModelObserved (context window)
+//   event_msg/task_complete            → Stop (the turn finished)
+//   event_msg/turn_aborted             → Stop (the turn was interrupted)
 //   turn_context / response_item.model → model snapshot (ModelObserved on change)
+// There is deliberately no SessionEnd here: Codex writes no session-close
+// record, so the end of a SESSION is still inferred by sweepStaleSessions.
 // Events are emitted with source "codex" so pushEvent skips the Claude-only
 // transcript enrichment (which needs transcript_path / hook events) but still
 // broadcasts them exactly like a hook event, and persists them when this deck is
@@ -890,10 +895,27 @@ async function readCodexHeader(path) {
   return null;
 }
 
+/**
+ * The human's prompt out of a 0.147-era `item_completed` item.
+ *
+ * `item.content` is an array of parts — every UserMessage observed carries a
+ * single `{ type: "text", text, text_elements }` — so the parts are joined
+ * rather than indexed, and a part with no string `text` contributes nothing
+ * instead of printing "undefined" into the prompt the card shows.
+ */
+function codexItemText(item) {
+  const parts = Array.isArray(item && item.content) ? item.content : [];
+  return parts.map(p => (p && typeof p.text === "string" ? p.text : "")).join("");
+}
+
 // Map one parsed rollout object to a synthetic hook payload (or null to skip).
 // Mutates codexSessionModel and returns { payload, modelEvent } where
 // modelEvent is an optional ModelObserved to emit first when the model changed.
-function codexObjToPayload(obj, sid, cwd) {
+//
+// Exported for the tests: this is the whole of the Codex translation, and the
+// lifecycle it produces is worth pinning against the real reducer without
+// standing up a watcher, a temp home and a 1.5s poll to get at it.
+export function codexObjToPayload(obj, sid, cwd) {
   const type = obj && obj.type;
   const pl = (obj && obj.payload) || {};
   const base = { session_id: sid, cwd, provider: "codex" };
@@ -913,11 +935,48 @@ function codexObjToPayload(obj, sid, cwd) {
       const prompt = typeof pl.message === "string" ? pl.message : "";
       return { ...base, hook_event_name: "UserPromptSubmit", prompt, model };
     }
+    // Codex 0.147 stopped writing `user_message` and writes the same submission
+    // as an `item_completed` carrying a `UserMessage` item instead. The two are
+    // mutually exclusive per CLI version — across the rollouts sampled here the
+    // 0.144 files have `user_message` and no `item_completed` at all, and the
+    // 0.147 files have exactly one `UserMessage` item per turn and no
+    // `user_message` — so handling both names emits one prompt per turn either
+    // way rather than two on either version. The item is the human's typed text
+    // only: the AGENTS.md preamble Codex prepends is written as a bare
+    // `response_item` with role "user" and never gets an item of its own.
+    //
+    // This matters far beyond the prompt text. `UserPromptSubmit` is what puts
+    // a settled root back to `active` (reducer.ts), so on 0.147 it is the ONLY
+    // thing that reopens a session for its second turn — without it the `Stop`
+    // below would trade "live forever" for "done forever", which is not better.
+    if (pl.type === "item_completed" && pl.item && pl.item.type === "UserMessage") {
+      return { ...base, hook_event_name: "UserPromptSubmit", prompt: codexItemText(pl.item), model };
+    }
     if (pl.type === "token_count" && pl.info && pl.info.total_token_usage) {
       return { ...base, hook_event_name: "UsageObserved", usage: pl.info.total_token_usage, model };
     }
     if (pl.type === "task_started" && typeof pl.model_context_window === "number") {
       return { ...base, hook_event_name: "ModelObserved", model, model_context_window: pl.model_context_window };
+    }
+    // The end of a turn, which is the only end Codex ever announces. Both names
+    // are one outcome as far as the deck is concerned — the turn is over and
+    // nothing is running — so both settle the root the way Claude's own Stop
+    // hook does. They are also exhaustive: across the rollouts sampled here
+    // every `task_started` is answered by exactly one of the two (54 completes
+    // + 1 abort for 55 starts), so no turn is left open by this mapping and
+    // none is closed twice. `turn_aborted` is the Esc key, and it is the case
+    // that matters most on the deck: pressing Esc is precisely when the user is
+    // watching to confirm the thing stopped.
+    //
+    // Per TURN, not per session, and that is correct: Codex writes no
+    // session-close record at all — a rollout simply stops growing when the
+    // terminal goes away — so `sweepStaleSessions` remains the only thing that
+    // ends a Codex *session*, and it must. What changes is that it now only
+    // ever sees the sessions it was written for: the ones that died without
+    // finishing. A turn that really ended is settled here, at the moment it
+    // ended, with no `reaped` flag, because it was a finish and not a guess.
+    if (pl.type === "task_complete" || pl.type === "turn_aborted") {
+      return { ...base, hook_event_name: "Stop", model };
     }
     return null;
   }
