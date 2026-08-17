@@ -50,13 +50,48 @@ export const isBatch = (file, platform = process.platform) =>
  * cmd.exe understands inside a quoted string.
  */
 export function viaCmd(file, args) {
-  const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
-  const line = [file, ...args].map(q).join(" ");
+  const line = [file, ...args].map(a => shellQuoteArg(a, "win32")).join(" ");
   return {
     file: process.env.comspec || process.env.ComSpec || "cmd.exe",
     args: ["/d", "/s", "/c", `"${line}"`],
     opts: { windowsVerbatimArguments: true },
   };
+}
+
+/**
+ * Quote ONE argument into a command line a shell will parse.
+ *
+ * Everything else in this module exists to avoid needing this: an argument
+ * vector is handed to spawn untouched and nothing in it is ever read as syntax.
+ * Two callers cannot take that route, and they are the reason this is exported.
+ * A Claude Code hook is registered as `{type:"command", command:"<string>"}` —
+ * the host CLI runs that string THROUGH A SHELL on every tool call, and the
+ * format has no argv form to emit instead. So the string has to be built here,
+ * correctly, once.
+ *
+ * The inputs are not user input in the web sense, but they are not constants
+ * either: the hook path is built from $CLAUDE_CONFIG_DIR and homedir(), and the
+ * node path from process.execPath. Wrapping those in double quotes — what this
+ * used to do — is not escaping on POSIX at all: `$(…)`, a backtick and `\` are
+ * all still live inside them, so a config dir named `/tmp/a$(id)b` became shell
+ * code written into the user's settings.json and executed on every hook fire.
+ * A bare `$` in a path is the same bug wearing a duller hat — `$HOME` expands to
+ * nothing, the hook path silently becomes wrong, and hooks stop firing with no
+ * error anywhere.
+ *
+ * POSIX gets single quotes, inside which NOTHING is special, with the one
+ * escape that form has: close the quote, emit a backslash-quote, reopen.
+ * Windows gets cmd.exe's rule — the same one viaCmd applies above, so this file
+ * has one Windows quoting rule rather than two — with the same single residual
+ * exec.mjs already documents: cmd.exe expands `%VAR%` inside quotes too, and a
+ * command line has no escape for it. That is narrower than it sounds, since
+ * `%foo%` with no variable `foo` is left alone, and it is a limit of the
+ * platform rather than of this function.
+ */
+export function shellQuoteArg(arg, platform = process.platform) {
+  const s = String(arg ?? "");
+  if (platform === "win32") return `"${s.replace(/"/g, '""')}"`;
+  return `'${s.split("'").join("'\\''")}'`;
 }
 
 /**
@@ -204,8 +239,13 @@ const TIMEOUT_TAIL = 8 << 10;
  * A run stopped by its deadline answers `{ ok: false, code: "ETIMEDOUT",
  * killed: true, timedOut: true }` — never ok, whatever the child said on its
  * way out.
+ *
+ * `env` replaces the child's environment wholesale, the way spawn's does; pass
+ * `{...process.env, X: "1"}` to add to it. It exists because the quota probe
+ * runs a whole Claude Code and has to mark the run as the deck's own, and that
+ * marker is what stops every poll drawing itself onto the canvas.
  */
-export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
+export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20, env } = {}) {
   const tries = candidates(cmd);
   return new Promise((resolve) => {
     const attempt = (i) => {
@@ -260,7 +300,16 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20 } = {}) {
 
       try {
         const cp = execFile(file, argv,
-          { timeout: 0, shell: false, windowsHide: true, maxBuffer, ...opts }, done);
+          { timeout: 0, shell: false, windowsHide: true, maxBuffer, ...(env ? { env } : {}), ...opts }, done);
+        // Give the child EOF on stdin straight away, which is what this
+        // function's contract has always claimed ("run closes stdin", says
+        // runInteractive's header) and what execFile does not do: it leaves the
+        // pipe open with nobody at the writing end, so a tool that reads stdin
+        // waits for a writer that will never arrive. `claude --print /usage`
+        // waits three seconds for exactly that before giving up, which is why
+        // the shell command it replaced had to end in `< /dev/null`. Closing
+        // the pipe is that redirection without a shell to parse it.
+        try { cp.stdin?.on("error", () => {}); cp.stdin?.end(); } catch { /* no stdin to close */ }
         cp.stdout?.on("data", (d) => { sawOut = (sawOut + d).slice(-TIMEOUT_TAIL); });
         cp.stderr?.on("data", (d) => { sawErr = (sawErr + d).slice(-TIMEOUT_TAIL); });
         // The deadline states the outcome itself and only then kills, which is

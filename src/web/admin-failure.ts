@@ -60,6 +60,10 @@ export const REASONS: Record<string, string> = {
   wrong_version: `that share was made by a newer ${PRODUCT}`,
   expired: "that share has expired — make a new one",
   import_failed: "claude-swap refused the import",
+  // The alias field is the only free text this route accepts, so it is the only
+  // one that can be refused for its spelling. Naming the allowed characters is
+  // the difference between a rule and a wall.
+  bad_value: "an alias can only use letters, numbers, spaces, dots, dashes and underscores, up to 64 characters",
 };
 
 /**

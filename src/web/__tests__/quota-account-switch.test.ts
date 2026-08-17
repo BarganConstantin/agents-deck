@@ -55,20 +55,20 @@ vi.mock("../../server/claude-accounts.mjs", () => ({
   requestCollection: async () => false,
 }));
 
-// The `claude` CLI, which must never actually run. quota.mjs promisifies exec at
-// import time and node's real exec carries the custom implementation promisify()
-// prefers; without it here, execAsync would resolve to a bare stdout string and
-// the module would read stderr off undefined.
-const { cli } = vi.hoisted(() => ({ cli: { stdout: "", stderr: "", calls: [] as string[] } }));
-vi.mock("node:child_process", async () => {
-  const { promisify } = await import("node:util");
-  const exec = () => { throw new Error("test: exec is blocked"); };
-  (exec as unknown as Record<symbol, unknown>)[promisify.custom] = async (cmd: string) => {
-    cli.calls.push(cmd);
-    return { stdout: cli.stdout, stderr: cli.stderr };
-  };
-  return { exec, default: { exec } };
-});
+// The `claude` CLI, which must never actually run. The seam is exec.mjs's `run`:
+// quota.mjs used to build a shell command line and hand it to `exec()`, which is
+// how a home directory containing `$(…)` became shell code (see
+// no-shell-hook-commands.test.ts), and it now spawns an argument vector instead.
+// `run` never rejects and never throws, so the stand-in answers the shape it
+// does rather than raising. Replaced rather than wrapped, so nothing in this
+// file can reach a real child process by any route.
+const { cli } = vi.hoisted(() => ({ cli: { stdout: "", stderr: "", calls: [] as string[][] } }));
+vi.mock("../../server/exec.mjs", () => ({
+  run: async (cmd: string, args: string[] = []) => {
+    cli.calls.push([cmd, ...args]);
+    return { ok: true, code: 0, killed: false, timedOut: false, stdout: cli.stdout, stderr: cli.stderr };
+  },
+}));
 
 type Quota = {
   ok: boolean;

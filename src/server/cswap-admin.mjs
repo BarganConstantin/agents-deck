@@ -443,6 +443,18 @@ async function restoreActive(num) {
  * expiry so a copy left behind in clipboard history stops working, and nothing
  * more: it is not encryption and is not presented as any.
  *
+ * Say the limit of that out loud, because the UI used to imply the opposite.
+ * `exp` is a plain number inside plain base64'd JSON with NO key, MAC or
+ * signature over it, so anyone holding the text can decode it, write a later
+ * `exp`, re-encode, and import it. unwrapShare's check is therefore a check
+ * against staleness, not against an adversary — and it cannot be made into one
+ * here. A MAC needs a secret both decks hold, and two decks that already shared
+ * a secret would not need this function; and even a perfect signature would
+ * only stop THIS import path, since the payload it wraps is the credential
+ * itself and `cswap import` accepts it unwrapped. The honest fix for a share
+ * that got away is to sign the account out and back in. See share-expiry-
+ * forgeable.test.ts, which pins the forgery rather than leaving it implied.
+ *
  * The default export shape is used deliberately, never --full, which would
  * embed the entire ~/.claude.json including every project and MCP server.
  */
@@ -473,7 +485,19 @@ export async function shareAccount(num) {
   if (!Number.isInteger(n) || n < 1 || n > 999) return { ok: false, reason: "bad_account" };
   const r = await run(await cswapBin(), ["export", "-", "--account", String(n)], { timeout: CSWAP_TIMEOUT_MS });
   if (!r.ok || !r.stdout.trim()) {
-    return { ok: false, reason: "export_failed", detail: failureText(r, "cswap export") };
+    // The failure sentence is built from stderr ALONE for this one command,
+    // because its stdout is the credential. `failureText` concatenates
+    // `${stderr}\n${stdout}` and `firstUseful` takes the LAST non-empty line —
+    // right for every other cswap command, and here it means any stdout at all
+    // outranks the real error. claude-swap writes its diagnostics to stderr
+    // specifically so stdout stays pure JSON in pipe mode, and it writes the
+    // envelope as its last act; a non-zero exit after a partial write would
+    // therefore put the tail of `json.dumps(envelope, indent=2)` in front of the
+    // user, and one of those lines is the refresh token on its own.
+    //
+    // Nothing is lost by dropping it: the ENOENT branch keys off `r.code`, which
+    // `run` sets, and cmd.exe's "is not recognized" is stderr's.
+    return { ok: false, reason: "export_failed", detail: failureText({ ...r, stdout: "" }, "cswap export") };
   }
   return { ok: true, blob: wrapShare(r.stdout), expiresAt: Date.now() + SHARE_TTL_MS };
 }
@@ -546,10 +570,32 @@ export async function removeAccount(num) {
   });
 }
 
+/**
+ * What an alias may be made of.
+ *
+ * Every other argument this module sends to cswap is an integer bounded to
+ * 1..999; the alias was the one free-text field, and `.trim()` was the whole of
+ * its validation. That is fine on POSIX, where `run` spawns the argument vector
+ * untouched, and not fine on Windows: cswap is a `.cmd` shim there, so the
+ * vector goes through `cmd.exe /d /s /c` (see viaCmd). Quote-doubling handles
+ * `"` and every other metacharacter, which leaves exactly the residual exec.mjs
+ * documents — `%VAR%` expands inside quotes and a command line has no escape for
+ * it — so `%USERPROFILE%` in an alias stored the user's home path, and an alias
+ * carrying an unbalanced quote plus an `&` could end the quoted region early.
+ * An interior newline survived `.trim()` untouched as well.
+ *
+ * The same allowlist discipline cswap-auto.mjs already applies to its model
+ * list, and it closes the unbounded-length half too: an alias is a short name
+ * shown instead of an email, so 64 characters is not a constraint anyone meets
+ * by accident.
+ */
+const ALIAS_OK = /^[A-Za-z0-9 ._-]{1,64}$/;
+
 export async function setAlias(num, alias) {
   const n = Number(num);
   if (!Number.isInteger(n) || n < 1 || n > 999) return { ok: false, reason: "bad_account" };
   const clean = typeof alias === "string" ? alias.trim() : "";
+  if (clean && !ALIAS_OK.test(clean)) return { ok: false, reason: "bad_value" };
   const args = clean ? ["alias", String(n), clean] : ["alias", String(n), "--unset"];
   return withStoreLock(async () => {
     const r = await run(await cswapBin(), args, { timeout: CSWAP_TIMEOUT_MS });

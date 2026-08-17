@@ -55,9 +55,12 @@ describe("anyTouches", () => {
   });
 });
 
-// A share is a live credential with a ten-minute life. The countdown is the
-// only thing on screen that says so, which makes its wording and its colour
-// part of the security story rather than decoration.
+// A share is a live credential, and the countdown says how long another deck
+// will still accept it. That is all it says: the expiry is unsigned and anyone
+// holding the text can rewrite it (see share-expiry-forgeable.test.ts), so the
+// timer is a staleness indicator and the warning about what the text IS sits
+// beside it rather than on it. Pinned here because the wording drifted into a
+// security claim once already.
 import { shareExpiry } from "../components/AccountsPanel";
 
 describe("shareExpiry", () => {
@@ -68,7 +71,7 @@ describe("shareExpiry", () => {
     expect(withLeft(600)).toEqual({ text: "expires in 10m", tone: "ok" });
   });
 
-  it("switches to seconds, and to a warning colour, in the last minute", () => {
+  it("switches to seconds in the last minute", () => {
     expect(withLeft(45)).toEqual({ text: "expires in 45s", tone: "soon" });
   });
 

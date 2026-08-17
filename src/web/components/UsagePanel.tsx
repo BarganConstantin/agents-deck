@@ -279,6 +279,9 @@ function codexHint(reason?: string): string {
     case "api_key_mode":     return "API-key login — ChatGPT quota is only available for codex login.";
     case "refresh_rejected": return "Codex session expired — run codex login.";
     case "refresh_failed":   return "Couldn't refresh the Codex token — click ↻ to retry.";
+    // The deck will not put a live ChatGPT token on the wire to somewhere it
+    // read out of a config file it does not own, so it says which file.
+    case "untrusted_base_url": return "chatgpt_base_url in ~/.codex/config.toml is not an https OpenAI host, so the token was not sent.";
     default:                 return "ChatGPT API unreachable — click ↻ to retry.";
   }
 }

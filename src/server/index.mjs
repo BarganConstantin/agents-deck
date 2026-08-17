@@ -1293,20 +1293,57 @@ function readBody(req, limit = 64_000) {
   });
 }
 
+// How long an oversized POST is drained after it has been refused, so the 413
+// reaches a poster that is still uploading. Generous next to hook.js's own
+// one-second budget, and finite so nothing can sit on the socket indefinitely.
+const OVERSIZE_DRAIN_MS = 10_000;
+
 // `persist` is false when the hook posted this event to another deck as well
 // and elected that one to write it to the log they share. The event is still
 // buffered and broadcast here — every matching deck draws it — it is only the
 // second copy on disk that is dropped.
 function handleEventIngest(req, res, persist = true) {
   let body = "";
+  // Set once the cap is hit, because everything after that point is about an
+  // exchange that is already over: more `data` may still be in flight, and
+  // `end` must not go on to parse the truncated half.
+  let refused = false;
   req.setEncoding("utf8");
   req.on("data", c => {
+    if (refused) return;
     body += c;
     if (body.length > 5_000_000) {
-      req.destroy();
+      refused = true;
+      body = "";              // nothing will read it now; let it go
+      // ANSWER, rather than vanish. `req.destroy()` on its own tore the socket
+      // down with no status line on it at all, so the poster learned only that
+      // the connection had gone — indistinguishable from a deck that died or
+      // was never there, and nothing in the exchange to tell those apart. `end`
+      // never fires on a destroyed request either, so the handler below got no
+      // second chance to speak. readBody above gets this right already, by
+      // rejecting into a caller that replies.
+      send(res, 413, { error: "event too large" });
+      // Then keep reading, and throw it away. Answering is not enough on its
+      // own, because the poster is still mid-upload when the answer goes out:
+      // hang up now and its next write lands on a dead socket, it aborts with
+      // EPIPE, and the 413 that was already sitting in its receive buffer is
+      // discarded unread — the same disappearance in a different costume.
+      // `Connection: close` is the tempting version of hanging up and has
+      // exactly that effect: Node destroys the socket the moment such a
+      // response flushes. Draining lets the poster finish and then read the
+      // answer, which is the whole point of answering. `body` no longer grows,
+      // so it costs no memory.
+      req.resume();
+      // Bounded, because draining forever is its own denial of service: a
+      // poster that stops without ending would otherwise hold the socket for as
+      // long as it liked.
+      const grace = setTimeout(() => req.destroy(), OVERSIZE_DRAIN_MS);
+      grace.unref?.();
+      req.on("close", () => clearTimeout(grace));
     }
   });
   req.on("end", () => {
+    if (refused) return;
     let parsed;
     try { parsed = JSON.parse(body); }
     catch { return send(res, 400, { error: "invalid json" }); }
@@ -1314,7 +1351,11 @@ function handleEventIngest(req, res, persist = true) {
     const evt = pushEvent(parsed, "hook", { persist });
     send(res, 200, { ok: true, seq: evt.seq });
   });
-  req.on("error", () => send(res, 400, { error: "bad request" }));
+  // Guarded for the same reason `end` is, and more sharply: destroying the
+  // request above is itself what raises this, and answering a second time on a
+  // response already sent throws ERR_HTTP_HEADERS_SENT out of an error handler,
+  // where nothing is waiting to catch it.
+  req.on("error", () => { if (!refused) send(res, 400, { error: "bad request" }); });
 }
 
 function handleSse(req, res) {

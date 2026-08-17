@@ -12,6 +12,7 @@ import { join, resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { shellQuoteArg } from "./exec.mjs";
 import { PRODUCT } from "./brand.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -68,9 +69,35 @@ const MARK_KEY = "__agent-dag";
 const LEGACY_MARKS = ["__ccgraph", "__agent-flow"];
 const LEGACY_DIRS = ["ccgraph", "agent-flow", "agent-dag"];
 
-function hookCommand(installedHookPath, provider) {
-  const node = process.execPath;
-  return `"${node}" "${installedHookPath}" --provider ${provider}`;
+/**
+ * The `command` string Claude Code stores for our forwarder, and runs THROUGH A
+ * SHELL on every tool call.
+ *
+ * The settings.json hook format is a string, not an argv, so this is one of the
+ * two places in the codebase that has to build a shell command line by hand —
+ * see shellQuoteArg, which is where the escaping rules and their one Windows
+ * residual are written down.
+ *
+ * It used to wrap both paths in double quotes, which on POSIX escapes nothing:
+ * `$(…)`, a backtick and `\` are all still live inside them. Both paths come
+ * from outside — `installedHookPath` is built from $CLAUDE_CONFIG_DIR (resolved,
+ * never validated) or homedir(), and `node` is process.execPath — so a config
+ * dir called `/tmp/a$(id)b` was shell code, written into the user's own settings
+ * file and executed on every hook fire for as long as it stayed there. The
+ * quieter half of the same bug cost nothing but the feature: an ordinary `$` in
+ * a path expanded to nothing, the hook pointed at a file that was not there, and
+ * hooks stopped firing with no error to explain it.
+ *
+ * `provider` is a key of PROVIDERS — "claude" or "codex", never anything a
+ * caller chose — and is quoted anyway, because that is not a property worth
+ * re-deriving at every reading.
+ *
+ * Exported, with the node path injectable, so the escaping can be checked
+ * against a path the test names rather than against whatever ran the suite.
+ */
+export function hookCommand(installedHookPath, provider, node = process.execPath) {
+  const q = (s) => shellQuoteArg(s);
+  return `${q(node)} ${q(installedHookPath)} --provider ${q(provider)}`;
 }
 
 function isOurEntry(g) {
