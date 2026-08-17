@@ -69,6 +69,10 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
   const startedRef = useRef(false);
   const codeRef = useRef<HTMLInputElement | null>(null);
   const blobRef = useRef<HTMLInputElement | null>(null);
+  // The branch this dialog always opens on, and the only one that used to focus
+  // nothing: the code field and the share field each take focus from an effect
+  // of their own, and the other three branches are the ones nobody arrives on.
+  const primerRef = useRef<HTMLButtonElement | null>(null);
   // The burst needs a point on screen to come from, and the mark is it.
   const markRef = useRef<SVGSVGElement | null>(null);
 
@@ -81,9 +85,8 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
   }, [onClose]);
 
   // `close`, not `onClose`: Escape has to cancel the sign-in running on the
-  // server, exactly as the × does. The dialog picks its own first field per
-  // tab, so no focusRef here.
-  useModalDismiss(close);
+  // server, exactly as the × does.
+  const dialogRef = useModalDismiss(close, { focusRef: primerRef });
 
   // Started by the button, never by arriving. `claude auth login` opens a
   // browser tab as its first act, and a dialog that does that before being
@@ -168,7 +171,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
 
   return (
     <div className="modal-backdrop" onClick={close} role="presentation">
-      <div className="modal aa-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add a Claude account">
+      <div ref={dialogRef} className="modal aa-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add a Claude account">
         <header className="modal-head">
           <div className="modal-title">
             <span className="aa-tabs" role="tablist">
@@ -256,7 +259,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
                   claude-swap records the account when it completes, and the account you are using now stays active.
                 </p>
                 <div className="aa-actions">
-                  <button type="button" className="btn primary" onClick={start} disabled={busy}>
+                  <button type="button" ref={primerRef} className="btn primary" onClick={start} disabled={busy}>
                     Open the sign-in page
                   </button>
                 </div>

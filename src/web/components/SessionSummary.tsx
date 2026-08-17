@@ -22,12 +22,12 @@ export default function SessionSummary({ state, sessionId, onClose }: Props) {
   // for — it opens on a Stop hook — which makes Escape the first thing a user
   // reaches for and made its absence here the worst of the two.
   const closeRef = useRef<HTMLButtonElement>(null);
-  useModalDismiss(onClose, { focusRef: closeRef });
+  const dialogRef = useModalDismiss(onClose, { focusRef: closeRef });
   if (!summary) return null;
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
-      <div className="modal session-summary" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="ss-title">
+      <div ref={dialogRef} className="modal session-summary" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="ss-title">
         <div className="modal-head">
           <div className="modal-title">
             <span className="state-pill state-done" aria-hidden>done</span>

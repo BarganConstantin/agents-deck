@@ -42,6 +42,11 @@ export interface DismissStack {
   /** Dismisses the overlay on top. False when there was none, which is the
    *  signal to App.tsx that Escape belongs to the canvas. */
   dismissTop(): boolean;
+  /** Whether `dismiss` — the very function that was handed to push — belongs to
+   *  the overlay on top. The focus trap asks this before it claims a Tab: Tab
+   *  belongs to the dialog Escape would close, so one ordering settles both
+   *  keys and two stacked overlays can never both answer the same press. */
+  isTop(dismiss: Dismisser): boolean;
   /** How many overlays are on screen. */
   depth(): number;
 }
@@ -49,6 +54,15 @@ export interface DismissStack {
 export function createDismissStack(): DismissStack {
   const entries: Entry[] = [];
   let seq = 0;
+  // Layer first, then arrival — the order dismissTop() has always resolved in,
+  // pulled out into one function so isTop() cannot drift away from it.
+  function top(): Entry | undefined {
+    let best: Entry | undefined;
+    for (const e of entries) {
+      if (!best || e.layer > best.layer || (e.layer === best.layer && e.seq > best.seq)) best = e;
+    }
+    return best;
+  }
   return {
     push(dismiss, layer = 0) {
       const entry: Entry = { dismiss, layer, seq: seq++ };
@@ -62,13 +76,14 @@ export function createDismissStack(): DismissStack {
       };
     },
     dismissTop() {
-      let top: Entry | undefined;
-      for (const e of entries) {
-        if (!top || e.layer > top.layer || (e.layer === top.layer && e.seq > top.seq)) top = e;
-      }
-      if (!top) return false;
-      top.dismiss();
+      const t = top();
+      if (!t) return false;
+      t.dismiss();
       return true;
+    },
+    isTop(dismiss) {
+      const t = top();
+      return t != null && t.dismiss === dismiss;
     },
     depth() {
       return entries.length;
@@ -127,4 +142,118 @@ function isBody(n: FocusNode): boolean {
 export function shouldRestoreFocus(opener: FocusNode | null | undefined, active: FocusNode | null | undefined): boolean {
   if (!opener || !opener.isConnected || isBody(opener)) return false;
   return active == null || isBody(active);
+}
+
+// ── holding Tab inside the dialog ───────────────────────────────────────────
+//
+// Four of the six overlays announced `aria-modal="true"`, which tells a screen
+// reader that the rest of the document is inert while the dialog is up. Nothing
+// in the app made that true. Three of them did not even move focus into
+// themselves on open — the tool modal left it on the bubble that was clicked —
+// and none of the six contained it, so a Tab from the last control in a dialog
+// walked straight out into the canvas, the toolbar and the panels behind the
+// scrim, where every stop is painted over by the backdrop and none of it can be
+// seen. A keyboard user had no way to know they had left, and no way back
+// except Escape, which closes the dialog they were still reading.
+//
+// The wrap is a decision about a list and an index, so it is written as one
+// here rather than as DOM handling in the hook: the hook collects the dialog's
+// controls, finds the focused one among them, and does what this says. Which
+// keeps the whole rule readable in a plain-node test, the way escapeOutcome and
+// shouldRestoreFocus already are.
+
+/** Which controls a dialog offers the keyboard. Everything the deck actually
+ *  builds a dialog out of, plus `[tabindex]` so anything hand-rolled later is
+ *  caught by the same sweep. Whether a match is really tabbable — disabled,
+ *  removed from the order, not drawn — is isTabbable's question, not the
+ *  selector's, so there is one rule and not two half-rules. */
+export const TABBABLE_SELECTOR = "a[href], button, input, select, textarea, [tabindex]";
+
+/** The properties of a candidate control the tabbability rule reads. Structural
+ *  rather than an Element, for the same reason FocusTarget and FocusNode are. */
+export interface TabbableNode {
+  /** A disabled control is skipped by the browser's own Tab, so the trap has to
+   *  skip it too — the usage modal's ↻ is disabled for as long as ccusage runs,
+   *  and wrapping onto it would put focus somewhere Tab could never reach. */
+  disabled?: boolean | null;
+  /** Negative takes an element out of the tab order while leaving it
+   *  focusable in code. */
+  tabIndex?: number | null;
+  /** False when the element draws nothing, because a `display: none` ancestor
+   *  is not visible to a selector. Measured by the caller, which is the only
+   *  side of this that has a layout. */
+  rendered?: boolean | null;
+}
+
+/** Whether Tab can actually land on this control. */
+export function isTabbable(n: TabbableNode | null | undefined): boolean {
+  if (!n) return false;
+  if (n.disabled) return false;
+  if (n.rendered === false) return false;
+  return (n.tabIndex ?? 0) >= 0;
+}
+
+/** A scrollable region, reduced to what decides whether Tab stops on it.
+ *
+ *  Not every stop in a dialog is a control. Chrome (127 and up) and Firefox
+ *  both put a scrollable region in the tab order when nothing inside it is
+ *  focusable, because otherwise its content could only be scrolled with a
+ *  mouse — and `.modal-body` is `overflow: auto`, so the tool modal's payload
+ *  pane and the session summary's body are two of exactly that. A trap built
+ *  from a control selector alone would quietly take them away, which is the
+ *  opposite of what a trap is for: it exists to close the exit, not to make
+ *  the dialog smaller than the browser says it is. */
+export interface ScrollStop {
+  /** Computed overflow — "auto" or "scroll" is a region the user scrolls. */
+  overflow?: string | null;
+  /** Whether the content is actually taller than the box. Measured by the
+   *  caller, for the same reason `rendered` is: it needs a layout. */
+  overflowing?: boolean | null;
+  /** Whether the region holds a control of its own. Both browsers leave the
+   *  scroller out when it does, since Tab reaching that control has already
+   *  reached the region. */
+  hasFocusable?: boolean | null;
+}
+
+export function isScrollStop(n: ScrollStop | null | undefined): boolean {
+  if (!n || !n.overflowing || n.hasFocusable) return false;
+  const overflow = String(n.overflow ?? "").toLowerCase();
+  return overflow === "auto" || overflow === "scroll";
+}
+
+/** Where a Tab inside an open dialog goes. */
+export type TabMove =
+  /** Already heading for another stop in the dialog — leave the browser to it.
+   *  Doing the move ourselves would only re-implement Tab, and badly: the
+   *  browser knows about reading order, shadow roots and its own focusability
+   *  rules in ways a selector sweep does not. */
+  | { kind: "allow" }
+  /** The wrap. preventDefault, then focus the control at this index. */
+  | { kind: "focus"; index: number }
+  /** Nowhere to send it, so the keystroke is swallowed and focus stays put.
+   *  A dialog with no controls at all cannot happen today — every one of the
+   *  six has at least its × — but letting Tab out of THAT one would be the
+   *  same bug with a smaller audience. */
+  | { kind: "hold" };
+
+export interface TabState {
+  /** How many stops the dialog holds right now — its controls, and any
+   *  scrollable region the browser stops on. */
+  count: number;
+  /** Where the focused element sits among them, or -1 when focus is not on one
+   *  — which is what clicking a paragraph of modal text leaves behind, since
+   *  focus falls to <body> and the next Tab would start from the top of the
+   *  document. */
+  index: number;
+  shiftKey: boolean;
+}
+
+export function trapTab({ count, index, shiftKey }: TabState): TabMove {
+  if (count <= 0) return { kind: "hold" };
+  // Focus is loose. Pull it back to the end the user was heading for, which is
+  // also how the dialog collects a focus it never managed to take on open.
+  if (index < 0 || index >= count) return { kind: "focus", index: shiftKey ? count - 1 : 0 };
+  if (!shiftKey && index === count - 1) return { kind: "focus", index: 0 };
+  if (shiftKey && index === 0) return { kind: "focus", index: count - 1 };
+  return { kind: "allow" };
 }
