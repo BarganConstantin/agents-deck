@@ -45,7 +45,7 @@ export default function ContextModal({ agent, onClose }: Props) {
   // user has to end up again — this modal used to answer neither Escape nor
   // the question of where focus went when it closed.
   const closeRef = useRef<HTMLButtonElement>(null);
-  useModalDismiss(onClose, { focusRef: closeRef });
+  const dialogRef = useModalDismiss(onClose, { focusRef: closeRef });
 
   const ctx = agent.context;
   const usage = agent.usage;
@@ -57,7 +57,7 @@ export default function ContextModal({ agent, onClose }: Props) {
 
   return (
     <div className="ctx-modal-backdrop" onClick={onClose} role="presentation">
-      <div className="ctx-modal" onClick={e => e.stopPropagation()} role="dialog" aria-label="Context breakdown">
+      <div ref={dialogRef} className="ctx-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Context breakdown">
         <header className="ctx-modal-head">
           <div>
             <div className="ctx-modal-title">Context · {agent.label}</div>

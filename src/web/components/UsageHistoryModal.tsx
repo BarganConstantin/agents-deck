@@ -107,7 +107,12 @@ export default function UsageHistoryModal({ onClose }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const { landed, loading, reload } = useCcusage(rangeDays);
 
-  useModalDismiss(onClose);
+  // The × rather than the first control: this header opens with a four-button
+  // range strip, and a dialog that hands the keyboard "7d" as its greeting
+  // reads as a setting to change rather than a thing to read or leave. Every
+  // other modal on the deck starts on its dismiss control too.
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useModalDismiss(onClose, { focusRef: closeRef });
 
   const view = usageView({
     loading,
@@ -144,7 +149,7 @@ export default function UsageHistoryModal({ onClose }: Props) {
 
   return (
     <div className="uh-backdrop" onClick={onClose} role="presentation">
-      <div className="uh-modal" onClick={e => e.stopPropagation()} role="dialog" aria-label="Usage history">
+      <div ref={dialogRef} className="uh-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Usage history">
         <header className="uh-head">
           <div className="uh-titlewrap">
             <div className="uh-title">Usage history</div>
@@ -168,7 +173,7 @@ export default function UsageHistoryModal({ onClose }: Props) {
             title="Re-run ccusage"
             aria-label="Reload"
           >{loading ? "…" : "↻"}</button>
-          <button className="uh-close" onClick={onClose} aria-label="Close">×</button>
+          <button ref={closeRef} className="uh-close" onClick={onClose} aria-label="Close">×</button>
         </header>
 
         {view.phase === "busy" ? (

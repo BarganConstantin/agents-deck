@@ -24,7 +24,7 @@ interface Props {
 
 export default function ClearConfirm({ agentCount, onConfirm, onCancel }: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null);
-  useModalDismiss(onCancel, { focusRef: cancelRef, layer: CONFIRM_LAYER });
+  const dialogRef = useModalDismiss(onCancel, { focusRef: cancelRef, layer: CONFIRM_LAYER });
 
   const removes = agentCount === 0
     ? "This deletes the server's event log"
@@ -33,6 +33,7 @@ export default function ClearConfirm({ agentCount, onConfirm, onCancel }: Props)
   return (
     <div className="modal-backdrop" onClick={onCancel} role="presentation">
       <div
+        ref={dialogRef}
         className="modal clear-confirm"
         onClick={e => e.stopPropagation()}
         role="dialog"

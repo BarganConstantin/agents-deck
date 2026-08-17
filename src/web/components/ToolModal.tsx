@@ -21,7 +21,11 @@ export default function ToolModal({
   tool: ToolCall;
   onClose: () => void;
 }) {
-  useModalDismiss(onClose);
+  // No focusRef: the × is the first control in the dialog, so the hook's own
+  // default — the first tabbable — already lands there. What this modal was
+  // missing is the ref below, without which there is no boundary to hold Tab
+  // inside and the claim on the surface tag is a claim about nothing.
+  const dialogRef = useModalDismiss(onClose);
 
   const status =
     tool.endedAt == null ? "inflight"
@@ -35,7 +39,7 @@ export default function ToolModal({
     // name. The name is the tool, which is the only thing that tells one of
     // these apart from the next.
     <div className="modal-backdrop" onClick={onClose} role="presentation">
-      <div className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="tool-modal-title">
+      <div ref={dialogRef} className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="tool-modal-title">
         <header className="modal-head">
           <div className="modal-title">
             <span className={`status-dot ${status}`} />
