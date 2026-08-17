@@ -18,6 +18,24 @@
 // enabled for good, and every press re-sent the same value. One spelling of the
 // alias, decided in one place.
 
+/**
+ * The longest alias the store will accept, in characters.
+ *
+ * This is the upper bound of `ALIAS_OK` in src/server/cswap-admin.mjs, which
+ * rejects anything longer with `bad_value`. The field had no bound at all, so
+ * the only way to learn where the limit was was to type past it and read a
+ * failure; `maxLength` moves that answer to the moment of typing. It is the
+ * server's number and not a smaller round one on purpose — a field that
+ * silently refuses a name the store would have taken is its own small lie.
+ *
+ * It is not, however, what keeps a long alias from widening the accounts panel.
+ * The deck only reads claude-swap's store, and `cswap alias` writes it from the
+ * command line without passing through here, so the panel has to survive an
+ * alias of any length whatever this field allows — that guard is the ellipsis
+ * and `max-width` on `.ap-alias` in styles.css.
+ */
+export const ALIAS_MAX_LENGTH = 64;
+
 /** What a press of `save` should do. */
 export interface AliasSave {
   /** Whether the store has to be told. False when it already holds this alias. */
