@@ -221,6 +221,43 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   border: 0;
 }
 
+/* The keyboard's way past the topbar, and the deck's only link (#381).
+   Not .vis-hidden, which is a class for text that is never meant to come back:
+   this one has to become a real, readable control the moment it takes focus,
+   and a 1px clipped box cannot grow into one. `position: fixed` is doing two
+   jobs — it lifts the link over the topbar when it is shown, and it takes the
+   element out of grid layout, which matters more: .app auto-places its
+   children, so a skip link that stayed in flow would claim row 1 column 1 and
+   push the topbar down a row.
+   Off screen by transform rather than by `display: none` or `visibility:
+   hidden`, both of which would take it out of the accessibility tree and the
+   tab order together — a skip link nothing can focus is the one thing it must
+   never be. No transition on the way in: this is a control appearing under a
+   keyboard user who cannot see it yet, and animating that only delays the
+   moment they can read where they are. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(calc(-100% - 16px));
+}
+.skip-link:focus { transform: none; }
+/* The canvas is the skip link's target and takes focus programmatically, so it
+   does get a ring — landing somewhere with no sign you landed is the failure
+   this link exists to fix, one step later. Inset, because .canvas-wrap fills
+   its grid cell to the window edge and the shared 2px outward offset would
+   draw the ring off screen on two sides. */
+.canvas-wrap:focus-visible { outline-offset: -3px; }
+
 /* ---------------- topbar ---------------- */
 
 .topbar {
@@ -245,6 +282,14 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
      must not break onto two lines to make room for it. */
   white-space: nowrap;
   flex: none;
+}
+/* The wordmark is the page's <h1> now (#381). `font: inherit` is the whole
+   rule's point: an <h1> arrives from the UA sheet at 2em bold with a 0.67em
+   block margin, and none of that is what a 14px wordmark in a 52px bar looks
+   like. Nothing about the heading's appearance changed — only what it is. */
+.topbar .brand h1 {
+  font: inherit;
+  margin: 0;
 }
 .topbar .brand .logo {
   width: 14px; height: 14px;
@@ -1141,6 +1186,13 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   transition: color 120ms ease, background 120ms ease;
 }
 .detail-reopen:hover { color: var(--text); }
+/* The panel's captions, at both of the levels they now sit at (#381): the
+   empty state's own title became this panel's h2 when the document gained an
+   h1, and the sections under a selected agent stay h3. The child combinator is
+   load-bearing — `.detail-hero .hero-title` is an h2 too, and it is the
+   agent's name rather than a caption, so a plain `.detail h2` would try to set
+   it in 11px uppercase grey. */
+.detail > h2,
 .detail h3 {
   margin: 0;
   font-size: 11px;
@@ -2208,8 +2260,15 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   padding: 12px 12px 10px 14px;
   border-bottom: 1px solid var(--line);
 }
-.session-list .sl-header h3 {
+/* h2 since #381, and pinned at the size the h3 rendered at. The other two
+   panel titles declare their own font-size (13px and 12px) so promoting them
+   changed nothing; this one never did, and a bare <h2> would have jumped from
+   the UA sheet's 1.17em to 1.5em. 1.17em is that h3 size written down rather
+   than a new number — the three panel headers already disagree with each other
+   by a few pixels and reconciling them is #380's job, not this issue's. */
+.session-list .sl-header h2 {
   margin: 0;
+  font-size: 1.17em;
   flex: 1;
   display: inline-flex;
   align-items: center;
@@ -3110,7 +3169,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   background: var(--panel);
   z-index: 1;
 }
-.up-header h3 {
+.up-header h2 {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
@@ -3615,7 +3674,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
-.ap-header h3 {
+.ap-header h2 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;

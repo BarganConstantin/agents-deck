@@ -43,7 +43,7 @@ import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue
 import { EXIT_ANIM_MS, isAgentVisible, computeVisibleIds, anyTouches } from "./visibility";
 import { SESSION_GROUP_TYPE, minimapNodeColor } from "./minimap";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
-import { versionChipLabel, versionChipTitle } from "./version-chip";
+import { versionChipLabel, versionChipTitle, versionNoticeLabel } from "./version-chip";
 import { emptyScope } from "./scope";
 import { ASSUMED, readProviders, type Providers } from "./providers";
 import { pauseButton, statusPill } from "./status-pill";
@@ -1633,7 +1633,9 @@ function Inner() {
   // and a layout packed for the whole window would run under them. Measured
   // rather than derived from the panel flags so it stays right however the
   // grid is configured.
-  const canvasRef = useRef<HTMLDivElement | null>(null);
+  // HTMLElement rather than HTMLDivElement: the canvas is a <main> now (#381),
+  // and nothing here reads a property a <div> has and a <main> does not.
+  const canvasRef = useRef<HTMLElement | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const el = canvasRef.current;
@@ -2205,10 +2207,64 @@ function Inner() {
 
   return (
     <div className="app">
+      {/* The deck's regions, and why each one is the element it is (#381).
+          Before this the whole page was <div>s apart from the topbar, so a
+          screen reader's landmark rotor listed one entry — Banner — for an
+          application with five regions, and there was no way to move between
+          them except Tab.
+          Four landmarks, each of which is a region a reader would actually
+          jump to: the topbar is the banner it already was, the canvas is
+          <main> because it is this page's subject and everything else on
+          screen is beside it, and the three panels are <aside>s because each
+          one is commentary on the canvas that comes and goes without changing
+          what the canvas shows. None of them is invented for the rotor's sake:
+          the two that were already <aside> — the session list and the detail
+          panel — are unchanged in shape here and only gained the name one of
+          them was missing.
+          Deliberately NOT added: a <nav>, because this deck has no navigation
+          — the session list moves the camera, it does not move the user
+          between documents — and a role="search" around the filter box, which
+          would be a landmark wrapped around a single input that the rotor
+          already lists under Form Controls by its own aria-label. A landmark
+          list padded with regions nobody would navigate to is the same defect
+          as no landmarks at all, one direction over.
+          The panels are conditional (#402 made the accounts one conditional on
+          Claude Code being installed at all), so the rotor's contents change
+          with what is open. That is correct: an <aside> that is not rendered
+          is not a region that is empty, and the toggles that mount them
+          already carry aria-expanded. */}
+      {/* First in the DOM so it is the first Tab of the page, and out of flow
+          so it is not a grid item — .app auto-places its children, and a link
+          that took a cell would push the topbar into row 2.
+          It exists because there are ~166 focusable controls between the top
+          of the document and the canvas once the panels are open, and until
+          now a keyboard user had to walk every one of them to reach the thing
+          the deck is for. WCAG 2.4.1. The target is <main> rather than the
+          first card: cards come and go with the sessions, main is always
+          there, and landing on it puts the deck's own single-key shortcuts
+          back in play (ownsKeystroke() leaves a <main> alone). */}
+      <a className="skip-link" href="#canvas">Skip to the canvas</a>
       <header className="topbar">
         <div className="brand">
           <span className="logo" />
-          {PRODUCT}
+          {/* The page's <h1>, and the wordmark that was already here rather
+              than a second copy of it hidden off screen (#381). The document
+              had no h1 at all, so its heading outline began at h3 and every
+              level below was a skip.
+              A visually-hidden heading was the other option and is the wrong
+              one HERE: the name it would carry is the word printed two pixels
+              to the right of it, so a screen reader would hear "ccdeck,
+              heading level 1" and then "ccdeck" again from the wordmark. A
+              hidden heading earns its keep when a region has no visible title;
+              this region has one, and marking up what is already on the page
+              is what 1.3.1 asks for. It is also the same string as the
+              document's <title>, from the same constant, so the tab, the
+              wordmark and the outline cannot drift.
+              The version chip stays a sibling and not a child: it is a button
+              whose accessible name is a whole sentence about npm, and inside
+              the heading that sentence would become part of the heading's
+              name. */}
+          <h1>{PRODUCT}</h1>
           {/* The server's own version, not the bundle's — an upgrade replaces
               dist/ too, so a reloaded page can show a number the running
               process never had. Stale → the chip stays lit even after the
@@ -2218,6 +2274,12 @@ function Inner() {
               type="button"
               className="v stale"
               onClick={toggleNotice}
+              /* The healthy branch below has carried an accessible name since it
+                 was written; this one did not, so its name was its text — the
+                 same bare version string, which made the chip that HAS news
+                 indistinguishable from the chip that has none. See
+                 versionNoticeLabel for the rest of the reasoning (#381). */
+              aria-label={versionNoticeLabel({ ...notice, open: noticeOpen })}
               title={notice.kind === "restart"
                 ? `Running v${notice.from}; v${notice.to} is installed on disk. Restart to pick it up.`
                 : `Running v${notice.from}; v${notice.to} is on npm.`}
@@ -2770,7 +2832,20 @@ function Inner() {
           onClose={() => setSessionListOpen(false)}
         />
       )}
-      <div
+      {/* <main>, because the canvas is what this page is: everything else on
+          screen — the toolbar above it, the panels beside it — exists to
+          describe or steer what is drawn here. One per document, and this is
+          the one.
+          tabIndex={-1} makes it a focus target for the skip link above without
+          adding a tab stop of its own. Focus landing here is also harmless to
+          the keyboard rules #367 settled: MAIN is not in shortcuts.ts's
+          KEY_OWNING_TAGS and carries no interactive role, so ownsKeystroke()
+          returns false and the deck's single-key shortcuts keep working from
+          it, and Escape releases it back to the document like any other
+          non-typing target. */}
+      <main
+        id="canvas"
+        tabIndex={-1}
         className={`canvas-wrap${bubbling ? " bubbling" : ""}${dragging ? " dragging-any" : ""}`}
         ref={canvasRef}
       >
@@ -2995,10 +3070,17 @@ function Inner() {
             style={{ background: cssVar("--panel"), border: `1px solid ${cssVar("--line")}`, borderRadius: 8 }}
           />
         </ReactFlow>
-      </div>
+      </main>
 
       {detailOpen ? (
-        <aside className="detail">
+        // Already the right element and still an unnamed one: the rotor listed
+        // it as a bare "complementary" beside the session list's "Sessions",
+        // which is the entry a reader cannot tell from the next. The name is
+        // fixed rather than the selected agent's label — the panel keeps its
+        // identity when nothing is selected, and a landmark whose name changes
+        // under the reader is a landmark they cannot come back to. The agent's
+        // name is the panel's <h2>, which is where a changing title belongs.
+        <aside className="detail" aria-label="Detail">
           <button
             type="button"
             className="detail-close"
@@ -3112,7 +3194,13 @@ function EmptyDetail({ count, workspace }: { count: number; workspace: string | 
   const scope = emptyScope(workspace);
   return (
     <>
-      <h3>Detail</h3>
+      {/* The detail panel's own title, at the level the panel sits at (#381).
+          Every persistent region of the deck now heads itself with an h2 under
+          the topbar's h1 — Usage, Accounts, Sessions, and the agent's name when
+          one is selected — and this is the same slot in the empty state. The
+          `Shortcuts` block below stays an h3, because it is a section inside
+          this panel rather than a second panel. */}
+      <h2>Detail</h2>
       {count === 0 ? (
         <div className="hint">
           {scope.lead}
@@ -3316,7 +3404,9 @@ function CostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
       title={`${label}: ${fmtCost(val)} (${pct.toFixed(0)}%)`} />;
   };
   return (
-    <div className="cost-bar" aria-label="Cost breakdown">
+    // role="img" — without it the label below is dropped by the accessibility
+    // tree, for the reason UsagePanel's copy of this bar spells out (#381).
+    <div className="cost-bar" role="img" aria-label="Cost breakdown">
       {seg(cost.input, "cb-input", "input")}
       {seg(cost.output, "cb-output", "output")}
       {seg(cost.cacheRead, "cb-cache-r", "cache read")}
