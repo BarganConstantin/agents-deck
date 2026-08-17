@@ -1,16 +1,11 @@
 // Aggregates Codex token usage from ~/.codex/sessions rollout JSONL files.
 // Unlike Claude, Codex has no CLI quota command — we derive usage from the
 // actual session logs for 5h and 7d rolling windows.
-import { readdir, open, stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
+import { STOP, walkRolloutDays } from "./codex-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
-
-const CODEX_HOME = process.env.CODEX_HOME
-  ? process.env.CODEX_HOME
-  : join(homedir(), ".codex");
-const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
 
 // Cache results for 60s (lighter than Claude quota — reads more files)
 let _cache = null;
@@ -168,35 +163,33 @@ function parseRolloutTime(filename) {
 }
 
 // List rollout files whose start times fall within the given window.
+//
+// The walk over $CODEX_HOME/sessions is shared with the two entry points in
+// index.mjs (codex-dir.mjs) rather than repeated here, so the files this counts
+// usage from are exactly the files the watcher tails. They used to be two
+// verbatim copies of the same four nested readdirs over two verbatim copies of
+// the same CODEX_SESSIONS_DIR — which is how one of them came to resolve a
+// relative CODEX_HOME differently from the other (#375).
 async function listRolloutFiles(sinceMs) {
   const out = [];
-  let years;
-  try { years = (await readdir(CODEX_SESSIONS_DIR)).filter(d => /^\d{4}$/.test(d)).sort().reverse(); }
-  catch { return out; }
-
   const nowMs = Date.now();
-  for (const y of years) {
-    // Skip years that can't possibly contain files within the window
-    if (parseInt(y, 10) < new Date(nowMs - sinceMs - 86400000).getFullYear()) break;
-    let months;
-    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); } catch { continue; }
-    for (const m of months) {
-      let days;
-      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); } catch { continue; }
-      for (const d of days) {
-        const dir = join(CODEX_SESSIONS_DIR, y, m, d);
-        let files;
-        try { files = await readdir(dir); } catch { continue; }
-        for (const f of files) {
-          if (!f.endsWith(".jsonl")) continue;
-          const t = parseRolloutTime(f);
-          if (t != null && nowMs - t <= sinceMs) {
-            out.push({ path: join(dir, f), startMs: t });
-          }
+  // Years arrive newest-first, so the first one that cannot hold a file in the
+  // window ends the walk: everything after it is older still. The extra day of
+  // slack covers a session that started just before the window and a filename
+  // timestamp that is UTC while the year directory is local time.
+  const oldestYear = new Date(nowMs - sinceMs - 86400000).getFullYear();
+  await walkRolloutDays(
+    (dir, files) => {
+      for (const f of files) {
+        if (!f.endsWith(".jsonl")) continue;
+        const t = parseRolloutTime(f);
+        if (t != null && nowMs - t <= sinceMs) {
+          out.push({ path: join(dir, f), startMs: t });
         }
       }
-    }
-  }
+    },
+    { onYear: y => (parseInt(y, 10) < oldestYear ? STOP : undefined) },
+  );
   return out;
 }
 

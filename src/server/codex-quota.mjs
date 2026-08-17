@@ -9,11 +9,14 @@
 // the UI when something was dropped instead of silently showing less.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { CODEX_HOME } from "./codex-dir.mjs";
 import { getCodexAuth, forceCodexRefresh, isCredentialHost } from "./codex-auth.mjs";
 import { PRODUCT } from "./brand.mjs";
 
-const CODEX_HOME  = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+// Resolved by codex-dir.mjs rather than here. This file used to spell it
+// `process.env.CODEX_HOME ?? join(homedir(), ".codex")`, which keeps an empty
+// CODEX_HOME instead of falling back — and then read a CWD-relative
+// "config.toml" for the base URL every credential below is sent to (#375).
 const CONFIG_PATH = join(CODEX_HOME, "config.toml");
 const DEFAULT_BASE = "https://chatgpt.com/backend-api";
 
