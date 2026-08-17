@@ -493,8 +493,11 @@ describe("the disclosure and the block it opens are related (#325's seventh find
     // control asks harder than a screen reader does. With no label rendered
     // there is nothing left to contradict — but the association still has to
     // exist, so these are hidden <label for>s, not aria-labels on bare inputs.
-    expect(panel).toMatch(/<label className="ap-vh" htmlFor=\{`ap-alias-\$\{a\.num\}`\}>Alias<\/label>/);
-    expect(panel).toMatch(/<label className="ap-vh" htmlFor=\{`ap-slot-\$\{a\.num\}`\}>Slot<\/label>/);
+    // The class lost its `ap-` prefix in #373, which gave the utility three
+    // callers outside this panel; the assertion follows the rename, the shape
+    // it is asserting — a hidden <label for>, not an aria-label — does not.
+    expect(panel).toMatch(/<label className="vis-hidden" htmlFor=\{`ap-alias-\$\{a\.num\}`\}>Alias<\/label>/);
+    expect(panel).toMatch(/<label className="vis-hidden" htmlFor=\{`ap-slot-\$\{a\.num\}`\}>Slot<\/label>/);
     expect(panel).not.toMatch(/aria-label=\{`Alias for account/);
     expect(panel).not.toMatch(/aria-label=\{`Slot for account/);
   });
@@ -503,12 +506,12 @@ describe("the disclosure and the block it opens are related (#325's seventh find
     // `display: none` and `visibility: hidden` take an element out of the
     // accessibility tree too, which would leave both fields unnamed — the one
     // failure this class exists to avoid.
-    expect(decl(".ap-vh", "display")).not.toBe("none");
-    expect(decl(".ap-vh", "visibility")).toBeNull();
-    expect(decl(".ap-vh", "position")).toBe("absolute");
-    expect(decl(".ap-vh", "clip-path")).toBe("inset(50%)");
-    expect(parseFloat(decl(".ap-vh", "width")!)).toBeLessThanOrEqual(1);
-    expect(parseFloat(decl(".ap-vh", "height")!)).toBeLessThanOrEqual(1);
+    expect(decl(".vis-hidden", "display")).not.toBe("none");
+    expect(decl(".vis-hidden", "visibility")).toBeNull();
+    expect(decl(".vis-hidden", "position")).toBe("absolute");
+    expect(decl(".vis-hidden", "clip-path")).toBe("inset(50%)");
+    expect(parseFloat(decl(".vis-hidden", "width")!)).toBeLessThanOrEqual(1);
+    expect(parseFloat(decl(".vis-hidden", "height")!)).toBeLessThanOrEqual(1);
   });
 
   it("moves the keyboard into the block rather than leaving it above everything", () => {

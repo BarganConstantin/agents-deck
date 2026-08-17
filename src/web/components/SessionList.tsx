@@ -6,7 +6,7 @@ import React, { useMemo } from "react";
 import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { WaitingBlock } from "../types";
-import { shortModel, waitingSentence } from "./AgentNode";
+import { shortModel, stateLabel, waitingSentence } from "./AgentNode";
 
 interface Row {
   sessionId: string;
@@ -128,7 +128,26 @@ export default function SessionList({ state, now, selectedIds, onSelect, onClose
               onClick={() => onSelect(r.sessionId)}
               title={`Focus ${r.label}`}
             >
+              {/* The dot stays hidden and the word beside it is new (#373).
+                  A row's accessible name is its contents, so this joins it in
+                  DOM order — "live vcrm-core Opus 5 …" — and the state is heard
+                  exactly where it is seen, which is what 1.3.1 asks of a
+                  relationship carried by position. Before this the row said
+                  "vcrm-core Opus 5 9 tools $3.66 waiting 19s" and the state was
+                  the dot's hue alone; `waiting` was already words, and it is
+                  not this fact — a permission prompt lands on a session that is
+                  still live, and both are true at once.
+                  Hidden text rather than the two alternatives. An aria-label on
+                  the row would REPLACE that whole name, so the label, model,
+                  tool count, cost and clock would have to be rebuilt inside it
+                  and kept in step with the markup forever — two sources for one
+                  name, and the one a reader hears is the one that silently
+                  stops matching. A title is not announced here at all: the row
+                  already has one, and for an element with contents `title` is
+                  only the fallback the name computation never reaches — it is
+                  also unreachable by keyboard and by touch. */}
               <span className={`sl-dot state-${r.state}`} aria-hidden />
+              <span className="vis-hidden">{stateLabel(r.state)}</span>
               <div className="sl-row-body">
                 <div className="sl-row-head">
                   <span className="sl-label">{r.label}</span>

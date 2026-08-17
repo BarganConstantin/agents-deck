@@ -191,6 +191,36 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
 .detail { grid-column: 2; grid-row: 2 / -1; }
 .app:has(.session-list) .detail { grid-column: 3; }
 
+/* ---------------- shared utilities ---------------- */
+
+/* Named for the reader that cannot see it. It arrived as `.ap-vh` with the
+   accounts panel's manage block, whose two fields lost their visible labels and
+   not their labelling: `for`/`id` is what a screen reader follows and what
+   voice control names the field by, and 2.5.3 has nothing left to contradict
+   once no label is on screen.
+   #373 gave it three more callers — the session list, the usage panel and the
+   tool list each carry a state word here that the dot beside it cannot say — so
+   the `ap-` prefix is gone and the rule moved out of that panel's section. A
+   prefix is a claim about where a name may be used, and four surfaces reading
+   the accounts panel's private one would have been the same drift
+   unstyled-class.test.ts exists to catch, one direction over. Two words rather
+   than one for the reason that file gives: a bare `.vh` is exactly the kind of
+   generic name a later rule claims globally.
+   Every declaration here is load-bearing. `display: none` and
+   `visibility: hidden` would take the element out of the accessibility tree as
+   well as off the screen, which is the one failure the class exists to avoid. */
+.vis-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---------------- topbar ---------------- */
 
 .topbar {
@@ -1167,13 +1197,53 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .detail .tool:last-child { border-bottom: none; }
 .detail .tool .name { display: inline-flex; align-items: center; gap: 8px; }
+/* Until #373 these three were one 6px circle in three hues, and the hue was the
+   whole of it. Each one clears 1.4.11 against the panel it is drawn on —
+   12.89:1 done, 9.54:1 err and 10.29:1 in-flight in dark, 5.42 / 6.47 / 6.98:1
+   in light — so nothing here was ever a boundary failure. What none of it did
+   is tell the three states apart from EACH OTHER: --ok against --err is 1.35:1
+   in dark and 1.19:1 in light, --inflight against --err 1.08:1 in both. In
+   greyscale, and to a deuteranope or a protanope, a call that failed and a call
+   that finished are the same mark — and a failed tool call is the one row in
+   this list worth finding at a glance.
+   The second channel is the mark itself, and it is the deck's own mark rather
+   than a new one: ✓ and × are what a tool bubble on the canvas has drawn for
+   done and err since the bursts existed (.tb-mark below). The list says what
+   the canvas says. #370 answered the same question for the topbar toggles with
+   a polarity flip; this is that answer in the one channel a 6px dot has room
+   for — geometry, not a louder hue — and like the flip it survives greyscale,
+   every colour vision deficiency, and a palette this sheet may re-tune later.
+   in-flight keeps the dot. The canvas has no mark for it either (it spins),
+   and "neither a ✓ nor an ×" is itself the difference that matters; the pulse
+   is a third channel on top and not the one carrying the state, which is why
+   the shape still separates all three with motion turned off.
+   The slot is a fixed 10px for all three so the tool names stay in a column —
+   a glyph that sized itself would move every name in the list by however wide
+   its own mark happened to be. */
 .detail .tool .name .status-dot {
-  display: inline-block;
-  width: 6px; height: 6px; border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px; height: 10px;
+  flex: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
-.detail .tool .name .status-dot.inflight { background: var(--inflight); animation: pulse 1.2s infinite; }
-.detail .tool .name .status-dot.done { background: var(--ok); }
-.detail .tool .name .status-dot.err { background: var(--err); }
+/* The dot, drawn in the state's own colour so the mark and the dot are one
+   declaration apart rather than two rules with two colours to keep in step. */
+.detail .tool .name .status-dot::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.detail .tool .name .status-dot.inflight { color: var(--inflight); }
+.detail .tool .name .status-dot.inflight::before { animation: pulse 1.2s infinite; }
+.detail .tool .name .status-dot.done { color: var(--ok); }
+.detail .tool .name .status-dot.done::before { content: "✓"; width: auto; height: auto; background: none; }
+.detail .tool .name .status-dot.err { color: var(--err); }
+.detail .tool .name .status-dot.err::before { content: "×"; width: auto; height: auto; background: none; }
 
 /* ---------------- React Flow overrides ---------------- */
 
@@ -2210,21 +2280,57 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .session-list .sl-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.session-list .sl-dot {
-  display: inline-block;
-  width: 8px; height: 8px;
-  margin-top: 6px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: var(--muted-dim);
+/* The session's state, in the same two channels the tool list uses above and
+   for the same reason (#373): the hue clears 1.4.11 against the panel — 12.89:1
+   done, 9.54:1 err, 10.29:1 active in dark and 5.42 / 6.47 / 6.98:1 in light —
+   and separates the three states from each other by 1.08:1 to 1.35:1, which is
+   nothing at all. ✓ and × are the canvas's marks for the same two outcomes, so
+   a session reads the same whichever surface you meet it on, and the running
+   dot stays a dot.
+   The `.session-list` scope is deliberately gone, and that was a second defect
+   underneath the first. UsagePanel renders this exact class in its `By session`
+   list, and the usage panel is a sibling of the sidebar rather than a child of
+   it — so every dot in that list matched no rule at all and was drawn as a
+   zero-sized empty span. It was not hue-only there; it was nothing, on a row
+   whose state is otherwise unstated. unstyled-class.test.ts could not see it:
+   `.sl-dot` IS styled in the sheet, just not anywhere the usage panel can reach.
+   The name stays what the markup already calls it.
+   The base colour is --muted rather than --muted-dim. Nothing renders it —
+   AgentState is a closed union of the three below — but a state dot is meaning
+   and #262 is explicit that --muted-dim is a decorative tint (2.35:1 in dark),
+   so the fallback is written at a value a fourth state could actually be read
+   at rather than one the sweep in state-channels.test.ts would have to exempt. */
+.sl-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px; height: 10px;
+  margin-top: 5px;
+  flex: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--muted);
 }
-.session-list .sl-dot.state-active {
-  background: var(--inflight);
+.sl-dot::before {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+/* The usage panel's rows are centred and one line tall, so the 5px that drops
+   the sidebar's dot onto the first line of a two-line row is 5px of
+   misalignment there. */
+.up-session-row .sl-dot { margin-top: 0; }
+.sl-dot.state-active { color: var(--inflight); }
+.sl-dot.state-active::before {
   box-shadow: 0 0 8px var(--inflight);
   animation: pulse 1.4s ease-in-out infinite;
 }
-.session-list .sl-dot.state-done { background: var(--ok); }
-.session-list .sl-dot.state-err { background: var(--err); }
+.sl-dot.state-done { color: var(--ok); }
+.sl-dot.state-done::before { content: "✓"; width: auto; height: auto; background: none; }
+.sl-dot.state-err { color: var(--err); }
+.sl-dot.state-err::before { content: "×"; width: auto; height: auto; background: none; }
 
 .session-list .sl-row-body {
   flex: 1;
@@ -4067,21 +4173,6 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    a standing rule and wrong for news, so it takes the accent the row's own
    select hovers to. */
 .ap-manage-hint.ap-manage-swap { color: var(--accent); }
-/* Named for the reader that cannot see it. The two fields lost their visible
-   labels, not their labelling: `for`/`id` is what a screen reader follows and
-   what voice control names the field by, and 2.5.3 has nothing left to
-   contradict once no label is on screen. */
-.ap-vh {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
 /* The one control in the block that declared no transition and no hover, while
    four siblings eased their border over 120ms. Focusing the field snapped and
    pressing a button eased, which is felt long before it is noticed. */

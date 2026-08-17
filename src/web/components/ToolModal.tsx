@@ -42,7 +42,13 @@ export default function ToolModal({
       <div ref={dialogRef} className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="tool-modal-title">
         <header className="modal-head">
           <div className="modal-title">
-            <span className={`status-dot ${status}`} />
+            {/* Decoration, and marked as such (#373). This dot keeps its hue
+                and gains no mark, because unlike the row in the tool list this
+                dialog already carries all three states in words: the duration
+                reads `in-flight…` while a call is open, the Response section is
+                tagged `error` when it failed, and done is the one that is
+                neither. The dot reinforces that; it is not the only channel. */}
+            <span className={`status-dot ${status}`} aria-hidden />
             <span id="tool-modal-title" className="modal-tool-name">{tool.name}</span>
             <span className="modal-tool-id" title={tool.id}>{tool.id.slice(0, 12)}…</span>
           </div>
