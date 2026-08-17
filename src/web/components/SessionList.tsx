@@ -103,7 +103,8 @@ export default function SessionList({ state, now, selectedIds, onSelect, onClose
   const waitingCount = rows.filter(r => r.waiting?.kind === "permission").length;
 
   return (
-    <aside className="session-list" aria-label="Sessions">
+    // Named for the topbar toggle's aria-controls — see UsagePanel.
+    <aside className="session-list" id="session-list" aria-label="Sessions">
       <div className="sl-header">
         <h3>Sessions <span className="sl-count">{rows.length}</span></h3>
         {/* Beside the live count, not instead of it: the two answer different

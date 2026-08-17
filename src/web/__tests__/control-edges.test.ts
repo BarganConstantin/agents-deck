@@ -250,6 +250,12 @@ const CONTROLS: Control[] = [
   { at: ".selected-ribbon", states: [".selected-ribbon:hover"], beds: TOPBAR },
   { at: "button.btn", states: ["button.btn:hover"], beds: [...TOPBAR, "--panel"] },
   { at: "button.btn.primary", fillFrom: "button.btn.primary", beds: [...TOPBAR, "--panel"] },
+  // The on state of an icon toggle (#370). Two selectors on one rule, so both
+  // have to be named or the exhaustiveness check below reports the other as
+  // unswept. Its own state delta — this fill against the bare bar, which is a
+  // different question from this edge against this fill — is toggle-state.test.ts'.
+  { at: 'button.btn.icon-btn[aria-pressed="true"]', beds: [...TOPBAR, "--panel"] },
+  { at: 'button.btn.icon-btn[aria-expanded="true"]', beds: [...TOPBAR, "--panel"] },
   { at: "button.btn.warn", fillFrom: "button.btn", states: ["button.btn.warn:hover"], beds: [...TOPBAR, "--panel"] },
   { at: "button.btn.danger", fillFrom: "button.btn", states: ["button.btn.danger:hover"], beds: ["--panel"] },
   { at: ".search input", states: [".search input:focus"], beds: TOPBAR },
