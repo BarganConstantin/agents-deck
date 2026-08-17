@@ -299,10 +299,17 @@ describe("what the sweep takes with it, and what it leaves", () => {
     // forever — the session would be settled and still unreclaimable.
     let state = blocked();
     state = send(state, T0 - 5_000, { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" });
-    // Re-block: SubagentStart is session traffic and clears the block.
+    // The re-block. It used to be load-bearing — SubagentStart counted as the
+    // session moving and took the block away — and since #361 a subagent
+    // announcing itself no longer clears a permission prompt the root is sitting
+    // on, so this second delivery is a duplicate of the first: same kind, same
+    // message, `since` still T0. Kept because what this test needs is a blocked
+    // session with a live subagent underneath it, and it must hold whichever of
+    // the two rules is in force. The assertion below is the one that says so.
     state = send(state, T0, { hook_event_name: "Notification", ...PERMISSION });
     const sub = state.agents.get(`${SESSION}::sub-1`)!;
     expect(sub.state).toBe("active");
+    expect(root(state).waiting).toEqual({ kind: "permission", message: PERMISSION.message, since: T0 });
 
     sweepStaleSessions(state, T0 + 2 * 60 * MIN, STALE_SESSION_MS);
     expect(sub.state).toBe("done");

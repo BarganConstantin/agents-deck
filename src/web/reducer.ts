@@ -574,16 +574,110 @@ function waitingKind(notificationType: unknown): WaitingBlock["kind"] | null {
 }
 
 /** Events that are NOT proof the session moved, and so must leave a waiting
- *  block standing. `Notification` is the one that sets it. The three *Observed
- *  events are the server's own transcript scans, not session traffic: it starts
- *  one for every hook payload that carries a `transcript_path`, the notification
- *  included, so treating them as movement would clear the block a second or two
- *  after it was set and no badge would ever survive long enough to be read.
- *  Everything else — a prompt, a tool call, a subagent, a Stop — is the session
- *  moving again, which is the only evidence we get that the human answered. */
+ *  block standing whoever they are attributed to. `Notification` is the one that
+ *  sets it. The three *Observed events are the server's own transcript scans,
+ *  not session traffic: it starts one for every hook payload that carries a
+ *  `transcript_path`, the notification included, so treating them as movement
+ *  would clear the block a second or two after it was set and no badge would
+ *  ever survive long enough to be read. Everything else — a prompt, a tool call,
+ *  a subagent, a Stop — is the session moving again; `clearsWaiting` below
+ *  decides whether that movement is also evidence the HUMAN moved. */
 const WAITING_KEEPERS = new Set([
   "Notification", "ModelObserved", "ContextObserved", "UsageObserved",
 ]);
+
+/**
+ * Which subagent a permission prompt landing right now is about, or undefined
+ * when the root asked (or when we cannot tell, which is the same answer as far
+ * as the clear rule is concerned).
+ *
+ * `Notification` names nobody — no agent_id, no tool_name, no tool_use_id — so
+ * the only thing left to read is where it sits in the stream. CC runs the
+ * PreToolUse hook BEFORE it asks the human for permission, so the call that is
+ * about to block is the newest one still in flight on this session, and whoever
+ * that call's payload named is the one waiting on an answer.
+ *
+ * Deliberately NOT the top of `activeSubagentStack`, which is the attribution
+ * rule everything else here uses: with three Tasks running in parallel the stack
+ * top is a one-in-three guess about which of them asked, whereas the newest
+ * in-flight call is the one whose PreToolUse fired milliseconds ago. The only
+ * way it picks wrong is another agent starting a call inside that gap, and both
+ * ways of being wrong are bounded by what the deck did before #361: attribute to
+ * a sibling and that sibling's traffic clears the block early (today's bug, now
+ * needing a millisecond race to happen at all), attribute to nobody and only
+ * root-level traffic clears it (the plain #361 rule).
+ *
+ * The call's own `explicitSubagentId` decides whose it is, not the node it was
+ * drawn under. Those differ for exactly the case that matters here: while a Task
+ * is live, the root's own tool calls carry no agent_id and are attributed to the
+ * subagent by the stack heuristic — so reading the owner would hand a prompt the
+ * ROOT raised to whichever Task happened to be running, and let that Task's
+ * traffic clear it. Payload attribution both ways, or the rule contradicts
+ * itself.
+ */
+function blockedSubagentId(state: GraphState, sessionId: string): string | undefined {
+  let newest: ToolCall | null = null;
+  for (const tc of state.toolIndex.values()) {
+    // `toolIndex` spans every session on the board, and holds exactly the calls
+    // that have not settled — PostToolUse and the stale sweep both delete.
+    const owner = tc.agentId ? state.agents.get(tc.agentId) : undefined;
+    if (!owner || owner.sessionId !== sessionId) continue;
+    if (!newest || tc.startedAt > newest.startedAt) newest = tc;
+  }
+  // A call whose payload named nobody is the root's own, and root-level traffic
+  // already clears the block — there is nothing to name.
+  return newest?.explicitSubagentId;
+}
+
+/** A fresh block, attributed. Only a `permission` block is ever about one agent:
+ *  an idle prompt is the session's own input box sitting empty, which belongs to
+ *  nobody underneath it. The field is left off entirely rather than set to
+ *  undefined so a block with no subagent behind it is the same object it has
+ *  always been. */
+function waitingBlock(
+  state: GraphState, sessionId: string, kind: WaitingBlock["kind"], message: string, now: number,
+): WaitingBlock {
+  const subagentId = kind === "permission" ? blockedSubagentId(state, sessionId) : undefined;
+  return subagentId ? { kind, message, since: now, subagentId } : { kind, message, since: now };
+}
+
+/**
+ * Is this event evidence the human dealt with `w`?
+ *
+ * #361: it used to be enough that the event was not a keeper, keyed on nothing
+ * but `hook_event_name` and `session_id`. A subagent's tool call carries the
+ * ROOT's session_id — and on a real log 79% of PreToolUse and PostToolUse
+ * events are subagent-attributed — so in any session running a Task the alarm
+ * was wiped milliseconds after it was raised, while the human was still looking
+ * at the prompt in the terminal. Nothing re-raises it: the notification is not
+ * re-sent, and since #348 the idle_prompt that follows is not an alarm.
+ *
+ * The two kinds are different claims and are answered by different evidence:
+ *
+ *  - `permission` says a specific agent is stopped until the human answers. Only
+ *    the root's own traffic, or traffic from the very subagent that asked, can
+ *    mean the answer arrived; a sibling Task working away means nothing at all.
+ *  - `idle` says nothing is happening — the input box has been empty for a
+ *    minute. ANY traffic on the session falsifies that directly, including a
+ *    subagent's, so it keeps the old rule. Being wrong in that direction is also
+ *    the cheap one: an idle block is not an alarm post-#348, it only sorts the
+ *    sidebar and prints "waiting 3m", and printing that over a session whose
+ *    subagents are visibly working is the lie worth avoiding.
+ */
+function clearsWaiting(w: WaitingBlock, p: HookPayload, sessionId: string): boolean {
+  if (w.kind !== "permission") return true;
+  const key = explicitSubagentKey(p);
+  // Root-level traffic — every UserPromptSubmit, Stop, SessionStart, SessionEnd
+  // and the root's own tool calls, none of which carries an agent_id or a
+  // parent_tool_use_id. This is the whole of what used to clear it correctly.
+  if (key == null) return true;
+  // Subagent-attributed traffic clears only the block that subagent itself
+  // raised, which is what the human answering a subagent's prompt produces:
+  // its PostToolUse if they approved, its next call or its SubagentStop if they
+  // denied. Siblings, and every subagent when the root is the one asking, leave
+  // it standing.
+  return w.subagentId != null && subagentIdFor(sessionId, key) === w.subagentId;
+}
 
 export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   // `seq` is only monotonic *within one server process*. A restart re-derives
@@ -625,9 +719,14 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   // notification, and each one is cleared again by whatever the session did
   // next, so a tab that opens mid-block ends up blocked and a tab that opens
   // after it was answered does not.
+  //
+  // WHOSE traffic it is decides it, not just what the event is called: a
+  // subagent's tool call carries the root's session_id and used to land here as
+  // the session "moving again", which erased the alarm while the human was still
+  // being asked. `clearsWaiting` holds that rule.
   if (!WAITING_KEEPERS.has(name)) {
     const blocked = state.agents.get(rootAgentId(sessionId));
-    if (blocked?.waiting) blocked.waiting = null;
+    if (blocked?.waiting && clearsWaiting(blocked.waiting, p, sessionId)) blocked.waiting = null;
   }
 
   // Note that we heard from this session, which is a different question from
@@ -843,12 +942,19 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       // Only a genuinely new call gets past here, so `toolCount` still advances
       // exactly once per pushed entry and the synthesised id below stays unique.
       const id = p.tool_use_id ?? `${owner.id}:${owner.toolCount}`;
+      // `explicitSubagentId` records what the payload said rather than where
+      // `owner` came from, and is derived from the key rather than from the
+      // resolved node so it still names the right subagent when that subagent
+      // never announced itself — which is the same id `clearsWaiting` compares
+      // against. See its declaration in types.ts.
+      const explicit = explicitSubagentKey(p);
       const tc: ToolCall = {
         id,
         name: p.tool_name ?? "?",
         input: p.tool_input,
         inputPreview: shortPreview(p.tool_input),
         agentId: owner.id,
+        explicitSubagentId: explicit ? subagentIdFor(sessionId, explicit) : undefined,
         startedAt: now,
       };
       owner.tools.push(tc);
@@ -970,9 +1076,16 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       // every time a duplicate landed. Math.min rather than "keep whichever
       // arrived first" so a copy delivered out of order settles on the same
       // answer: order-independence is this reducer's stated contract.
+      //
+      // A duplicate keeps the attribution the first copy computed, for the same
+      // reason it keeps the earliest `since`: the block belongs to the moment it
+      // was raised, and a copy landing later sees a session that has moved on —
+      // the blocked call may have settled by then, leaving nothing in flight to
+      // read. Re-deriving per copy would let a re-delivery quietly widen or
+      // narrow what is allowed to clear the block.
       root.waiting = prev && prev.kind === kind && prev.message === message
-        ? { kind, message, since: Math.min(prev.since, now) }
-        : { kind, message, since: now };
+        ? { ...prev, since: Math.min(prev.since, now) }
+        : waitingBlock(state, sessionId, kind, message, now);
       break;
     }
   }

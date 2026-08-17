@@ -17,6 +17,18 @@ export interface ToolCall {
   errorPreview?: string;
   /** Owning agent id, so callers (modal) can navigate back to source. */
   agentId?: string;
+  /** The subagent node id this call's OWN payload named (`${session}::${agent_id}`),
+   *  when it named one. Absent means the payload named nobody, which is what the
+   *  root's own calls look like.
+   *
+   *  Not the same question as `agentId`: with a Task in flight the reducer
+   *  attributes an unattributed tool call to the deepest live subagent, because
+   *  CC's tool hooks did not always carry an agent_id — a heuristic, and the
+   *  right one for drawing the call on the canvas. #361's clear rule cannot use
+   *  a heuristic: it decides whether a permission block survives, and it must
+   *  read what the payload actually said, exactly as it does for the events that
+   *  clear the block. */
+  explicitSubagentId?: string;
   usage?: TokenUsage;
   /** Set once this call fell out of the reducer's blob window and its `input`
    *  / `response` were released to keep the tab's heap bounded. The previews
@@ -63,6 +75,25 @@ export interface WaitingBlock {
    *  by a duplicate delivery, or the "waiting 4m" readout on the card resets to
    *  zero every time a second deck's copy of the same notification lands. */
   since: number;
+  /** Which SUBAGENT this permission prompt is about, as that agent's node id
+   *  (`${session_id}::${agent_id}`), or absent when the root asked — which is
+   *  also what an idle block always is, and what a prompt we could not attribute
+   *  falls back to.
+   *
+   *  The payload names nobody: `Notification` carries no agent_id, no tool_name
+   *  and no tool_use_id (see `message` above). What it does have is a position in
+   *  the stream — CC runs the PreToolUse hook before it asks for permission, so
+   *  the tool call that is about to block is the newest one still in flight on
+   *  this session when the notification lands. That is the guess, and it is a
+   *  guess; both ways of being wrong land on behaviour the deck already had
+   *  before #361, never on something worse.
+   *
+   *  It exists because #361's rule — subagent-attributed traffic must not clear
+   *  the block — otherwise leaves nothing to clear a prompt a SUBAGENT raised:
+   *  the human answers, the subagent's own PostToolUse is the next thing that
+   *  arrives, and it carries an agent_id. Naming the subagent lets exactly that
+   *  event, and nothing its siblings do, take the block away. */
+  subagentId?: string;
 }
 
 export interface ContextBreakdown {

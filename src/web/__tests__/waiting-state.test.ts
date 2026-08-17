@@ -117,15 +117,20 @@ describe("the clear matrix — one case each", () => {
       .toBeFalsy();
   });
 
-  it("clears on SubagentStart — traffic on this session", () => {
-    expect(root(afterOne({ hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" })).waiting)
-      .toBeFalsy();
+  it("does NOT clear on SubagentStart — a Task starting is not the human answering", () => {
+    // #361. This used to clear, on the rule that any session traffic is the
+    // session moving again. A subagent starting is the session moving and the
+    // human still being asked, which are not the same fact — and the block here
+    // belongs to the root, whose own Task call is the newest thing in flight.
+    expect(root(afterOne({ hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" })).waiting?.kind)
+      .toBe("permission");
   });
 
-  it("clears on SubagentStop — traffic on this session", () => {
+  it("does NOT clear on SubagentStop raised under someone else's block", () => {
     const started = (s: GraphState) =>
       send(s, { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" });
-    expect(root(afterOne({ hook_event_name: "SubagentStop", agent_id: "sub-1" }, started)).waiting).toBeFalsy();
+    expect(root(afterOne({ hook_event_name: "SubagentStop", agent_id: "sub-1" }, started)).waiting?.kind)
+      .toBe("permission");
   });
 
   it("clears on Stop — the turn is over, and the idle prompt ~60s later sets it again", () => {
@@ -168,6 +173,206 @@ describe("the clear matrix — one case each", () => {
       payload: { session_id: "other-session", hook_event_name: "UserPromptSubmit", prompt: "hi" },
     });
     expect(root(state).waiting?.kind).toBe("permission");
+  });
+});
+
+// #361: the clear matrix above only ever sent ROOT-level payloads, and the one
+// shape it never sent is the one that breaks the feature. A subagent's tool call
+// carries the root's session_id — on a real log 79% of PreToolUse and PostToolUse
+// events are subagent-attributed — so "any event that is not a keeper clears the
+// block" meant the alarm was wiped milliseconds after it was raised in every
+// session running a Task, while the human was still looking at the prompt. And
+// nothing puts it back: the notification is not re-sent, and since #348 the
+// idle_prompt that follows a minute later is deliberately not an alarm.
+describe("a session with subagents, which is nearly every session", () => {
+  /** The root is blocked while a Task works underneath it. The root's own Bash
+   *  (t1, from `running()`) is the newest call in flight when the prompt lands,
+   *  so the block is the root's. */
+  function blockedWithSubagentWorking(): GraphState {
+    let state = send(running(), { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" });
+    state = send(state, { hook_event_name: "Notification", ...PERMISSION });
+    expect(root(state).waiting?.kind, "the block has to exist before it can be cleared").toBe("permission");
+    return state;
+  }
+
+  it("keeps the block when a subagent fires a tool call — the reported bug", () => {
+    const state = send(blockedWithSubagentWorking(), {
+      hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t9", agent_id: "sub-1",
+    });
+    expect(root(state).waiting?.kind).toBe("permission");
+  });
+
+  it("keeps it through everything a busy subagent emits", () => {
+    // The whole vocabulary a Task produces under the root's session id. Sent as
+    // one run because that is how they arrive: three parallel subagents each
+    // doing this is a dozen events a second, any one of which used to be enough.
+    let state = blockedWithSubagentWorking();
+    for (const p of [
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t9", agent_id: "sub-1" },
+      { hook_event_name: "PostToolUse", tool_use_id: "t9", tool_response: "ok", agent_id: "sub-1" },
+      { hook_event_name: "PostToolUseFailure", tool_use_id: "t9", tool_response: "boom", agent_id: "sub-1" },
+      { hook_event_name: "SubagentStop", agent_id: "sub-1" },
+      { hook_event_name: "SubagentStart", agent_id: "sub-2", agent_type: "explorer" },
+    ]) {
+      state = send(state, p);
+      expect(root(state).waiting?.kind, p.hook_event_name).toBe("permission");
+    }
+  });
+
+  it("keeps it for the older `parent_tool_use_id` spelling too", () => {
+    // `explicitSubagentKey` reads either field. Real CC payloads in the log all
+    // use agent_id, but the reducer has always accepted both and the clear rule
+    // must not be the one place that treats a subagent as the root.
+    const state = send(blockedWithSubagentWorking(), {
+      hook_event_name: "PostToolUse", tool_use_id: "t1", tool_response: "ok", parent_tool_use_id: "sub-1",
+    });
+    expect(root(state).waiting?.kind).toBe("permission");
+  });
+
+  it("still clears on every root-level event, with a Task running the whole time", () => {
+    // The inverse, and the half that must not regress: a live subagent puts a key
+    // on the attribution stack, so resolveOwner hands these events to sub-1 — but
+    // the clear rule reads the payload, not the owner, and none of these payloads
+    // names a subagent. Counted on a real log, none of them ever does: 45/45
+    // UserPromptSubmit, 39/39 Stop, 6/6 SessionStart, 3/3 SessionEnd and every
+    // root-attributed tool event carried neither agent_id nor parent_tool_use_id.
+    for (const next of [
+      { hook_event_name: "UserPromptSubmit", prompt: "yes" },
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t2" },
+      { hook_event_name: "PostToolUse", tool_use_id: "t1", tool_response: "ok" },
+      { hook_event_name: "PostToolUseFailure", tool_use_id: "t1", tool_response: "boom" },
+      { hook_event_name: "Stop" },
+      { hook_event_name: "SessionEnd" },
+      { hook_event_name: "SessionStart", cwd: "/repo" },
+    ]) {
+      expect(root(send(blockedWithSubagentWorking(), next)).waiting, next.hook_event_name).toBeFalsy();
+    }
+  });
+
+  it("leaves an idle block on the old rule — a working subagent is proof it is not idle", () => {
+    // The two kinds are different claims. "Waiting for your input" says nothing
+    // is happening, and a subagent's tool call falsifies that directly; it says
+    // nothing about whether the human answered a prompt, which is the permission
+    // block's whole content. An idle block is not an alarm post-#348 — it sorts
+    // the sidebar and prints "waiting 3m" — and printing that over a session
+    // whose subagents are visibly working is the lie worth avoiding here.
+    let state = send(running(), { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" });
+    state = send(state, { hook_event_name: "Notification", ...IDLE });
+    expect(root(state).waiting?.kind).toBe("idle");
+    state = send(state, { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t9", agent_id: "sub-1" });
+    expect(root(state).waiting).toBeFalsy();
+  });
+});
+
+// The hole #361's own one-line fix leaves: if only root-level traffic clears the
+// block, then a prompt a SUBAGENT raised has nothing to clear it. The human
+// answers, the subagent's PostToolUse is the very next thing that arrives, and
+// it carries an agent_id — so the alarm would stand until the Task finished and
+// the root's own PostToolUse for it landed. Measured on a real log that is a
+// median of 103 seconds and a tail of eleven minutes of a lit favicon, tab title
+// and topbar chip on a session nobody is being asked anything about, with the
+// 90-minute #350 sweep as the only other backstop.
+describe("a prompt the subagent raised, and who is allowed to answer it", () => {
+  /** sub-1 hits a permission prompt: its PreToolUse fires (CC runs that hook
+   *  before it asks), so its call is the newest in flight when the notification
+   *  lands and the block is attributed to it. sub-2 is a sibling, working. */
+  function subagentAsked(): GraphState {
+    let state = send(running(), { hook_event_name: "SubagentStart", agent_id: "sub-2", agent_type: "explorer" });
+    state = send(state, { hook_event_name: "PreToolUse", tool_name: "Grep", tool_use_id: "t8", agent_id: "sub-2" });
+    state = send(state, { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" });
+    state = send(state, { hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "t9", agent_id: "sub-1" });
+    state = send(state, { hook_event_name: "Notification", ...PERMISSION });
+    expect(root(state).waiting?.subagentId).toBe(`${SESSION}::sub-1`);
+    return state;
+  }
+
+  it("clears when that subagent's blocked call settles — the human approved", () => {
+    const state = send(subagentAsked(), {
+      hook_event_name: "PostToolUse", tool_use_id: "t9", tool_response: "ok", agent_id: "sub-1",
+    });
+    expect(root(state).waiting).toBeFalsy();
+  });
+
+  it("clears on anything else that subagent does — the human may have denied it", () => {
+    // A denial produces no PostToolUse for the call that was refused; what comes
+    // back is the subagent carrying on with the feedback, or giving up. Any event
+    // it emits is the same evidence: it is running again, so it is not blocked.
+    for (const next of [
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t10", agent_id: "sub-1" },
+      { hook_event_name: "PostToolUseFailure", tool_use_id: "t9", tool_response: "denied", agent_id: "sub-1" },
+      { hook_event_name: "SubagentStop", agent_id: "sub-1" },
+    ]) {
+      expect(root(send(subagentAsked(), next)).waiting, next.hook_event_name).toBeFalsy();
+    }
+  });
+
+  it("is not cleared by the sibling Task that was never asked anything", () => {
+    // The bug, in the shape it takes once the block is attributed: sub-2 is
+    // running flat out beside sub-1 and none of it is an answer.
+    let state = subagentAsked();
+    for (const p of [
+      { hook_event_name: "PostToolUse", tool_use_id: "t8", tool_response: "ok", agent_id: "sub-2" },
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t11", agent_id: "sub-2" },
+      { hook_event_name: "SubagentStop", agent_id: "sub-2" },
+    ]) {
+      state = send(state, p);
+      expect(root(state).waiting?.kind, p.hook_event_name).toBe("permission");
+    }
+  });
+
+  it("still clears on root-level traffic, whichever subagent it was attributed to", () => {
+    expect(root(send(subagentAsked(), { hook_event_name: "PostToolUse", tool_use_id: "t1", tool_response: "ok" })).waiting)
+      .toBeFalsy();
+    expect(root(send(subagentAsked(), { hook_event_name: "Stop" })).waiting).toBeFalsy();
+  });
+
+  it("attributes to nobody when the root is the one asking, so no subagent can clear it", () => {
+    // The root's own PreToolUse is the newest call in flight, so the block is the
+    // root's — and then sub-1 finishing its own work says nothing about it.
+    //
+    // t7 is also the case that decides where the attribution is read from: it
+    // carries no agent_id, and with sub-1 on the active stack resolveOwner draws
+    // it UNDER sub-1. Read off the owning node, this block would belong to sub-1
+    // and sub-1's next event would clear a prompt the root is still sitting on —
+    // #361 again, in the one shape the one-line fix does not cover.
+    let state = send(running(), { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" });
+    state = send(state, { hook_event_name: "PreToolUse", tool_name: "Grep", tool_use_id: "t8", agent_id: "sub-1" });
+    state = send(state, { hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "t7" });
+    state = send(state, { hook_event_name: "Notification", ...PERMISSION });
+    expect(root(state).waiting?.subagentId).toBeUndefined();
+    state = send(state, { hook_event_name: "PostToolUse", tool_use_id: "t8", tool_response: "ok", agent_id: "sub-1" });
+    expect(root(state).waiting?.kind).toBe("permission");
+    state = send(state, { hook_event_name: "PostToolUse", tool_use_id: "t7", tool_response: "ok" });
+    expect(root(state).waiting).toBeFalsy();
+  });
+
+  it("keeps the first copy's attribution when the notification is re-delivered", () => {
+    // Every deck sharing events.jsonl posts its own copy, and each tab replays
+    // the whole log on open. A later copy sees a session that has moved on — the
+    // blocked call may have settled by then, leaving nothing in flight to read —
+    // so re-deriving per copy would let a re-delivery widen or narrow what is
+    // allowed to clear the block.
+    let state = subagentAsked();
+    state = send(state, { hook_event_name: "Notification", ...PERMISSION });
+    expect(root(state).waiting?.subagentId).toBe(`${SESSION}::sub-1`);
+  });
+
+  it("survives the whole log being replayed into a fresh tab", () => {
+    // Order-independence is this reducer's contract, and a tab that opens
+    // mid-block must land on the block. The state a tab rebuilds and the state a
+    // tab already had are the same state, or the badge flickers on refresh.
+    seq = 0;
+    let state = initialState();
+    for (const payload of [
+      { hook_event_name: "SessionStart", cwd: "/repo" },
+      { hook_event_name: "UserPromptSubmit", prompt: "run the tests" },
+      { hook_event_name: "PreToolUse", tool_name: "Task", tool_use_id: "t1" },
+      { hook_event_name: "SubagentStart", agent_id: "sub-1", agent_type: "explorer" },
+      { hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "t9", agent_id: "sub-1" },
+      { hook_event_name: "Notification", ...PERMISSION },
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t10", agent_id: "sub-1" },
+    ] as HookPayload[]) state = send(state, payload);
+    expect(root(state).waiting).toBeFalsy();
   });
 });
 
