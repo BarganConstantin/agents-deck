@@ -36,6 +36,7 @@ import { THEME_KEY, storedTheme, type Theme } from "./theme";
 import { PRODUCT } from "./brand";
 import { ambientSignal, FAVICON_HREF, type AmbientSignal } from "./ambient";
 import { blockedSessions, runningSessionCount } from "./ambient-counts";
+import { blockedAnnouncement, nextAnnouncement } from "./block-announce";
 import UsageHistoryModal from "./components/UsageHistoryModal";
 import { autoLayout, bubblePush, fillGapsWithNewSessions, laneSignature, separateOverlaps } from "./layout";
 import { applyEvent, initialState, pruneDoneSessions, pruneOldAgents, sessionHue, STALE_SESSION_MS, sweepStaleSessions, sweepStaleTools, type GraphState } from "./reducer";
@@ -2134,6 +2135,35 @@ function Inner() {
       if (link) link.href = FAVICON_HREF[next.icon];
     }
   }, [waitingSessions.length, runningSessions]);
+  // The same fact as the two lines above, on the one channel that had it from
+  // neither: spoken.
+  //
+  // A blocked session reached the tab title, the favicon, the amber topbar chip
+  // and the card's own row, and every one of those four is a thing you have to
+  // look at. #372: the deck's one alarm-worthy event was announced nowhere,
+  // while the stat strip beside it was a live region wrapped around a counter
+  // that moves on every hook event. Both halves are the same mistake — a live
+  // region spent on what changes rather than on what matters — and the second
+  // half is the more expensive one, because a region that talks through a tool
+  // storm is a region the user switches off before the first real alarm.
+  //
+  // `blockedAnnouncement` is pure and runs on the render path; `nextAnnouncement`
+  // is the reducer that decides whether that sentence is news. Both live in
+  // block-announce.ts, where a suite with no DOM can call them — see the file
+  // for why the all-clear string is load-bearing and why this is a reducer over
+  // committed state rather than a latch advanced during render.
+  //
+  // The effect depends on the SENTENCE, not on the session list. `waitingSessions`
+  // is rebuilt on every event by way of `lastSeq`, so a list-shaped dependency
+  // would re-run this on every event of every tool storm to discover each time
+  // that nothing had changed. A string dependency runs it only when the words
+  // move, and React's own bail-out on an identical state value means even that
+  // costs no render.
+  const [blockedSaid, setBlockedSaid] = useState("");
+  const blockedNow = blockedAnnouncement(waitingSessions);
+  useEffect(() => {
+    setBlockedSaid(said => nextAnnouncement(said, blockedNow));
+  }, [blockedNow]);
   const totalTokens = useMemo(() => {
     let inT = 0, outT = 0, cacheR = 0, cacheC = 0;
     let costSum = 0, costInput = 0, costOutput = 0, costCacheR = 0, costCacheW = 0;
@@ -2269,7 +2299,21 @@ function Inner() {
               >{search.count}</span>
             )}
           </div>
-          <span className="status" role="status">
+          {/* NOT a live region, and #372 is the issue that took the
+              `role="status"` off it. Nothing in this strip is a status
+              *message*: it is a permanently visible readout the user can read
+              whenever they want one, and every number in it moves on its own —
+              `totalEvents` increments once per hook event, which on a fan-out is
+              tens per second. `role="status"` also carries an implicit
+              `aria-atomic="true"`, so what a screen reader actually did with
+              each of those increments was re-read the whole strip, sessions and
+              agents and tokens and cost together, rather than the one number
+              that moved. Continuous speech of numbers nobody asked for is how a
+              page teaches its user to turn the screen reader off, and it was
+              being spent on the least urgent thing in the topbar.
+              WCAG 4.1.3 was satisfied here — for the wrong content. The alarm
+              that is worth a live region has one of its own, below. */}
+          <span className="status">
             {/* Three states, not two. Read through the gate rather than a
                 counter of its own: the queue is the thing being reported. */}
             {(() => {
@@ -2323,14 +2367,45 @@ function Inner() {
               );
             })()}
           </span>
-          {/* Outside the .status strip on purpose: that span is role="status",
-              a live region for numbers that change on their own, and a control
-              does not belong in one. This is the only number in the bar the user
-              is meant to act on — click goes to the session that has been stuck
-              longest, which is the one the deck was left open for. It says
-              nothing when nothing is blocked, and it never speaks for Codex:
-              those sessions emit no notification, so counting them would turn
-              "we have no signal" into "they are fine". */}
+          {/* The deck's one alarm, said out loud — and the only live region in
+              the topbar (#372).
+              MOUNTED UNCONDITIONALLY, which is the half that looks redundant and
+              is not. A screen reader registers a live region when the region
+              enters the accessibility tree, and text that arrives in the same
+              tick as the region itself is routinely never announced at all. The
+              chip below is mounted only while something is blocked, so wrapping
+              THAT in a role="status" would have put the region and its first
+              words on screen together — the one announcement that matters, on
+              the one delivery screen readers are least reliable about. It would
+              also have taken the region away again with the chip, leaving
+              nowhere to say the block had cleared. So the region is always here
+              and only its text moves.
+              POLITE, not assertive, and that was a decision rather than a
+              default. `role="alert"` interrupts whatever is being spoken, which
+              buys at most the length of one utterance — and a blocked session
+              waits indefinitely, so nothing is lost by arriving a sentence
+              later. What assertive would cost is concrete: a deck reloaded while
+              a session is already blocked replays that block during mount, and
+              an assertive region firing there talks over the screen reader's own
+              announcement of the page the user just opened. The connection
+              banner keeps role="alert" because its failure is the other kind —
+              once the stream is dead every number on this page is stale and the
+              deck is quietly lying, so a deferred announcement is a user acting
+              on dead data.
+              role="status" carries an implicit aria-atomic="true"; it is written
+              out because this sentence only means anything whole, and because a
+              partial reading of it is exactly the failure the strip above was
+              guilty of. */}
+          <div className="vis-hidden" role="status" aria-atomic="true">{blockedSaid}</div>
+          {/* Outside the .status strip on purpose: that strip is a readout and
+              this is a control, the only number in the bar the user is meant to
+              act on — click goes to the session that has been stuck longest,
+              which is both the one the deck was left open for and the one the
+              region above names. It says nothing when nothing is blocked, and it
+              never speaks for Codex: those sessions emit no notification, so
+              counting them would turn "we have no signal" into "they are fine".
+              It carries no live region of its own; the div above is where the
+              speaking happens, for the mounting reason given there. */}
           {waitingSessions.length > 0 && (
             <button
               type="button"

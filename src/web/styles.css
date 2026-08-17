@@ -503,7 +503,12 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
    already uses (85% of the token, one value for both themes), the accent-free
    hover that adds contrast rather than taking it away, and the press this
    codebase gives every custom control. It lives outside .status because that
-   span is a role="status" live region and a control does not belong in one. */
+   span is a readout and this is a control, and because a control has no business
+   inside a live region — which .status was until #372 took the role off it, on
+   the grounds that a strip whose events counter moves on every hook event is the
+   last thing in the topbar worth announcing. The announcing this chip's own
+   number deserves is done by a visually hidden role="status" beside it, so the
+   chip stays a plain button. */
 .topbar .waiting-stat {
   display: inline-flex;
   align-items: center;
