@@ -139,15 +139,77 @@ function colourIn(value: string): string {
   if (hex) return hex[0];
   // `border: none` and `border: 0` are the same statement: no boundary.
   if (/\b(transparent|none)\b/.test(value) || /^\s*0\s*$/.test(value)) return "transparent";
+  // A ring drawn in the element's own text colour. Returned verbatim rather
+  // than resolved: what `color` is at that point in the cascade is a question
+  // this file cannot answer, and `resolve` refusing it is the honest outcome —
+  // an edge nobody here understands is one for a human to look at.
+  if (/\bcurrentColor\b/i.test(value)) return "currentColor";
   throw new Error(`no colour in "${value}"`);
 }
 
-/** A rule's border colour, whichever of the four ways it was written. */
+/** Split a comma-separated value at the TOP level, so the commas inside
+ *  `rgba(0,0,0,.4)` do not tear a box-shadow layer in half. */
+function topLevelParts(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === "(") depth++;
+    else if (value[i] === ")") depth--;
+    else if (value[i] === "," && depth === 0) { out.push(value.slice(start, i)); start = i + 1; }
+  }
+  out.push(value.slice(start));
+  return out;
+}
+
+/** A rule's border colour, whichever way it was written.
+ *
+ *  #378 widened this from three properties to the whole set. It read
+ *  `border-color`, `border` and `border-bottom` only, so a control edged with
+ *  `border-top` or a logical `border-inline` returned null — and null is what
+ *  `paintsAnEdge` below reads as "no boundary at all", which means such a rule
+ *  was neither swept nor reported as unswept. Nothing in the sheet does that
+ *  today; the point is that nothing would have said so. */
+const BORDER_PROPS = [
+  "border-color", "border",
+  "border-top", "border-bottom", "border-left", "border-right",
+  "border-block", "border-inline", "border-block-start", "border-block-end",
+  "border-inline-start", "border-inline-end",
+];
+
 function borderColourIn(body: string): string | null {
-  const raw = declIn(body, "border-color")
-    ?? declIn(body, "border")
-    ?? declIn(body, "border-bottom");
-  return raw === null ? null : colourIn(raw);
+  for (const prop of BORDER_PROPS) {
+    const raw = declIn(body, prop);
+    if (raw !== null) return colourIn(raw);
+  }
+  return null;
+}
+
+/**
+ * A RING: a boundary drawn outside the box rather than in the border — an
+ * `outline`, or a `box-shadow` layer with no offset and no blur.
+ *
+ * #378. `borderColourIn` returned null for both, and `paintsAnEdge` reads null
+ * as "no boundary", so a control whose only visible edge was
+ * `outline: 1px solid var(--line)` passed the sweep that calls itself
+ * exhaustive at 1.14:1 dark / 1.60:1 light. Measured, by adding exactly that
+ * rule to a real control class: all 1849 tests stayed green. It is not a
+ * hypothetical shape either — `.uh-bar-col.sel .uh-bar` already marks the
+ * selected chart bar this way.
+ *
+ * Offset and blur are what separates a ring from a drop shadow. `0 0 0 2px X`
+ * is a line at a fixed distance from the box and reads as an edge;
+ * `0 4px 14px rgba(0,0,0,.45)` is a soft shadow with no boundary anywhere in
+ * it, and asking it to clear 3:1 would be asking the wrong question.
+ */
+function ringColourIn(body: string): string | null {
+  const outline = declIn(body, "outline");
+  if (outline !== null) return colourIn(outline);
+  const shadow = declIn(body, "box-shadow");
+  if (shadow === null) return null;
+  for (const layer of topLevelParts(shadow)) {
+    if (/^\s*(?:inset\s+)?0\s+0\s+0\s+/.test(layer)) return colourIn(layer);
+  }
+  return null;
 }
 
 const borderColour = (selector: string) => {
@@ -232,6 +294,72 @@ const TOPBAR = ["the topbar's light end", "the topbar's dark end"];
 const BANNER = ["the version banner", "--bg"];
 const ACCOUNTS = ["--panel", "the active account row"];
 
+// ── which rules in the sheet are a control's ─────────────────────────────────
+//
+// Harvested from the markup rather than listed, because a hand-kept list rots.
+// Hoisted to module scope in #378 so the ring sweep and the exhaustiveness
+// check ask the same question of the same set.
+
+function tsxFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap(name => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return name === "__tests__" ? [] : tsxFiles(path);
+    return path.endsWith(".tsx") ? [path] : [];
+  });
+}
+
+const TSX = tsxFiles(web).map(p => readFileSync(p, "utf8")).join("\n");
+
+/**
+ * The attribute text of every `<button>`, `<input>`, `<select>` and `<a>`.
+ *
+ * #378: this was `/<(button|input|select|a)\b([^>]*)>/`, which stops at the
+ * first `>` — including the one in `onClick={() => …}`. A control whose
+ * className happens to be written after an arrow attribute would have its class
+ * silently dropped out of `interactive`, and with it every rule that class
+ * names would drop out of the exhaustiveness check below. No control in this
+ * app does that today, which is exactly why it is worth fixing now rather than
+ * on the day one does. So the scan counts braces and tracks quotes and stops at
+ * the `>` that actually closes the tag.
+ */
+function openTags(source: string): string[] {
+  const out: string[] = [];
+  for (const head of source.matchAll(/<(button|input|select|a)\b/g)) {
+    const start = head.index + head[0].length;
+    // A tag longer than this is a runaway scan off an unbalanced brace in a
+    // comment, not markup — the longest real one in this app is under 900.
+    const limit = Math.min(source.length, start + 4000);
+    let depth = 0, quote = "", i = start;
+    for (; i < limit; i++) {
+      const c = source[i];
+      if (quote) { if (c === quote) quote = ""; continue; }
+      if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+      else if (c === ">" && depth === 0) break;
+    }
+    out.push(source.slice(start, i));
+  }
+  return out;
+}
+
+/** Every class the components put on one of those four tags. */
+const INTERACTIVE = new Set<string>();
+for (const attrs of openTags(TSX)) {
+  for (const m of attrs.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
+    for (const c of (m[1] ?? m[2]).replace(/\$\{[^}]*\}/g, " ").split(/\s+/)) {
+      if (c && !c.endsWith("-")) INTERACTIVE.add(c);
+    }
+  }
+}
+
+const escapeClass = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const MARKS = [...INTERACTIVE].map(c => new RegExp(`\\.${escapeClass(c)}(?![\\w-])`));
+MARKS.push(/(?:^|[\s>+~])(?:button|input|select)(?![\w-])/);
+
+const isControlRule = (selector: string) =>
+  selectors(selector).some(s => MARKS.some(re => re.test(s)));
+
 /** A control, as the sheet writes it: the rule that draws it at rest, the rule
  *  its fill comes from when that is a base class, every rule that redraws its
  *  boundary in some state, and the beds it can sit on. */
@@ -301,6 +429,44 @@ function edgeRatio(edge: string, fill: string, bed: Rgba, theme: Theme): number 
   const filled = over(resolve(fill, theme), bed);
   return contrastRatio(over(resolve(edge, theme), filled), bed);
 }
+
+// ── the rings ────────────────────────────────────────────────────────────────
+
+/**
+ * Rings that are decoration rather than identification, each with the reason.
+ *
+ * The test is whether the ring is the only thing telling you the element is
+ * there or which state it is in. A hairline added on hover, over a control
+ * whose resting edge the sweep above already measures, is not — it is a lift.
+ */
+const EXEMPT_RINGS = new Set([
+  // An --accent-dim glow ADDED on hover to a button whose own border does not
+  // move. 1.91:1 dark / 1.39:1 light, and the file already refuses to let
+  // --accent-dim be a border-color anywhere for exactly that reason; as a glow
+  // over an edge that is still there it takes nothing away.
+  'button.btn.icon-btn[aria-pressed="true"]:hover',
+  'button.btn.icon-btn[aria-expanded="true"]:hover',
+  // A currentColor hairline on a canvas label that is lifting under the
+  // pointer. .cluster-label is exempt at rest for the reason below — it reads
+  // its own name at 4.5:1 — and session-hue.test.ts owns its rim as decoration.
+  ".cluster-label:hover", ".cluster-label.dragging",
+  // The same shape on a tool burst: a hover lift in the burst's own category
+  // hue, over a chip identified by the tool name written across it.
+  ".tool-burst.clickable:hover",
+]);
+
+/** Every rule in the sheet that draws a ring somebody has to be able to see:
+ *  a control's, or ANY element's focus indicator, since 2.4.11 is owed to
+ *  whatever the keyboard can reach and not only to things with a class. */
+const RING_RULES = RULES.filter(rule => {
+  if (!isControlRule(rule.selector) && !/:focus-visible/.test(rule.selector)) return false;
+  if (selectors(rule.selector).every(s => EXEMPT_RINGS.has(s))) return false;
+  // A rule that declares a border is measured as a border above; the ring, if
+  // it has one too, is the extra on top.
+  if (borderColourIn(rule.body) !== null) return false;
+  const ring = ringColourIn(rule.body);
+  return ring !== null && ring !== "transparent";
+});
 
 describe("the contrast maths, against the two ends everybody knows", () => {
   it("puts white on black at 21:1 and a colour on itself at 1:1", () => {
@@ -384,35 +550,23 @@ describe("every control that draws a boundary draws one that can be seen (1.4.11
     // rule that paints a visible border on one of them has to be either swept
     // above or named below with a reason. A new control cannot be added to this
     // app without landing in one of the two lists.
-    const files = (dir: string): string[] => readdirSync(dir).flatMap(name => {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) return name === "__tests__" ? [] : files(path);
-      return path.endsWith(".tsx") ? [path] : [];
-    });
-    const tsx = files(web).map(p => readFileSync(p, "utf8")).join("\n");
-    const interactive = new Set<string>();
-    for (const [, , attrs] of tsx.matchAll(/<(button|input|select|a)\b([^>]*)>/g)) {
-      for (const m of attrs.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
-        for (const c of (m[1] ?? m[2]).replace(/\$\{[^}]*\}/g, " ").split(/\s+/)) {
-          if (c && !c.endsWith("-")) interactive.add(c);
-        }
-      }
-    }
-    expect(interactive.size).toBeGreaterThan(20);
+    expect(INTERACTIVE.size).toBeGreaterThan(20);
 
-    const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const marks = [...interactive].map(c => new RegExp(`\\.${escape(c)}(?![\\w-])`));
-    marks.push(/(?:^|[\s>+~])(?:button|input|select)(?![\w-])/);
-    const isControlRule = (selector: string) =>
-      selectors(selector).some(s => marks.some(re => re.test(s)));
-
-    /** A border a reader could see: not `none`, not `0`, not transparent. A
+    /** An edge a reader could see: not `none`, not `0`, not transparent. A
      *  value this file cannot resolve counts as visible — an edge nobody here
-     *  understands is exactly the one that has to be looked at by hand. */
+     *  understands is exactly the one that has to be looked at by hand.
+     *
+     *  #378: a ring counts. This used to ask `borderColourIn` alone, so a rule
+     *  drawing its whole boundary with `outline` or an inset box-shadow
+     *  answered "no boundary" and fell out of both lists at once — not swept,
+     *  and not reported as unswept either, which is the failure mode a check
+     *  calling itself exhaustive can least afford. */
     const paintsAnEdge = (body: string) => {
-      const c = borderColourIn(body);
-      if (c === null || c === "transparent") return false;
-      try { return resolve(c, "light")[3] > 0; } catch { return true; }
+      try {
+        const c = borderColourIn(body) ?? ringColourIn(body);
+        if (c === null || c === "transparent") return false;
+        return resolve(c, "light")[3] > 0;
+      } catch { return true; }
     };
 
     // Named, with the reason. All three are the same reason 1.4.11 gives:
@@ -436,12 +590,86 @@ describe("every control that draws a boundary draws one that can be seen (1.4.11
       for (const s of c.states ?? []) swept.add(s);
       if (c.fillFrom) swept.add(c.fillFrom);
     }
+    // Rings are swept by their own describe below, which measures every one of
+    // them rather than working from a list — so a new outline-only control
+    // lands there automatically and has to clear 3:1 to pass. What is left for
+    // a hand-list is the rings that are decoration, and those name themselves.
+    for (const r of RING_RULES) for (const s of selectors(r.selector)) swept.add(s);
+    for (const s of EXEMPT_RINGS) swept.add(s);
 
     const unclassified = RULES
       .filter(r => isControlRule(r.selector) && paintsAnEdge(r.body))
       .flatMap(r => selectors(r.selector))
       .filter(s => !swept.has(s) && !EXEMPT.has(s));
     expect([...new Set(unclassified)]).toEqual([]);
+  });
+});
+
+describe("the rings, which a border sweep cannot see (1.4.11, 2.4.11)", () => {
+  it("finds the focus indicator at all, which is the surface nothing here measured", () => {
+    // The keyboard focus ring is the whole of what a keyboard user gets, and
+    // this file used to be blind to it: `outline` was not one of the three
+    // properties it read. quiet-signals.test.ts does measure the search field's
+    // ring — against three surfaces — so the issue's "never measured at all" is
+    // not quite right; what was missing is every OTHER ring, and the beds this
+    // file knows about that the other one does not (the topbar's two gradient
+    // ends, the version banner's wash, the active account row).
+    //
+    // A floor rather than a count: deleting a control must not fail this, and
+    // a sheet that has stopped drawing focus rings must.
+    const focus = RING_RULES.filter(r => /:focus-visible/.test(r.selector));
+    expect(focus.length, "the sheet draws no focus indicator this sweep can find")
+      .toBeGreaterThanOrEqual(8);
+    expect(RING_RULES.some(r => selectors(r.selector).includes(":focus-visible")),
+      "the global :focus-visible bed is gone, so most of the app has no ring").toBe(true);
+  });
+
+  it("draws every one of them at 3:1 on every surface it can float over, both themes", () => {
+    // `outline-offset` puts the ring OUTSIDE the control, so unlike a border it
+    // composites straight onto whatever is behind — no fill in between. Swept
+    // against every opaque bed in the sheet rather than a per-rule list: a ring
+    // is a few pixels of line, the beds are cheap, and the conservative answer
+    // is the one that keeps holding when a control moves.
+    //
+    // What this catches that nothing did: a future --accent tweak. Measured
+    // today it is 9.07–11.72:1 dark and 4.39–5.93:1 light, so there is room —
+    // and the day somebody spends it, this is the line that says so rather than
+    // the keyboard users finding out.
+    for (const theme of themes) {
+      const beds = surfaces(theme);
+      for (const rule of RING_RULES) {
+        const raw = ringColourIn(rule.body)!;
+        // A ring this file cannot resolve — `currentColor`, or a token only the
+        // element itself carries — is not a pass. It fails here by name, rather
+        // than throwing an unattributed parse error, so whoever wrote it is
+        // told to either sweep it by hand or put it in EXEMPT_RINGS with a
+        // reason. That is the same standard the border sweep holds.
+        expect(() => resolve(raw, theme),
+          `${rule.selector} rings in ${raw}, which cannot be measured here`).not.toThrow();
+        const ring = resolve(raw, theme);
+        for (const [bedName, bed] of Object.entries(beds)) {
+          expect(contrastRatio(over(ring, bed), bed), `${theme} ${rule.selector} on ${bedName}`)
+            .toBeGreaterThanOrEqual(NON_TEXT);
+        }
+      }
+    }
+  });
+
+  it("names every ring it excuses, and excuses none that is a control's only edge", () => {
+    // The one hand-list left in this describe, so it is worth saying out loud
+    // what is on it. Each entry is a hairline ADDED in a state, over an element
+    // whose identification does not depend on it — and each one is a rule that
+    // really is in the sheet, so an exemption cannot outlive the thing it
+    // excused and start quietly covering something else.
+    for (const excused of EXEMPT_RINGS) {
+      const rule = RULES.find(r => selectors(r.selector).includes(excused));
+      expect(rule, `${excused} is excused from the ring sweep but is not in the sheet`).toBeTruthy();
+      expect(ringColourIn(rule!.body), `${excused} is excused from the ring sweep but draws no ring`)
+        .not.toBeNull();
+      // A state, never a resting appearance: `:hover`, `.dragging`, `.on`.
+      expect(excused, `${excused} is a resting rule and may not be excused`)
+        .toMatch(/:hover|\.dragging|:active/);
+    }
   });
 });
 

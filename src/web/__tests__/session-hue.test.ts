@@ -21,10 +21,12 @@
 //     — the ceiling for a 32% wash on white is 2.19:1 — and the test proves
 //     that ceiling rather than asserting the exemption.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const css = readFileSync(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
+const web = fileURLToPath(new URL("..", import.meta.url));
+const css = readFileSync(join(web, "styles.css"), "utf8");
 const src = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
 const COMPONENTS: Record<string, string> = {
   "App.tsx": src("../App.tsx"),
@@ -32,6 +34,17 @@ const COMPONENTS: Record<string, string> = {
   "AgentNode.tsx": src("../components/AgentNode.tsx"),
   "ToolBursts.tsx": src("../components/ToolBursts.tsx"),
 };
+
+/** Every module under src/web, tests excluded — the same walk
+ *  control-edges.test.ts does, for the same reason: a hand-kept list of four
+ *  files is a list the fifth file is not on. */
+function modulesUnder(dir: string): string[] {
+  return readdirSync(dir).flatMap(name => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return name === "__tests__" ? [] : modulesUnder(path);
+    return /\.tsx?$/.test(path) ? [path] : [];
+  });
+}
 
 /** WCAG 1.4.3 for the words, 1.4.11 for a graphic that carries meaning. */
 const BODY = 4.5;
@@ -125,6 +138,44 @@ function topLevel(s: string): Array<{ selector: string; body: string }> {
 
 const RULES = topLevel(bare);
 const selectors = (list: string) => list.split(",").map(s => s.replace(/\s+/g, " ").trim());
+
+/** The balanced contents of every `hsl(…)` in `body`. Parens are counted rather
+ *  than matched with `[^)]*`, which stops inside the nested `var(--x, 200)`
+ *  every one of these calls opens with. */
+function hslCalls(body: string): string[] {
+  const out: string[] = [];
+  for (const head of [...body.matchAll(/hsl\(/g)]) {
+    const open = head.index + head[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < body.length; i++) {
+      if (body[i] === "(") depth++;
+      else if (body[i] === ")" && --depth === 0) { out.push(body.slice(open + 1, i)); break; }
+    }
+  }
+  return out;
+}
+
+/** One `hsl(var(--*-hue …) S% L …)` the sheet writes, split into the parts
+ *  #330 cares about: which rule it is in, and what it put in the LIGHTNESS
+ *  slot. That slot is the whole issue — a literal there is a colour composed
+ *  for one canvas, which is the defect, and a `var(--*-l)` is a colour the
+ *  cascade can answer for. */
+interface HueSite {
+  selector: string;
+  call: string;
+  lightness: string;
+}
+
+const HUE_SITES: HueSite[] = RULES.flatMap(rule =>
+  hslCalls(rule.body)
+    .filter(call => /^\s*var\(\s*--(?:session|mcp)-hue\b/.test(call))
+    .map(call => {
+      // Drop the leading balanced var(--*-hue, …), then the alpha after `/`,
+      // and what is left is `S% L` — two components, lightness last.
+      const after = call.slice(call.indexOf(")") + 1).split("/")[0];
+      const parts = after.trim().split(/\s+/);
+      return { selector: rule.selector, call, lightness: parts[parts.length - 1] };
+    }));
 
 function bodyOf(selector: string): string {
   const hit = RULES.filter(r => selectors(r.selector).includes(selector));
@@ -423,13 +474,28 @@ describe("the hue still tells two sessions apart, which is what it is for", () =
 // ── the boundary itself ─────────────────────────────────────────────────────
 
 describe("the colour is composed on the CSS side of the theme boundary", () => {
-  it("leaves no component building a colour at all", () => {
+  it("leaves no module under src/web building a colour at all", () => {
     // The defect was never a wrong number, it was a number in the wrong file.
     // Nothing under src/web composes hsl() any more; the components emit a hue
     // and the sheet does the rest, which is the only reason data-theme reaches
     // these eight at all.
-    for (const [name, code] of Object.entries(COMPONENTS)) {
-      expect(code, `${name} composes a colour`).not.toMatch(/hsl\(/);
+    //
+    // #378: this ran over the four files in COMPONENTS, which is the four that
+    // had the defect — the other twelve .tsx and every .ts beside them could
+    // compose colours freely. Measured: a template literal building
+    // `hsl(200 70% 62%)` inside SessionList.tsx passed every test in the repo.
+    // The tree is walked now, the way control-edges.test.ts walks it, so a file
+    // that does not exist yet is covered by the same line.
+    const files = modulesUnder(web);
+    expect(files.length, "the walk found nothing — src/web moved").toBeGreaterThan(12);
+    for (const path of files) {
+      expect(readFileSync(path, "utf8"), `${path.slice(web.length)} composes a colour`)
+        .not.toMatch(/hsl\(/);
+    }
+    // The four the audit named are still among them, so the walk cannot quietly
+    // stop reaching the files this rule was written about.
+    for (const name of Object.keys(COMPONENTS)) {
+      expect(files.some(p => p.endsWith(name)), `${name} is no longer in the walk`).toBe(true);
     }
   });
 
@@ -460,9 +526,56 @@ describe("the colour is composed on the CSS side of the theme boundary", () => {
       expect(m![3] === undefined ? 1 : +m![3], `${site.name} alpha`).toBe(site.alpha);
       found.set(site.name, m);
     }
-    expect(found.size).toBe(8);
+    // Not "eight were checked" — the loop above ran eight times by
+    // construction, so this only ever said that no two SITES share a name.
+    // What proves the sheet holds no ninth is the sweep in the next case.
+    expect(found.size, "two SITES share a name, so one of them was never checked").toBe(SITES.length);
     for (const theme of themes) {
       for (const site of SITES) expect(() => lightnessOf(theme, site.token), `${theme} ${site.token}`).not.toThrow();
+    }
+  });
+
+  it("puts a tier in the lightness slot of every hue the SHEET composes, not just the eight named here", () => {
+    // #378. `SITES` is hand-written and the check above walks it, so the sheet
+    // was only ever asked about colours somebody had already remembered to
+    // list. Measured: adding `.sl-waiting-count { border-color: hsl(var(
+    // --session-hue, 200) 70% 62%); }` — a hard-coded lightness, which is the
+    // literal defect #330 exists to remove — left all 1849 tests green.
+    //
+    // So the enumeration runs the other way now: every hue-composed colour in
+    // the stylesheet has to put a `var(--…-l)` in its lightness slot, and a new
+    // one arrives already covered rather than arriving unnoticed.
+    //
+    // One exemption, named rather than pattern-matched. `.cluster-card`'s 4%
+    // background wash is 1.01:1 on either canvas, so a per-theme tier would be
+    // arithmetic with nothing on the other side — the case above proves that
+    // ceiling rather than asserting the exemption, and this is the only rule
+    // the sheet is allowed to write a literal lightness in.
+    const EXEMPT = ".cluster-card";
+    const TIER = /^var\(\s*--[\w-]+-l\s*\)$/;
+    expect(HUE_SITES.length, "the sweep found no hue-composed colours at all — the walk is broken")
+      .toBeGreaterThanOrEqual(SITES.length);
+
+    const literals = HUE_SITES.filter(site => !TIER.test(site.lightness));
+    for (const site of literals) {
+      expect(site.selector, `${site.selector} composes hsl(${site.call}) — the lightness is a literal, so data-theme cannot reach it`)
+        .toBe(EXEMPT);
+      expect(site.call, `${EXEMPT} is exempt for its 4% wash, not for a second colour`)
+        .toMatch(/70%\s+50%\s*\/\s*0\.04\s*$/);
+    }
+    // Exactly one, so the exemption cannot widen by a rule being added beside
+    // it — .cluster-card also carries a compliant border, and "that selector is
+    // allowed literals" would have let the border go back to being one.
+    expect(literals, "more than one rule writes a literal lightness").toHaveLength(1);
+
+    // …and every tier it names is declared in both themes, which is what makes
+    // the cascade able to answer at all.
+    for (const site of HUE_SITES) {
+      const token = /^var\(\s*(--[\w-]+)\s*\)$/.exec(site.lightness)?.[1];
+      if (!token) continue;
+      for (const theme of themes) {
+        expect(() => lightnessOf(theme, token), `${theme} declares no ${token}`).not.toThrow();
+      }
     }
   });
 
