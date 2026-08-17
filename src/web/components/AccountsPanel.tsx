@@ -204,8 +204,28 @@ async function copyText(text: string): Promise<boolean> {
   return ok;
 }
 
-/** How long a share stays importable, said as a countdown. `tone` drives the
- *  colour: a share is a live credential, so running out is worth noticing. */
+/**
+ * How much longer another deck will ACCEPT this share, said as a countdown.
+ *
+ * Not how long it is safe for, which is a claim this timer cannot make and used
+ * to imply. The envelope is base64 of plain `{v, exp, payload}` with no MAC and
+ * no key anywhere — anyone holding the text can decode it, rewrite `exp`,
+ * re-encode and import it, and if they could not, the payload inside is still
+ * the account's OAuth token in the clear and `cswap import` takes it directly.
+ * A key would not help: the whole point of a share is that the receiving deck
+ * shares no secret with the sending one, so there is nothing to sign with that
+ * the recipient could verify.
+ *
+ * What the expiry does buy is real but smaller, and it is worth naming so it
+ * does not get mistaken for the other thing: a copy left behind in clipboard
+ * history, a scrollback buffer or a chat window stops working through the
+ * import dialog. That is hygiene against forgetting, not defence against
+ * anybody. Until the login is rotated, a copy is a copy.
+ *
+ * `tone` drives the colour, and it says "this is about to stop working" — which
+ * is why `gone` is the emphatic one. The warning about what the text IS lives
+ * beside the countdown rather than on it.
+ */
 export function shareExpiry(expiresAt: number, nowSec: number): { text: string; tone: "ok" | "soon" | "gone" } {
   const left = Math.round(expiresAt / 1000) - nowSec;
   if (left <= 0) return { text: "expired", tone: "gone" };
@@ -640,7 +660,14 @@ export default function AccountsPanel({ onClose }: Props) {
                       </select>
                     </span>
                     <button type="button" className="ap-manage-btn" disabled={busy != null}
-                      title={`Copy this account to another ${PRODUCT}. The share carries a live login and expires in 10 minutes.`}
+                      /* It said "carries a live login and expires in 10
+                         minutes", which reads as a lock with a timer on it. The
+                         share is plain text with the account's token inside and
+                         an expiry nothing signs, so the sentence has to lead
+                         with what the reader is about to put on their clipboard
+                         and describe the ten minutes as what it is: how long
+                         the OTHER deck will still take it. */
+                      title={`Copy this account to another ${PRODUCT}. Anyone who has the text can use the account — treat it as the password. The other deck stops accepting it after 10 minutes; that does not make an escaped copy safe.`}
                       onClick={async () => {
                         setShareCopied(false);
                         const out = await admin({ action: "share", account: a.num }, `share-${a.num}`);
@@ -699,8 +726,11 @@ export default function AccountsPanel({ onClose }: Props) {
                       <div className={`ap-share${dead ? " expired" : ""}`}>
                         <code className="ap-share-blob">{share.blob}</code>
                         <div className="ap-share-foot">
-                          {/* An expired blob is refused by the other deck, so
-                              offering to copy it is offering a dead end. */}
+                          {/* Past the expiry the import dialog on the other deck
+                              refuses this text, so offering to copy it is
+                              offering a dead end. That is the only thing the
+                              expiry does — see shareExpiry — and it is a
+                              statement about the dialog, not about the copy. */}
                           <button type="button" className="ap-manage-btn" disabled={busy != null}
                             onClick={async () => {
                               if (dead) {
@@ -716,8 +746,22 @@ export default function AccountsPanel({ onClose }: Props) {
                             }}>
                             {dead ? "make a new share" : shareCopied ? "copied" : "copy"}
                           </button>
-                          <span className="ap-manage-hint">
-                            carries a live login · <span className={`ap-share-expiry ${exp.tone}`}>{exp.text}</span>
+                          {/* "carries a live login" was true and read as a
+                              caption. The text IS the login, and the countdown
+                              beside it is not what keeps anyone out — so the
+                              warning is the part that carries the colour, and
+                              the full explanation is one hover away rather than
+                              crammed into a 288px column. Kept to twenty
+                              characters so the two halves stay on one line at
+                              the panel's width; the sentence that does the
+                              explaining is the title. */}
+                          <span className="ap-manage-hint"
+                            title={"This text is the account's password. It is base64 of plain JSON — the expiry inside it is not signed, so anyone holding a copy can change it, "
+                                 + "and the login itself is in there in the clear either way. The countdown only says how long another deck's import dialog will still accept it. "
+                                 + "If a copy escapes, sign the account out and back in."}>
+                            <span className="ap-share-warn">this is the password</span>
+                            {" · "}
+                            <span className={`ap-share-expiry ${exp.tone}`}>{exp.text}</span>
                           </span>
                         </div>
                       </div>

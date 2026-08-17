@@ -10,7 +10,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { getCodexAuth, forceCodexRefresh } from "./codex-auth.mjs";
+import { getCodexAuth, forceCodexRefresh, isCredentialHost } from "./codex-auth.mjs";
 import { PRODUCT } from "./brand.mjs";
 
 const CODEX_HOME  = process.env.CODEX_HOME ?? join(homedir(), ".codex");
@@ -21,10 +21,22 @@ let _cache   = null;
 let _cacheAt = 0;
 const CACHE_MS = 60_000;
 
+// The last base URL we refused, so the refusal is said once rather than once a
+// minute for as long as the config stays that way.
+let _warnedBase = null;
+
 // ── base URL ───────────────────────────────────────────────────────────────
 // `chatgpt_base_url` in config.toml can point at a proxy, and the path style
 // follows from its shape exactly as in the CLI: a /backend-api base speaks
 // /wham/*, anything else speaks /api/codex/*.
+//
+// Whatever it says, the request below carries `Authorization: Bearer
+// <accessToken>` — a live ChatGPT session — so the value is not just a routing
+// preference, it is the answer to "who gets the credential". It was taken
+// verbatim: a line regex, quotes stripped, straight into fetch(), which meant
+// anything able to write that TOML (or to set $CODEX_HOME and point it at its
+// own) could redirect the token to a host of its choosing, over plaintext http
+// if it liked. isCredentialHost is where the two rules live.
 async function readBaseUrl() {
   let raw = null;
   try {
@@ -249,6 +261,21 @@ async function doFetchCodexQuota() {
     if (auth.apiKeyMode) return fail("api_key_mode");
 
     base = await readBaseUrl();
+    // Refused before the first byte goes out, and reported rather than
+    // swallowed: a panel that says "Codex quota is off because the configured
+    // base URL is not an OpenAI one" is a bug report the user can act on, where
+    // a silently empty gauge is a mystery. Logged once per distinct value so a
+    // 60-second poll does not turn a misconfiguration into a log flood.
+    if (!isCredentialHost(base)) {
+      if (_warnedBase !== base) {
+        _warnedBase = base;
+        console.error(
+          `${PRODUCT} codex-quota: not sending the ChatGPT token to ${base} — ` +
+          `chatgpt_base_url must be an https OpenAI host`,
+        );
+      }
+      return fail("untrusted_base_url");
+    }
     res  = await requestUsage(base, auth);
 
     // The JWT's own `exp` is not the last word: OpenAI revokes server-side, so

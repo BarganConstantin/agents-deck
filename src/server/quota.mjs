@@ -19,21 +19,20 @@
 //      notably on macOS, where Claude Code keeps credentials in the Keychain
 //      and that file does not exist, so this is the ONLY self-service path
 //      there. It is also the most expensive: a whole Claude Code process per
-//      poll. On Windows the binary may be a .cmd wrapper, so exec()
-//      (shell-based) is used for correct quoting + stdin.
+//      poll. On Windows the binary may be a .cmd wrapper, which spawn cannot
+//      launch directly — exec.mjs's `run` routes that case through cmd.exe with
+//      the argument vector intact, so no shell ever parses a path this module
+//      read out of the environment.
 //
 // 2 and 3 are rate-floored (SELF_POLL_MS) and gated behind the same 429
 // cooldown; 1 is not, because it is a local file read.
 import { activeAccountUsage, requestCollection } from "./claude-accounts.mjs";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { run } from "./exec.mjs";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, posix as posixPath, win32 as winPath } from "node:path";
 import { homedir } from "node:os";
 import { PRODUCT } from "./brand.mjs";
-
-const execAsync = promisify(exec);
 
 const CREDS_PATH  = join(homedir(), ".claude", ".credentials.json");
 const USAGE_URL   = "https://api.anthropic.com/api/oauth/usage";
@@ -147,7 +146,7 @@ async function fetchOAuthUsage() {
 
 let _cache    = null;
 let _cacheAt  = 0;
-let _inflight = null;   // deduplicates concurrent exec() calls
+let _inflight = null;   // deduplicates concurrent CLI probes
 let _lastGood = null;   // last result that had real quota percentages
 let _lastSelfPollAt = 0;
 
@@ -346,35 +345,40 @@ export function quotaClaudeCandidates(platform = process.platform, env = process
   ];
 }
 
-/** Build the shell command string for `claude --print /usage`.
+/** Which `claude` to run for `--print /usage`: the first candidate that exists.
  *
- *  We use exec() (shell-based) so cmd.exe / sh processes redirects.
- *  On Windows: `< nul` closes stdin immediately, preventing the 3-second
- *  "no stdin data" wait the claude CLI does when it detects a pipe.
- *  On Unix: `< /dev/null` has the same effect.
+ *  This used to hand back a whole shell command line — `"<bin>" --print /usage
+ *  < /dev/null` — for `exec()` to parse. Double quotes are not escaping on
+ *  POSIX: `$(…)`, backticks and `\` all still work inside them, and every
+ *  ingredient of that line came from the environment (`%APPDATA%`, `homedir()`),
+ *  so a home directory named `/home/a$(id)b` was shell code the quota poll ran
+ *  every minute. A bare `$` was the duller half of the same bug — it expanded
+ *  to nothing and the probe looked for a binary at a path that did not exist.
+ *
+ *  There is nothing left to escape once there is no shell: exec.mjs's `run`
+ *  spawns the argument vector as given, resolves the Windows `.cmd`/`.exe`
+ *  spelling itself, and closes the child's stdin — which is what `< /dev/null`
+ *  was for, since `claude --print` waits three seconds on a stdin pipe nobody
+ *  is writing to.
  *
  *  Exported, with everything it touches injectable, so the Windows branch is
  *  testable from the platforms this repo is actually developed on.
  */
-export function buildQuotaShellCmd(platform = process.platform, env = process.env,
-                                   home = homedir(), exists = existsSync) {
-  const win = platform === "win32";
-  const sep = win ? "\\" : "/";
-  // A bare name is left to the shell's own lookup; a full path is only worth
-  // naming when it is actually there.
-  const bin = quotaClaudeCandidates(platform, env, home)
+export function quotaClaudeBin(platform = process.platform, env = process.env,
+                               home = homedir(), exists = existsSync) {
+  const sep = platform === "win32" ? "\\" : "/";
+  // A bare name is left to spawn's own PATH lookup (and, on Windows, to the
+  // PATHEXT walk exec.mjs does by hand); a full path is only worth naming when
+  // it is actually there.
+  return quotaClaudeCandidates(platform, env, home)
     .find(c => !c.includes(sep) || exists(c)) ?? "claude";
-  // Quote a path — a username can contain a space — but not a bare name, which
-  // cmd.exe resolves more predictably unquoted.
-  const quoted = bin.includes(sep) ? `"${bin}"` : bin;
-  return `${quoted} --print /usage < ${win ? "nul" : "/dev/null"}`;
 }
 
 export async function fetchClaudeQuota({ force = false } = {}) {
   const now = Date.now();
   if (!force && _cache && now - _cacheAt < CACHE_MS) return _cache;
 
-  // If another exec() is already in flight, wait for it instead of spawning a
+  // If another CLI probe is already in flight, wait for it instead of spawning a
   // second concurrent process (which can return empty output and overwrite the
   // good result with 0%).
   if (_inflight) return _inflight;
@@ -436,30 +440,27 @@ async function nudgeAndReread(previous) {
 //   cliOk  — the CLI ran and we recognized its output (preamble present)
 //   parsed — quota percentages object, or null if the "Current session/week"
 //            lines were absent (CLI cold-start, or genuinely <1% usage)
-async function _execOnce(shellCmd) {
-  try {
-    const { stdout, stderr } = await execAsync(shellCmd, {
-      timeout: 15_000,
-      // Marks this Claude Code run as the deck's own. `claude --print /usage`
-      // is a full invocation, so it fires the hooks we installed, and every
-      // quota poll was drawing itself onto the canvas as a fresh session with
-      // no prompt and no tools. Hooks inherit the environment, so hook.js
-      // sees this and stays quiet.
-      env: { ...process.env, NO_COLOR: "1", TERM: "dumb", AGENTS_DECK_INTERNAL: "1" },
-      maxBuffer: 1024 * 1024,
-    });
-    const combined = stdout + "\n" + stderr;
-    const cliOk = /subscription/i.test(combined) || /claude code usage/i.test(combined);
-    return { cliOk, parsed: parseUsageText(combined) };
-  } catch (err) {
-    const msg = err?.stderr ? stripAnsi(err.stderr).trim() : (err?.message ?? String(err));
+async function _execOnce(bin) {
+  const r = await run(bin, ["--print", "/usage"], {
+    timeout: 15_000,
+    maxBuffer: 1024 * 1024,
+    // Marks this Claude Code run as the deck's own. `claude --print /usage`
+    // is a full invocation, so it fires the hooks we installed, and every
+    // quota poll was drawing itself onto the canvas as a fresh session with
+    // no prompt and no tools. Hooks inherit the environment, so hook.js
+    // sees this and stays quiet.
+    env: { ...process.env, NO_COLOR: "1", TERM: "dumb", AGENTS_DECK_INTERNAL: "1" },
+  });
+  // `run` never rejects, so there is one path rather than two — and the output
+  // is kept either way, which matters because the CLI writes the quota lines to
+  // stdout and can still exit non-zero afterwards.
+  const combined = r.stdout + "\n" + r.stderr;
+  if (!r.ok) {
+    const msg = stripAnsi(r.stderr).trim() || `claude exited ${r.code}`;
     console.error(`${PRODUCT} quota: claude CLI failed:`, msg);
-    if (err?.stdout || err?.stderr) {
-      const combined = (err.stdout ?? "") + "\n" + (err.stderr ?? "");
-      return { cliOk: /subscription/i.test(combined), parsed: parseUsageText(combined) };
-    }
-    return { cliOk: false, parsed: null };
   }
+  const cliOk = /subscription/i.test(combined) || /claude code usage/i.test(combined);
+  return { cliOk, parsed: parseUsageText(combined) };
 }
 
 async function _doFetch(now, force = false) {
@@ -515,7 +516,7 @@ async function _doFetch(now, force = false) {
   }
 
   // Source 3: parse `claude --print /usage` CLI output.
-  const shellCmd = buildQuotaShellCmd();
+  const bin = quotaClaudeBin();
 
   // The CLI sometimes omits the "Current session/week" quota lines on a cold
   // invocation (right after the server starts, or after the page is hard-
@@ -525,7 +526,7 @@ async function _doFetch(now, force = false) {
   let parsed = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await sleep(1200);
-    const r = await _execOnce(shellCmd);
+    const r = await _execOnce(bin);
     cliOk = r.cliOk || cliOk;
     if (r.parsed) { parsed = r.parsed; break; }
   }

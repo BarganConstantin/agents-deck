@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { quotaFromStore, maySelfPoll, freshest, parseResetToSec, buildQuotaShellCmd } from "../../server/quota.mjs";
+import { quotaFromStore, maySelfPoll, freshest, parseResetToSec, quotaClaudeBin } from "../../server/quota.mjs";
 
 const MIN = 60_000;
 
@@ -111,7 +111,13 @@ describe("parseResetToSec", () => {
 // the user's own terminal. Platform, environment, home and the existence check
 // are all injected, so the Windows branch is exercised wherever this runs and
 // nothing here touches the real home directory.
-describe("buildQuotaShellCmd", () => {
+//
+// It answers with the BINARY now rather than with a shell command line. The
+// line it used to build was pasted together out of `homedir()` and `%APPDATA%`
+// and handed to `exec()`, and double quotes escape nothing on POSIX — see
+// no-shell-hook-commands.test.ts, which pins that half. What is left here is
+// the candidate walk, which is what these cases were always about.
+describe("quotaClaudeBin", () => {
   const HOME_WIN = "C:\\Users\\dorin";
   const HOME_NIX = "/home/dorin";
   const none = () => false;
@@ -120,35 +126,40 @@ describe("buildQuotaShellCmd", () => {
 
   it("finds the native Windows install, which has no .cmd shim", () => {
     const exe = "C:\\Users\\dorin\\.local\\bin\\claude.exe";
-    expect(buildQuotaShellCmd("win32", {}, HOME_WIN, only(exe)))
-      .toBe(`"${exe}" --print /usage < nul`);
+    expect(quotaClaudeBin("win32", {}, HOME_WIN, only(exe))).toBe(exe);
   });
 
   it("respects a roaming profile's APPDATA rather than assuming the home dir", () => {
     const roaming = "\\\\server\\profiles\\dorin\\AppData\\Roaming";
     const shim = `${roaming}\\npm\\claude.cmd`;
-    expect(buildQuotaShellCmd("win32", { APPDATA: roaming }, HOME_WIN, only(shim)))
-      .toBe(`"${shim}" --print /usage < nul`);
+    expect(quotaClaudeBin("win32", { APPDATA: roaming }, HOME_WIN, only(shim))).toBe(shim);
   });
 
   it("still finds the npm shim under an unset APPDATA", () => {
     const shim = "C:\\Users\\dorin\\AppData\\Roaming\\npm\\claude.cmd";
-    expect(buildQuotaShellCmd("win32", {}, HOME_WIN, only(shim)))
-      .toBe(`"${shim}" --print /usage < nul`);
+    expect(quotaClaudeBin("win32", {}, HOME_WIN, only(shim))).toBe(shim);
   });
 
-  it("falls back to the bare name, which PATHEXT can resolve to either spelling", () => {
+  it("falls back to the bare name, which exec.mjs resolves to either spelling", () => {
     // `claude.cmd` here is the bug: cmd.exe answers "is not recognized" on a
-    // machine whose claude is an .exe, however well it is on PATH.
-    expect(buildQuotaShellCmd("win32", {}, HOME_WIN, none))
-      .toBe("claude --print /usage < nul");
+    // machine whose claude is an .exe, however well it is on PATH. exec.mjs's
+    // candidate walk tries .exe first and .cmd after.
+    expect(quotaClaudeBin("win32", {}, HOME_WIN, none)).toBe("claude");
   });
 
-  it("leaves the POSIX side asking the shell, as it always has", () => {
-    expect(buildQuotaShellCmd("darwin", {}, HOME_NIX, none))
-      .toBe("claude --print /usage < /dev/null");
-    expect(buildQuotaShellCmd("linux", {}, HOME_NIX, none))
-      .toBe("claude --print /usage < /dev/null");
+  it("leaves the POSIX side to PATH, as it always has", () => {
+    expect(quotaClaudeBin("darwin", {}, HOME_NIX, none)).toBe("claude");
+    expect(quotaClaudeBin("linux", {}, HOME_NIX, none)).toBe("claude");
+  });
+
+  it("hands back a path with shell metacharacters in it untouched, because nothing parses it", () => {
+    // The old builder wrapped this in double quotes and gave the line to
+    // `exec()`, and double quotes do not suppress `$(…)` or a backtick — so a
+    // home directory spelled like this ran `id` once a minute. There is no
+    // string to escape any more: the value goes into an argument vector.
+    const home = "C:\\Users\\a$(id)`id`b";
+    const exe = `${home}\\.local\\bin\\claude.exe`;
+    expect(quotaClaudeBin("win32", {}, home, only(exe))).toBe(exe);
   });
 });
 

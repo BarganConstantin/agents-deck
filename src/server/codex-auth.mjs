@@ -23,7 +23,57 @@ const AUTH_PATH  = join(CODEX_HOME, "auth.json");
 
 // Same client id + endpoint the Codex CLI uses (codex-rs/login/src/auth/manager.rs).
 const CLIENT_ID   = process.env.CODEX_APP_SERVER_LOGIN_CLIENT_ID ?? "app_EMoamEEZ73f0CkXaXp7hrann";
-const REFRESH_URL = process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE ?? "https://auth.openai.com/oauth/token";
+const DEFAULT_REFRESH_URL = "https://auth.openai.com/oauth/token";
+
+// Registrable domains the deck is willing to hand an OpenAI credential to.
+// Deliberately a suffix list rather than a set of exact hosts: OpenAI moves
+// endpoints between subdomains, and FedRAMP tenants live on their own, so
+// pinning the four hosts in use today would break a working login on a change
+// that is none of our business. The suffix is the part that is.
+const CREDENTIAL_HOSTS = ["openai.com", "chatgpt.com"];
+
+/**
+ * May a live OpenAI credential be sent to this URL?
+ *
+ * Both destinations in the Codex half of the deck are configurable by something
+ * other than the deck — `chatgpt_base_url` in ~/.codex/config.toml, which the
+ * access token is sent to, and $CODEX_REFRESH_TOKEN_URL_OVERRIDE, which the
+ * SINGLE-USE refresh token is POSTed to — and neither was checked before the
+ * credential went out. The Codex CLI honours the same two knobs; the difference
+ * is that it is the program those credentials belong to, and the deck is a
+ * bystander that reads them.
+ *
+ * Two rules. `https:`, so a base URL of `http://…` cannot put a bearer token on
+ * the wire in cleartext. And a host at or under one of the domains above, so a
+ * config file the deck does not own cannot name the recipient.
+ *
+ * `URL` does the parsing rather than a regex, which is what makes
+ * `https://chatgpt.com@evil.example/` (userinfo, not a host) and
+ * `https://chatgpt.com.evil.example/` (a different registrable domain) come out
+ * as the hosts they really are.
+ */
+export function isCredentialHost(raw) {
+  let u;
+  try { u = new URL(String(raw ?? "")); } catch { return false; }
+  if (u.protocol !== "https:") return false;
+  const host = u.hostname.toLowerCase();
+  return CREDENTIAL_HOSTS.some(d => host === d || host.endsWith(`.${d}`));
+}
+
+// The override is honoured only when it names somewhere the refresh token may
+// go. Falling back rather than failing outright keeps a machine with a stale or
+// mistyped override working, and the log line is there so the fallback is not
+// the silent kind.
+function refreshUrl() {
+  const override = process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE?.trim();
+  if (!override) return DEFAULT_REFRESH_URL;
+  if (isCredentialHost(override)) return override;
+  console.error(
+    `${PRODUCT} codex-auth: ignoring CODEX_REFRESH_TOKEN_URL_OVERRIDE — ` +
+    `a refresh token is only sent to https OpenAI hosts, not ${override}`,
+  );
+  return DEFAULT_REFRESH_URL;
+}
 
 // Refresh once the access token is within this much of expiring. Deliberately
 // tighter than the CLI's 5 minutes: matching it would wake both processes into
@@ -162,7 +212,10 @@ function refreshErrorCode(body) {
 async function doRefresh(auth) {
   let res, body;
   try {
-    res = await fetch(REFRESH_URL, {
+    // Resolved per call, not once at import: the module is loaded lazily and a
+    // test (or an embedder) can set the override after load — the same reason
+    // ccusage.mjs reads AGENTS_DECK_NO_INSTALL per call.
+    res = await fetch(refreshUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -101,13 +101,35 @@ function tagged(reason, message) {
 
 // Absolute path to ccusage's CLI entry inside our managed install, or null if
 // not installed. Reads the package's `bin` field (currently "./src/cli.js").
-function resolveEntry() {
+//
+// `bin` is a string out of a package.json downloaded from the registry, and it
+// is joined onto PKG_DIR and then handed to `spawn(node, [entry])` — so a `bin`
+// of "../../../evil.js" names a file outside the managed install and gets run.
+// existsSync alone does not notice: it is asked whether the escaped path is
+// there, and for an attacker who put something there the answer is yes.
+//
+// The narrowness is worth stating rather than leaving implied: a package that
+// can choose its own `bin` can also ship an install script, so this is not the
+// weak link in a hostile-package scenario. What it does close is the case where
+// only the file is influenced — a tampered or half-written package.json in the
+// cache dir, or a `bin` that walks out of the install by accident — and it
+// costs one comparison.
+//
+// Exported for tests: the containment rule is the whole point of the function
+// and there is no other way to reach it without an install on disk.
+export function resolveEntry() {
   try {
     const pkg = JSON.parse(readFileSync(path.join(PKG_DIR, "package.json"), "utf8"));
     let rel = pkg.bin;
     if (rel && typeof rel === "object") rel = rel.ccusage ?? Object.values(rel)[0];
     if (typeof rel !== "string") return null;
-    const entry = path.join(PKG_DIR, rel);
+    const entry = path.resolve(PKG_DIR, rel);
+    // path.resolve, not path.join, so an ABSOLUTE `bin` is measured as the
+    // absolute path it is rather than being silently re-rooted under PKG_DIR
+    // and passing on a technicality. The trailing separator is what stops a
+    // sibling directory whose name merely starts with PKG_DIR's — and it also
+    // rejects PKG_DIR itself, which is a directory and no kind of entry point.
+    if (!entry.startsWith(path.resolve(PKG_DIR) + path.sep)) return null;
     return existsSync(entry) ? { entry, version: pkg.version } : null;
   } catch {
     return null;

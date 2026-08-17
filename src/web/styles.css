@@ -4426,6 +4426,13 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 /* Past its expiry the blob is inert — not hidden, because the countdown next to
    it has to stay legible enough to explain why. */
 .ap-share.expired .ap-share-blob { opacity: 0.45; }
+/* The warning belongs to what the text IS, not to the timer beside it. The
+   countdown says when another deck stops accepting the share; it is not a lock
+   winding down, and colouring it as the loudest thing in the block was the UI
+   claiming a protection the envelope does not have. --warn is the same token
+   the last-minute countdown already used, so this moves the emphasis rather
+   than adding a new one. */
+.ap-share-warn { color: var(--warn); }
 .ap-share-expiry.soon { color: var(--warn); }
 .ap-share-expiry.gone { color: var(--err); }
 

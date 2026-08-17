@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { claudeConfigDir } from "./claude-dir.mjs";
 import { readSettingsForWrite, writeFileAtomic, installScript } from "./installer.mjs";
+import { shellQuoteArg } from "./exec.mjs";
 
 const PKG_ROOT      = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLAUDE_DIR    = claudeConfigDir();
@@ -33,6 +34,18 @@ const PARKED_PATH = join(homedir(), ".agents-deck", "parked-sound-hooks.json");
 // Commands that look like a hand-rolled sound hook. Used only to tell the user
 // what is already there — never to modify or remove it.
 const SOUND_HINTS = [/\bafplay\b/i, /Media\.SoundPlayer/i, /\bpaplay\b/i, /\baplay\b/i, /canberra-gtk-play/i];
+
+/**
+ * The Stop hook's `command` string, escaped for the shell that will run it.
+ *
+ * Same shape and same reasoning as installer.mjs's hookCommand — see the note
+ * there — kept separate because this entry takes no `--provider` and is written
+ * to a different key. Exported, with the node path injectable, so the escaping
+ * is checked against a path the test names.
+ */
+export function soundHookCommand(notifyPath, node = process.execPath) {
+  return `${shellQuoteArg(node)} ${shellQuoteArg(notifyPath)}`;
+}
 
 /**
  * Read settings.json, refusing to guess at a file that will not parse.
@@ -338,8 +351,13 @@ export async function setSoundHook(enabled) {
       hooks: [{
         type: "command",
         // Absolute node path, matching how the event hooks are installed: the
-        // shell a hook runs in does not necessarily have the user's PATH.
-        command: `"${process.execPath}" "${NOTIFY_PATH}"`,
+        // shell a hook runs in does not necessarily have the user's PATH. And
+        // properly escaped for that shell, for the reason installer.mjs's
+        // hookCommand spells out — NOTIFY_PATH is built from
+        // $CLAUDE_CONFIG_DIR, double quotes do not suppress `$(…)` or a
+        // backtick on POSIX, and this string is executed at the end of every
+        // turn.
+        command: soundHookCommand(NOTIFY_PATH),
         timeout: 5,
       }],
     });
