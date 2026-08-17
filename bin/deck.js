@@ -5,7 +5,6 @@
 // was already done once this session is skipped — that is what makes a restart
 // take about a second instead of the better part of ten.
 import { resolve, dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import { dieOfSignal } from "../src/server/supervisor.mjs";
@@ -96,7 +95,11 @@ const persist = flags.noPersist
 
 const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/installer.mjs")).href);
-const { startServer, hookToken, releaseRestart } =
+// CODEX_SESSIONS_DIR comes along because the banner below names the directory
+// the watcher tails, and the watcher lives in that module. Recomputing the path
+// here is how the banner came to print ~/.codex/sessions on machines whose
+// sessions are somewhere else entirely — see the row further down.
+const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
 
 // Whether the server starts the Codex rollout watcher. Nothing is installed
@@ -291,8 +294,12 @@ async function reportStartup(jobs) {
   // there's nothing to install and no /hooks trust step. We just confirm Codex
   // is present and let the watcher pick up sessions.
   if (wantCodex) {
-    const dir = join(homedir(), ".codex", "sessions");
-    write(row({ mark: G.ok, label: "Codex sessions", detail: `watching ${fileLink(dir)}` }));
+    // The directory the watcher actually tails, imported from the module that
+    // owns it rather than rebuilt from homedir() here. CODEX_HOME relocates the
+    // whole tree, and this row is the only diagnostic the deck prints about
+    // Codex — so when sessions do not show up, a path computed a second way
+    // sends the user to inspect a directory the deck never opened.
+    write(row({ mark: G.ok, label: "Codex sessions", detail: `watching ${fileLink(CODEX_SESSIONS_DIR)}` }));
   } else {
     write(row({ label: "Codex sessions", detail: `skipped ${G.dash} no ~/.codex/, or --no-codex` }));
   }

@@ -638,7 +638,13 @@ function maybeResolveContext(payload) {
 const CODEX_HOME = process.env.CODEX_HOME
   ? resolve(process.env.CODEX_HOME)
   : join(homedir(), ".codex");
-const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
+// Exported because bin/deck.js prints this path in the boot banner, and it used
+// to build its own `join(homedir(), ".codex", "sessions")` for the purpose —
+// which ignored CODEX_HOME and so named a directory that does not exist on any
+// machine that sets it. Handing out the binding the watcher itself reads, rather
+// than a second computation of the same rule, is what makes the printed path and
+// the tailed path unable to disagree.
+export const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
 const codexRolloutPathBySid = new Map();
 const lastCodexUsageReadAt = new Map();
 const pendingCodexUsageReads = new Set();
