@@ -155,6 +155,11 @@ function ensureRoot(state: GraphState, sessionId: string, now: number, synthetic
     kind: "root",
     state: "active",
     startedAt: now,
+    // Seeded here as well as stamped in applyEvent, because the event that
+    // creates a root is handled after the stamp has already run and found
+    // nothing to write to. A root that was never stamped would read as silent
+    // since epoch and be reaped on the first tick after it appeared.
+    lastEventAt: now,
     tools: [],
     prompts: [],
     toolCount: 0,
@@ -466,6 +471,99 @@ export function sweepStaleTools(state: GraphState, now: number, maxMs: number): 
   return changed;
 }
 
+/**
+ * How long a session may go COMPLETELY silent before the deck stops believing
+ * it is there.
+ *
+ * The clock is the session's last event, never a block's own `since`. Those are
+ * different numbers and only one of them is about being alive: `since` is when
+ * the permission prompt arrived, and the session it arrived on may be working
+ * the entire time the human takes to answer — the other tool calls of the same
+ * turn, a subagent still running underneath. Measured against `since`, any
+ * threshold shorter than the longest a human might take cancels blocks that are
+ * real. Measured against the last event, a session that is still moving is never
+ * touched at all, however long it has been blocked.
+ *
+ * Ninety minutes is what is left once the workloads that produce genuine silence
+ * are ruled out. A single foreground tool call is the longest of the mechanical
+ * ones and CC caps Bash at 600_000ms, so ten minutes already covers the longest
+ * build or `sleep` one call can hold; a slower MCP tool with no cap of its own is
+ * still minutes rather than hours, and a subagent doing long work emits its own
+ * Pre/PostToolUse under the same session id throughout. The long pole is not a
+ * tool at all, it is the human: a permission prompt left standing through a
+ * meeting is an hour of silence on a session that is entirely alive, which is
+ * the case #350 explicitly warns against cancelling. Ninety minutes clears that
+ * hour by half again.
+ *
+ * It is deliberately not longer. No finite number survives a session left
+ * overnight, so every threshold here is only choosing which way to be wrong, and
+ * past roughly two hours the choice stops buying anything while the cost keeps
+ * rising: the tab title, the favicon and the topbar chip are worth having only
+ * while they are rare AND true, and a dead session holding all three through a
+ * working day is the exact failure #348 was built to avoid. Being wrong this way
+ * is also the cheap direction — a reaped session is not a lost one, because the
+ * next event from it puts it straight back (see `reaped` in types.ts).
+ */
+export const STALE_SESSION_MS = 90 * 60_000;
+
+/**
+ * Settle every session that has not been heard from in `maxMs`, and drop its
+ * waiting block with it. Returns true when anything changed, so the caller can
+ * re-render. Mutates state in place.
+ *
+ * This is the sweep the other three decline. `sweepStaleTools` finalises
+ * ToolCalls and never looks above them; `pruneOldAgents` wants `state === "done"`
+ * and `pruneDoneSessions` wants a session with nothing live in it — and the
+ * session this exists for is `active`, because a permission prompt arrives
+ * mid-turn and the event that would have ended that turn is the one that never
+ * came. So it sat there forever, and since #348 a `permission` block is what
+ * lights the tab title and the favicon: two surfaces with no age printed on them
+ * that a killed session could hold indefinitely.
+ *
+ * Staleness is fixed here rather than by giving `waiting` a TTL of its own,
+ * because the stale block and the stale `active` beside it are one bug and not
+ * two. Settling the state clears the block on the way past, so the alarm counts
+ * fall out for free — #348 reads `kind` off a block that is gone.
+ *
+ * `endedAt` is stamped at the last event rather than at `now`: that is the last
+ * moment there is any evidence the session existed, and it lets the two pruners
+ * treat a two-hour-dead session as the oldest thing on the board, which it is.
+ * Only `active` agents are settled — an `err` node keeps its error — and the
+ * subagents go with the root, since a session nothing has been heard from has no
+ * live children either.
+ */
+export function sweepStaleSessions(state: GraphState, now: number, maxMs: number): boolean {
+  let changed = false;
+  for (const root of state.agents.values()) {
+    if (root.kind !== "root") continue;
+    // `startedAt` is the fallback for a root built before this field existed —
+    // a replayed log, a tab that survived an upgrade — and it is the right one:
+    // a session with no stamped event has been heard from exactly once.
+    const heardAt = root.lastEventAt ?? root.startedAt;
+    if (now - heardAt <= maxMs) continue;
+
+    // The block goes whether or not there is any state left to settle, so an
+    // idle_prompt parked on a session that stopped hours ago stops claiming to
+    // be news. One rule — "a session nobody has heard from is not current" —
+    // rather than a rule for the state and a second one for the badge.
+    if (root.waiting) { root.waiting = null; changed = true; }
+
+    if (root.state === "active") {
+      root.state = "done";
+      root.endedAt = heardAt;
+      root.reaped = true;
+      changed = true;
+    }
+    for (const a of state.agents.values()) {
+      if (a.sessionId !== root.sessionId || a.kind === "root" || a.state !== "active") continue;
+      a.state = "done";
+      a.endedAt = heardAt;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /** The two `notification_type` values Claude Code emits, as the chore each one
  *  actually is. Anything else is a kind nobody here has seen and would have no
  *  wording for, so it sets no block rather than a badge that says nothing. */
@@ -530,6 +628,34 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   if (!WAITING_KEEPERS.has(name)) {
     const blocked = state.agents.get(rootAgentId(sessionId));
     if (blocked?.waiting) blocked.waiting = null;
+  }
+
+  // Note that we heard from this session, which is a different question from
+  // what the event says. It runs above the branches on purpose: the three
+  // *Observed events return early, the switch below ignores several names
+  // outright, and every one of them is still the session's id arriving from a
+  // process that is running. Attribution is irrelevant for the same reason — a
+  // subagent's PreToolUse proves the session is there as surely as the root's.
+  //
+  // Kept on the root because that is where `sweepStaleSessions` reads it, and
+  // guarded on being NEWER rather than stamped unconditionally: order
+  // independence is this reducer's contract, so a copy of an old event arriving
+  // late from another deck's fan-out must not make the session look fresher than
+  // its newest event. That guard is also what makes the un-reap below safe —
+  // "newer than anything we had" is exactly "newer than the moment we gave up".
+  const heard = state.agents.get(rootAgentId(sessionId));
+  if (heard && now > (heard.lastEventAt ?? 0)) {
+    heard.lastEventAt = now;
+    if (heard.reaped) {
+      // The sweep guessed and the guess was wrong: the terminal was alive all
+      // along, the human just took their time. Put it back the way a late
+      // PostToolUse resurrects a tool the stale sweep had marked failed. Only
+      // the root — a subagent that was mid-flight when the session went quiet is
+      // genuinely over, and SubagentStart is what brings one of those back.
+      heard.reaped = false;
+      heard.state = "active";
+      heard.endedAt = undefined;
+    }
   }
 
   // Codex reports the session's real context window on `task_started`, and the
