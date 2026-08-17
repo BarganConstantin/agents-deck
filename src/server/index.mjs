@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { CODEX_SESSIONS_DIR, STOP, walkRolloutDays } from "./codex-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
 import { invokedName, renameNotice } from "./invoked-as.mjs";
 import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
@@ -634,17 +635,17 @@ function maybeResolveContext(payload) {
 //                              output_tokens, reasoning_output_tokens,
 //                              total_tokens}}}}
 // We resolve the rollout path lazily (cache sid→path), then read the tail
-// for usage + model. CODEX_HOME overrides ~/.codex.
-const CODEX_HOME = process.env.CODEX_HOME
-  ? resolve(process.env.CODEX_HOME)
-  : join(homedir(), ".codex");
-// Exported because bin/deck.js prints this path in the boot banner, and it used
-// to build its own `join(homedir(), ".codex", "sessions")` for the purpose —
-// which ignored CODEX_HOME and so named a directory that does not exist on any
+// for usage + model. CODEX_HOME overrides ~/.codex, and codex-dir.mjs owns that
+// rule for every module on the Codex side — this one used to spell it inline,
+// which is how five modules ended up with three spellings of it (#375).
+//
+// Re-exported because bin/deck.js prints this path in the boot banner, and it
+// used to build its own `join(homedir(), ".codex", "sessions")` for the purpose
+// — which ignored CODEX_HOME and so named a directory that does not exist on any
 // machine that sets it. Handing out the binding the watcher itself reads, rather
 // than a second computation of the same rule, is what makes the printed path and
 // the tailed path unable to disagree.
-export const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
+export { CODEX_SESSIONS_DIR };
 const codexRolloutPathBySid = new Map();
 const lastCodexUsageReadAt = new Map();
 const pendingCodexUsageReads = new Set();
@@ -653,34 +654,19 @@ const CODEX_READ_THROTTLE_MS = 2500;
 async function findCodexRolloutPath(sid) {
   const cached = codexRolloutPathBySid.get(sid);
   if (cached) return cached;
-  // Walk year → month → day → files. Codex includes the sid in the filename
-  // (rollout-...-<sid>.jsonl) so a directory-scoped match is enough.
-  const tryYears = async () => {
-    try { return await readdir(CODEX_SESSIONS_DIR); } catch { return []; }
-  };
-  const years = (await tryYears()).sort().reverse(); // newest first
-  for (const y of years) {
-    let months;
-    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); }
-    catch { continue; }
-    for (const m of months) {
-      let days;
-      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); }
-      catch { continue; }
-      for (const d of days) {
-        const dayDir = join(CODEX_SESSIONS_DIR, y, m, d);
-        let files;
-        try { files = await readdir(dayDir); } catch { continue; }
-        const hit = files.find(f => f.includes(sid) && f.endsWith(".jsonl"));
-        if (hit) {
-          const full = join(dayDir, hit);
-          codexRolloutPathBySid.set(sid, full);
-          return full;
-        }
-      }
-    }
-  }
-  return null;
+  // Walk year → month → day → files, newest first. Codex includes the sid in the
+  // filename (rollout-...-<sid>.jsonl) so a directory-scoped match is enough.
+  // The walk itself lives in codex-dir.mjs, shared with the watcher's listing
+  // below and with codex-usage.mjs, so all three read one tree the same way.
+  let found = null;
+  await walkRolloutDays((dayDir, files) => {
+    const hit = files.find(f => f.includes(sid) && f.endsWith(".jsonl"));
+    if (!hit) return;
+    found = join(dayDir, hit);
+    return STOP;
+  });
+  if (found) codexRolloutPathBySid.set(sid, found);
+  return found;
 }
 
 /** Tail-read a Codex rollout JSONL. Returns the last token_count info block
@@ -788,7 +774,9 @@ function maybeResolveCodex(payload) {
 //   event_msg/user_message             → UserPromptSubmit (Codex ≤ 0.144)
 //   event_msg/item_completed/UserMessage → UserPromptSubmit (Codex ≥ 0.147)
 //   response_item/function_call        → PreToolUse
-//   response_item/function_call_output → PostToolUse
+//   response_item/function_call_output → PostToolUse / PostToolUseFailure,
+//                                        decided by the outcome line Codex
+//                                        prepends to the output (codexCallFailed)
 //   event_msg/token_count              → UsageObserved
 //   event_msg/task_started (+window)   → ModelObserved (context window)
 //   event_msg/task_complete            → Stop (the turn finished)
@@ -844,25 +832,13 @@ async function readLiveDecks() {
 // of history every tick.
 async function listRecentCodexRollouts() {
   const out = [];
-  let years;
-  try { years = (await readdir(CODEX_SESSIONS_DIR)).filter(d => /^\d{4}$/.test(d)).sort().reverse(); }
-  catch { return out; }
   let dayDirs = 0;
-  for (const y of years) {
-    let months;
-    try { months = (await readdir(join(CODEX_SESSIONS_DIR, y))).sort().reverse(); } catch { continue; }
-    for (const m of months) {
-      let days;
-      try { days = (await readdir(join(CODEX_SESSIONS_DIR, y, m))).sort().reverse(); } catch { continue; }
-      for (const d of days) {
-        const dir = join(CODEX_SESSIONS_DIR, y, m, d);
-        let files;
-        try { files = await readdir(dir); } catch { continue; }
-        for (const f of files) if (f.endsWith(".jsonl")) out.push(join(dir, f));
-        if (++dayDirs >= 2) return out;
-      }
-    }
-  }
+  await walkRolloutDays((dir, files) => {
+    for (const f of files) if (f.endsWith(".jsonl")) out.push(join(dir, f));
+    // Two day-directories deep is the whole point of this listing: it runs every
+    // tick, and anything older than that is a session no process will append to.
+    if (++dayDirs >= 2) return STOP;
+  });
   return out;
 }
 
@@ -989,12 +965,90 @@ export function codexObjToPayload(obj, sid, cwd) {
     if (pl.type === "custom_tool_call") {
       return { ...base, hook_event_name: "PreToolUse", tool_name: pl.name ?? "tool", tool_input: { patch: pl.input }, tool_use_id: pl.call_id, model };
     }
+    // #397: the outcome, not just the fact that an outcome arrived. This used
+    // to hardcode "PostToolUse" for both output types, and the reducer derives
+    // `ok` from the event NAME (`tc.ok = name === "PostToolUse"`) — so `ok` was
+    // structurally incapable of being false on the Codex path and a command
+    // that exited non-zero drew exactly like one that succeeded. Every surface
+    // that reads the flag inherited the lie: the burst dot, the tool row, the
+    // ToolModal styling, the detail-panel error count, and the session
+    // summary's "Errors" stat, which was therefore pinned at 0 for the life of
+    // a Codex session. `PostToolUseFailure` is the name the reducer already
+    // understands (it sets `ok = false` and writes an `errorPreview` from the
+    // response); nothing but this mapper was missing.
     if (pl.type === "function_call_output" || pl.type === "custom_tool_call_output") {
       const tool_response = pl.output != null ? parseCodexOutput(pl.output) : undefined;
-      return { ...base, hook_event_name: "PostToolUse", tool_use_id: pl.call_id, tool_response, model };
+      const name = codexCallFailed(pl.output) ? "PostToolUseFailure" : "PostToolUse";
+      return { ...base, hook_event_name: name, tool_use_id: pl.call_id, tool_response, model };
     }
   }
   return null;
+}
+
+/**
+ * The text parts of a Codex tool result, in the order Codex wrote them.
+ *
+ * Codex writes the result in two different containers and the deck sees both,
+ * so this is where the difference stops. Across the rollouts sampled here:
+ * `custom_tool_call_output.output` is an ARRAY of `{ type: "input_text", text }`
+ * parts (85/85, on 0.144 and 0.147 alike), and `function_call_output.output` is
+ * a bare string (32/32). The `{ output, metadata }` envelope `parseCodexOutput`
+ * unwraps was written by neither, but it is cheap to keep tolerating and the
+ * unwrapping already lives there, so the string case is routed through it
+ * rather than duplicating the guess.
+ */
+function codexOutputParts(output) {
+  if (output == null) return [];
+  if (Array.isArray(output)) {
+    return output.map(p => (p && typeof p.text === "string" ? p.text : ""));
+  }
+  const unwrapped = parseCodexOutput(output);
+  return typeof unwrapped === "string" ? [unwrapped] : [];
+}
+
+/**
+ * Did this Codex tool call actually fail?
+ *
+ * Codex prepends its own wrapper line to the tool's output and that line — not
+ * any structured field — is where the outcome lives. Verified against every
+ * tool result in this machine's CODEX_HOME:
+ *
+ *   0.144.5  exec         "Script completed"   75    "Script failed"   2
+ *   0.147.0  exec         "Script completed"    6    (no failure observed)
+ *   0.144.5  apply_patch  "Exit code: 0"        2
+ *   0.144.5  exec_command / run — bare string, no wrapper line at all      32
+ *
+ * The two CLI versions spell it IDENTICALLY, which is why one rule covers both
+ * and why this needs no version sniffing: 0.147 renamed the prompt event (see
+ * the `item_completed` branch above) but left the exec wrapper alone.
+ *
+ * Only the FIRST part's FIRST line is read, and that precision is load-bearing
+ * rather than tidiness. The wrapper line is at part index 0 in 85 of 85 results
+ * that have one; the later parts are the command's own stdout, and the command
+ * prints whatever it likes there. On this machine two exec results contain a
+ * line reading "Script error:" in part 1 — output from a script that ran fine
+ * under a wrapper that says "Script completed" — so a rule that scanned every
+ * part would paint two successful calls red. `\r` is stripped because the same
+ * wrapper is written by Codex on Windows.
+ *
+ * Silence means success, deliberately. A result with no wrapper line — every
+ * `function_call_output` on 0.144, and whatever container a future Codex
+ * invents — keeps today's behaviour of mapping to `PostToolUse`. Reporting an
+ * unknown outcome as a failure would trade one wrong colour for another, and
+ * this direction is the recoverable one: a missed failure is a call that draws
+ * as it always has, while a false failure puts a red dot and an "Errors" count
+ * on a session that did nothing wrong.
+ */
+function codexCallFailed(output) {
+  const first = codexOutputParts(output)[0];
+  if (typeof first !== "string") return false;
+  const head = first.split("\n")[0].replace(/\r$/, "");
+  if (/^Script failed\b/.test(head)) return true;
+  // apply_patch reports itself with an exit code instead of a word. Anything
+  // non-zero is a patch that did not apply.
+  const exit = /^Exit code:\s*(\d+)/.exec(head);
+  if (exit) return Number(exit[1]) !== 0;
+  return false;
 }
 
 function parseCodexOutput(raw) {

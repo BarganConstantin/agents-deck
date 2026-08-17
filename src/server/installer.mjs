@@ -7,24 +7,25 @@
 // with __agent-dag and de-duped.
 import { readFile, mkdir, unlink, rename, open, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { claudeConfigDir } from "./claude-dir.mjs";
+import { CODEX_HOME } from "./codex-dir.mjs";
 import { shellQuoteArg } from "./exec.mjs";
 import { PRODUCT } from "./brand.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
 
-const HOME = homedir();
 // Honours CLAUDE_CONFIG_DIR, exactly as CODEX_DIR honours CODEX_HOME below.
 // Without it the hooks land in a settings.json Claude Code never opens.
 const CLAUDE_DIR = claudeConfigDir();
-const CODEX_DIR = process.env.CODEX_HOME
-  ? resolve(process.env.CODEX_HOME)
-  : join(HOME, ".codex");
+// Both directories now come from the module that owns the rule rather than from
+// a copy of it here — claude-dir.mjs and codex-dir.mjs. The local name stays
+// because CODEX_DIR is what the rest of this file and its tests call it, and it
+// says what the value is FOR here: the directory hooks.json is taken out of.
+const CODEX_DIR = CODEX_HOME;
 
 // Single shared discovery dir — both providers' hook scripts post here so one
 // running agent-dag server can match either ecosystem's events. It follows the

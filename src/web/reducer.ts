@@ -446,15 +446,46 @@ export function pruneDoneSessions(state: GraphState, now: number, cap: number, g
   return removed;
 }
 
-/** Sweep over every agent's tool list and finalise any tool that has been
+/** Sweep over every CLAUDE agent's tool list and finalise any tool that has been
  *  "in-flight" longer than `maxMs` — usually because a hook event was lost
  *  (session killed mid-call, PostToolUse never delivered). Without this they
  *  pulse forever in the burst layer and pollute the in-flight counter.
+ *  Codex agents are skipped, because there a missing result means the call has
+ *  not finished rather than that its result was lost — see the note inside.
  *  Returns true when at least one tool was staled, so callers can trigger
  *  a re-render. Mutates state in place. */
 export function sweepStaleTools(state: GraphState, now: number, maxMs: number): boolean {
   let changed = false;
   for (const a of state.agents.values()) {
+    // #397: not Codex, because on Codex the premise of this sweep is false.
+    //
+    // The sweep reads "no PostToolUse after 90s" as "the event was lost", and on
+    // Claude that inference is sound: Claude emits PostToolUse for every call it
+    // completes, so a missing one really does mean a session that died mid-call.
+    // Codex does not work that way. It appends the CALL line to its rollout at
+    // request time, before the tool has run — proven by the events that land
+    // strictly between a call line and its output line, and by the call/output
+    // gap tracking the command's real duration (117 windows on this machine,
+    // 0 unanswered, p50 134ms, max 3936ms). So a Codex call sitting here with no
+    // output line is not a call whose result went missing. It is a call that has
+    // not produced one yet: a long command still running, or — the case this
+    // costs the most — one parked on an approval prompt, waiting for the human.
+    //
+    // Ninety seconds later this used to stamp that call `ok = false` with
+    // `errorPreview = "stale (no PostToolUse received)"`, and the deck told the
+    // user a command had errored while Codex was politely waiting for them to
+    // say yes. Both halves were wrong: nothing failed, and the cause named is an
+    // internal one that never applied to this provider. Leaving the call alone
+    // leaves it in-flight, which is the one description of it that is true, and
+    // if the human approves at minute five the output line settles it normally
+    // through `toolIndex` with its real outcome.
+    //
+    // Nothing runs away as a result. `trimTools` evicts an in-flight call from
+    // `toolIndex` once it falls out of the 200-per-agent window, and the bubble
+    // goes with the agent when the session is pruned. Only an explicit "codex"
+    // is exempt — an event recorded before `provider` existed replays without
+    // one and must keep the Claude behaviour it was swept with.
+    if (a.provider === "codex") continue;
     for (const t of a.tools) {
       if (t.endedAt == null && now - t.startedAt > maxMs) {
         t.endedAt = t.startedAt + maxMs;

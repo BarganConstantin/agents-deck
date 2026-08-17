@@ -157,8 +157,11 @@ describe("what codexObjToPayload makes of a turn's end", () => {
 
   it("still ignores the lines that are not turn boundaries", () => {
     // thread_settings_applied is the one thing that lands between two turns; an
-    // item_completed that is not the user's message belongs to #397's tool work
-    // and is deliberately untouched here.
+    // item_completed that is not the user's message stays unmapped. #397 has
+    // since settled the tool outcome and left this assertion standing, because
+    // it read the verdict off the tool RESULT the mapper already holds rather
+    // than off this item — whose `id` is an `exec-<uuid>` matching no `call_id`.
+    // See codex-tool-outcome.test.ts.
     expect(codexObjToPayload(threadSettings, SESSION, CWD)).toBeNull();
     expect(codexObjToPayload({
       type: "event_msg",
