@@ -1469,14 +1469,40 @@ async function handleCodexQuota(req, res) {
   send(res, 200, quota);
 }
 
+/**
+ * ccusage's `--since`/`--until` grammar: a `YYYYMMDD` calendar date, or nothing
+ * at all — an absent parameter lets ccusage.mjs pick the default 30-day range.
+ *
+ * Eight digits is a shape, not a calendar, and deliberately so. What this gate
+ * is for is keeping anything that is not a date out of a child process's
+ * argument vector; `99999999` is exactly as inert an argument as `20260101`,
+ * and whether a date outside the logs means an empty chart is ccusage's
+ * question to answer rather than the deck's to guess at.
+ */
+export const isCliDate = (v) => v === undefined || /^\d{8}$/.test(v);
+
 async function handleCcusage(req, res) {
-  const { fetchCcusageDaily } = await import(
-    pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href
-  );
   const url = new URL(req.url, "http://localhost");
   const force = url.searchParams.get("refresh") === "1";
   const since = url.searchParams.get("since") || undefined;
   const until = url.searchParams.get("until") || undefined;
+  // Refused here, at the boundary, because this is where a string chosen by
+  // someone else enters: /api/ccusage is a GET, so it needs no CORS, no
+  // preflight and no ability to read the response — any page the user has open
+  // can fire it at the loopback port — and both values end up in the argv of a
+  // spawned CLI. The spawn no longer goes through a shell (see ccusage.mjs), so
+  // this is the second lock rather than the only one, and it is the one that
+  // keeps the pair honest if a shell is ever reintroduced downstream.
+  if (!isCliDate(since) || !isCliDate(until)) {
+    return send(res, 400, {
+      ok: false,
+      reason: "bad_range",
+      error: "since and until must be YYYYMMDD dates, e.g. 20260101",
+    });
+  }
+  const { fetchCcusageDaily } = await import(
+    pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href
+  );
   const data = await fetchCcusageDaily({ since, until, force });
   send(res, 200, data);
 }

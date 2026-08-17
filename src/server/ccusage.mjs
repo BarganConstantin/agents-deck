@@ -50,6 +50,30 @@ export const installSpec = (spec = "latest", platform = process.platform) =>
   npmSpec(["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
     "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"], platform);
 
+// npx is the same kind of shim as npm, and the fallback run needs the same
+// treatment for a second, sharper reason: its argument vector carries a
+// user-supplied `--since`. `shell: true` handed `[file, ...args].join(" ")` to
+// /bin/sh -c, so `GET /api/ccusage?since=1;id;` ran `id` — and because that
+// route is a GET, any page open in the user's browser could aim it at the
+// loopback port with no CORS, no preflight and no need to read the answer.
+// spawnSpec quotes each argument into the cmd.exe line on Windows and spawns
+// the vector untouched everywhere else, so nothing in it is ever parsed as
+// syntax. Naming the file `npx.cmd` on Windows is what makes that work: only a
+// .cmd/.bat file routes through cmd.exe, and a bare `npx` there is not a file
+// spawn can launch at all (PATHEXT is a shell's job), so asking for the
+// extensionless name would trade a shell injection for an ENOENT.
+function npxSpec(args, platform = process.platform) {
+  return spawnSpec(platform === "win32" ? "npx.cmd" : "npx", args, platform);
+}
+
+/**
+ * What `spawn` gets for the portable `npx -y ccusage@latest <args>` fallback.
+ * Exported for tests: the platform is a parameter so the Windows command line
+ * can be checked from any OS.
+ */
+export const fallbackSpec = (args = [], platform = process.platform) =>
+  npxSpec(["-y", "ccusage@latest", ...args], platform);
+
 let _installing = null;   // Promise guard so concurrent calls share one install
 let _checkedThisRun = false; // only kick the daily check once per process boot
 
@@ -188,19 +212,20 @@ async function getRunner() {
 // Run ccusage with the given args, resolve raw stdout.
 async function runCcusage(args) {
   const runner = await getRunner();
-  const [cmd, full] = runner.kind === "node"
-    ? [process.execPath, [runner.entry, ...args]]
-    : ["npx", ["-y", "ccusage@latest", ...args]];
+  // Neither branch gets a shell. The managed install is `node <entry> …`, which
+  // never needed one; the npx fallback is routed through spawnSpec instead —
+  // see npxSpec, and note that `args` here ends in whatever /api/ccusage was
+  // asked for.
+  const { file, args: full, opts } = runner.kind === "node"
+    ? { file: process.execPath, args: [runner.entry, ...args], opts: {} }
+    : fallbackSpec(args);
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, full, {
-      // node path needs no shell; npx fallback does (Windows .cmd shim).
-      shell: runner.kind === "npx",
-      windowsHide: true,
-    });
+    const child = spawn(file, full, { windowsHide: true, ...opts });
     let out = "", err = "";
     const timer = setTimeout(() => {
-      // The npx fallback runs through a shell, so on Windows `child` is cmd.exe
-      // and npx is a grandchild that a plain kill would leave downloading.
+      // The npx fallback goes through cmd.exe on Windows, so `child` is the
+      // wrapper there and npx is a grandchild that a plain kill would leave
+      // downloading.
       killTree(child);
       reject(tagged("timeout", "ccusage timed out"));
     }, TIMEOUT_MS);
