@@ -29,9 +29,12 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { waitingLabel, waitingSentence } from "../components/AgentNode";
+import { buildRows, rank } from "../components/SessionList";
 import { ambientSignal } from "../ambient";
 import { isAlarming } from "../ambient-counts";
-import type { AgentNodeData, WaitingBlock } from "../types";
+import { applyEvent, initialState } from "../reducer";
+import type { GraphState } from "../reducer";
+import type { AgentNodeData, HookEnvelope, HookPayload, WaitingBlock } from "../types";
 
 const src = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
 
@@ -130,11 +133,103 @@ describe("the two call sites", () => {
       .toMatch(/rows\.filter\(r => isAlarming\(r\.waiting\)\)/);
   });
 
-  it("keeps idle sorted above running, which is not an alarm but is still news", () => {
-    // rank(): permission 0, idle 1, active 2, rest 3. Dropping idle out of the
-    // count must not drop it out of the ordering — the sidebar is the surface
-    // idle keeps, so the two questions have to stay separable. Asserted as text
-    // because rank() is module-private to a component this suite cannot render.
-    expect(src("../components/SessionList.tsx")).toMatch(/isAlarming\(r\.waiting\) \? 0 : 1/);
+});
+
+// ── the order the sidebar puts them in, driven through the reducer ──────────
+//
+// #378: this was one regex — `/isAlarming\(r\.waiting\) \? 0 : 1/` over
+// SessionList.tsx — standing over the whole ordering, because rank() and the
+// comparator were module-private to a component bare node cannot render. A
+// regex over an expression is not a test of what the expression computes:
+// reversing rank()'s two non-blocked tiers AND reversing the longest-blocked-
+// first comparator left the entire suite green, since both reversals keep the
+// characters the regex was looking for. Both functions are exported now and
+// these cases call them, on rows the real reducer built from real hook
+// payloads, so the mutation that survived is the mutation that fails here.
+
+const NOTIFY = {
+  permission: { notification_type: "permission_prompt", message: "Claude needs your permission" },
+  idle: { notification_type: "idle_prompt", message: "Claude is waiting for your input" },
+} as const;
+
+let seq = 0;
+function send(state: GraphState, session: string, payload: HookPayload, receivedAt?: number): GraphState {
+  seq++;
+  const env: HookEnvelope = {
+    seq,
+    receivedAt: receivedAt ?? 1_000 + seq,
+    source: "hook",
+    payload: { session_id: session, ...payload },
+  };
+  return applyEvent(state, env);
+}
+
+/** Starts `session` and puts it mid-turn, which is what `active` means here. */
+function start(state: GraphState, session: string, at: number): GraphState {
+  state = send(state, session, { hook_event_name: "SessionStart", cwd: `/repo/${session}` }, at);
+  return send(state, session, { hook_event_name: "UserPromptSubmit", prompt: "go" }, at);
+}
+
+describe("the order the sidebar reads in", () => {
+  it("puts a permission block above an idle one, and both above anything running", () => {
+    // rank(): permission 0, idle 1, active 2, rest 3. #348 dropped idle out of
+    // the COUNT and it has to stay in the ORDER — the sidebar is the surface
+    // idle keeps, so the two questions are separable and this is the one that
+    // says the second answer did not follow the first. Fails if the tiers are
+    // reordered in any way, which the regex this replaced did not.
+    seq = 0;
+    let state = initialState();
+    for (const s of ["running", "idle", "permission", "finished"]) state = start(state, s, 1_000);
+    state = send(state, "finished", { hook_event_name: "Stop" }, 2_000);
+    state = send(state, "permission", { hook_event_name: "Notification", ...NOTIFY.permission }, 3_000);
+    state = send(state, "idle", { hook_event_name: "Notification", ...NOTIFY.idle }, 4_000);
+
+    expect(buildRows(state, 9_000).map(r => r.sessionId))
+      .toEqual(["permission", "idle", "running", "finished"]);
+  });
+
+  it("puts the longest-blocked session first, which is the opposite of every other tier", () => {
+    // The one ordering on this list that runs oldest-first: on a blocked row the
+    // number that decides whether you go look is how long it has been stuck.
+    // A reversed comparator hands the top of the sidebar to the block that just
+    // arrived — the one you already know about — and nothing failed.
+    seq = 0;
+    let state = initialState();
+    for (const s of ["newest", "oldest", "middle"]) state = start(state, s, 1_000);
+    state = send(state, "oldest", { hook_event_name: "Notification", ...NOTIFY.permission }, 2_000);
+    state = send(state, "middle", { hook_event_name: "Notification", ...NOTIFY.permission }, 5_000);
+    state = send(state, "newest", { hook_event_name: "Notification", ...NOTIFY.permission }, 8_000);
+
+    const rows = buildRows(state, 9_000);
+    expect(rows.map(r => r.sessionId)).toEqual(["oldest", "middle", "newest"]);
+    expect(rows.map(r => r.waiting!.since)).toEqual([2_000, 5_000, 8_000]);
+  });
+
+  it("falls back to most-recent-first once nothing is blocked, which is the other direction", () => {
+    // Both directions in one file on purpose: a comparator that sorted every
+    // tier the same way would satisfy either case alone.
+    seq = 0;
+    let state = initialState();
+    for (const s of ["stale", "recent"]) state = start(state, s, 1_000);
+    state = send(state, "stale", { hook_event_name: "Stop" }, 2_000);
+    state = send(state, "recent", { hook_event_name: "Stop" }, 7_000);
+
+    expect(buildRows(state, 9_000).map(r => r.sessionId)).toEqual(["recent", "stale"]);
+  });
+
+  it("ranks by the shared alarm rule, so narrowing it moves the sidebar too", () => {
+    // rank() asks isAlarming, the same function the topbar chip and the tab
+    // strip ask. Called directly here so a rank() that grew its own idea of
+    // what an alarm is — the exact shape #377 found in three other places —
+    // fails rather than merely looking different.
+    const at = (waiting: WaitingBlock | null, state: "active" | "done") =>
+      rank({ sessionId: "s", label: "s", state, waiting, toolCount: 0, cost: 0, startedAt: 0, lastActivity: 0 });
+    expect(at(PERMISSION, "active")).toBe(0);
+    expect(at(IDLE, "active")).toBe(1);
+    expect(at(null, "active")).toBe(2);
+    expect(at(null, "done")).toBe(3);
+    // Strictly increasing, which is what "above" means for a numeric rank.
+    expect([at(PERMISSION, "active"), at(IDLE, "active"), at(null, "active"), at(null, "done")])
+      .toEqual([0, 1, 2, 3]);
   });
 });

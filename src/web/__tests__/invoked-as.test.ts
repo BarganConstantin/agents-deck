@@ -265,7 +265,11 @@ describe("the terminal row it becomes", () => {
   const width = labelColumn(LABELS);
 
   it("moves no other row, because `name` is shorter than every existing label", () => {
-    expect(read("bin", "deck.js")).toContain('"ccusage", "update", "name", "server ready", "log",');
+    // The order matters and the line breaks do not (#378). This used to be the
+    // array literal byte for byte, so reflowing it across two lines — which
+    // moves no row anywhere — failed a test named for the rows not moving.
+    expect(read("bin", "deck.js"), "the `name` row left its place in deck.js' label list")
+      .toMatch(/"ccusage",\s*"update",\s*"name",\s*"server ready",\s*"log",/);
     expect(width).toBe("Codex sessions".length);
   });
 
@@ -302,8 +306,14 @@ describe("the wiring, which is the half no pure function can hold", () => {
   const app = read("src", "web", "App.tsx");
 
   it("resolves the name in the only process whose argv[1] carries it", () => {
-    expect(supervisor).toContain("invokedAs({ pkgRoot: PKG_ROOT, argv1: process.argv[1], platform: process.platform })");
-    expect(supervisor).toContain('AGENTS_DECK_INVOKED_AS: INVOKED_AS ?? "",');
+    // Matched as a shape rather than as 78 characters of argument list (#378):
+    // the three arguments and where they come from are the fact, and a call
+    // broken across four lines by a formatter is the same call. Still fails if
+    // any argument changes or the call moves out of the supervisor.
+    expect(supervisor, "the supervisor stopped resolving the invoked name from its own argv")
+      .toMatch(/invokedAs\(\{\s*pkgRoot:\s*PKG_ROOT,\s*argv1:\s*process\.argv\[1\],\s*platform:\s*process\.platform,?\s*\}\)/);
+    expect(supervisor, "the resolved name no longer reaches the worker's environment")
+      .toMatch(/AGENTS_DECK_INVOKED_AS:\s*INVOKED_AS\s*\?\?\s*""/);
     // AGENTS_DECK_*, like every other variable the deck reads — display-name
     // .test.ts owns that boundary and this is the new one it applies to.
     expect(worker).toContain("invokedName({ pkgRoot: PKG_ROOT })");
@@ -333,10 +343,22 @@ describe("the wiring, which is the half no pure function can hold", () => {
   it("dismisses the browser notice per name, not with a flag", () => {
     // Somebody who dismisses it under agent-dag and later starts a second
     // install as agents-deck has not heard this yet.
-    expect(app).toContain('const OLD_NAME_DISMISSED_KEY = "agent-dag.oldNameNoticeDismissed"');
-    expect(app).toContain("window.localStorage.setItem(OLD_NAME_DISMISSED_KEY, oldName)");
-    expect(app).toContain("oldNameDismissed !== oldName");
-    expect(app).toContain("version.invokedAs !== PRODUCT");
+    //
+    // Four fragments, matched as patterns (#378). What each one owns: the key
+    // string, which every other version of the deck also wrote and so may not
+    // be renamed; that the NAME is what gets stored, not a boolean; that the
+    // comparison is against that name; and that the banner is gated on the
+    // invoked name differing from the product. None of that moves when the
+    // surrounding code is reformatted, and all of it fails if the per-name
+    // dismissal goes back to being a flag.
+    expect(app, "the dismissal key was renamed, which silently un-dismisses everyone")
+      .toMatch(/const OLD_NAME_DISMISSED_KEY\s*=\s*"agent-dag\.oldNameNoticeDismissed"/);
+    expect(app, "the dismissal stores something other than the name it dismissed")
+      .toMatch(/localStorage\.setItem\(\s*OLD_NAME_DISMISSED_KEY\s*,\s*oldName\s*\)/);
+    expect(app, "the notice no longer compares the dismissal against the current name")
+      .toMatch(/oldNameDismissed\s*!==\s*oldName/);
+    expect(app, "the notice no longer keys off the name the deck was invoked as")
+      .toMatch(/version\.invokedAs\s*!==\s*PRODUCT/);
   });
 });
 
@@ -471,7 +493,13 @@ describe("the name the deck asks people to type", () => {
   it("is not the package the upgrade installs, which is still agents-deck", () => {
     // The line brand.ts draws: this one is a command a human types, and the
     // registry query and `npm i -g` beside it name a package.
-    expect(read("src", "server", "self-update.mjs")).toContain('export function upgradeName(pkgRoot, name = "agents-deck")');
+    //
+    // The DEFAULT is the fact — it is what the update flow installs when
+    // nothing overrides it — not the signature's line breaks (#378). Reflowing
+    // the parameters across three lines used to fail this and display-name
+    // .test.ts, which asserts the same default, at once.
+    expect(read("src", "server", "self-update.mjs"), "the upgrade stopped defaulting to the published package")
+      .toMatch(/export function upgradeName\(\s*pkgRoot,\s*name\s*=\s*"agents-deck",?\s*\)/);
     expect(JSON.parse(read("package.json")).name).toBe("agents-deck");
   });
 });

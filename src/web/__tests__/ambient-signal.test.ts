@@ -243,6 +243,34 @@ describe("the favicon", () => {
     // changes shape between the first frame and the second.
     expect(read("../index.html")).toContain(`href="${FAVICON_HREF.idle}"`);
   });
+
+  it("hangs on exactly one link[rel=\"icon\"], which is the whole feature's handle", () => {
+    // #378: the href was pinned and the SELECTOR was not, and the selector is
+    // what the feature is. App.tsx reaches the element with
+    // `document.querySelector('link[rel="icon"]')`, which is an exact attribute
+    // match — so `rel="shortcut icon"`, the spelling half the web still uses,
+    // returns null. Measured: renaming it that way left all 1849 tests green
+    // while the icon stopped changing state for the life of the tab, with
+    // nothing logged and nothing to notice, which is the entire #338 signal on
+    // a background tab.
+    //
+    // Two ways to lose it, so two assertions. A second `rel="icon"` link added
+    // above this one — a PNG for an old browser is the usual reason — is not
+    // null but the WRONG node: querySelector returns the first in document
+    // order and the deck would spend the session rewriting an href nothing
+    // paints. Hence exactly one.
+    const links = [...read("../index.html").matchAll(/<link\b[^>]*>/g)].map(m => m[0]);
+    const icons = links.filter(tag => /\brel\s*=\s*"[^"]*\bicon\b[^"]*"/.test(tag));
+    expect(icons, "index.html no longer declares exactly one icon link").toHaveLength(1);
+    expect(icons[0], 'rel is not exactly "icon", so link[rel="icon"] misses it')
+      .toMatch(/\brel="icon"/);
+    expect(icons[0], "the boot icon is not the idle mark").toContain(`href="${FAVICON_HREF.idle}"`);
+    // And the other end of the same fact: the selector App.tsx actually runs.
+    // Matched loosely on everything but the selector string itself, which is
+    // the only part of the line that has to be exact.
+    expect(read("../App.tsx"), "App.tsx stopped asking for the element index.html declares")
+      .toMatch(/querySelector<HTMLLinkElement>\(\s*'link\[rel="icon"\]'\s*\)/);
+  });
 });
 
 describe("what App.tsx does with it", () => {
@@ -253,8 +281,18 @@ describe("what App.tsx does with it", () => {
     // title that is standing still — a subagent spawning moves `running` on a
     // deck whose title is plain and whose icon is already blue. Assigning an
     // identical title is a write the browser answers by re-rendering the tab.
-    expect(app).toContain("if (prev?.title !== next.title) document.title = next.title;");
-    expect(app).toContain("if (prev?.icon !== next.icon) {");
+    //
+    // Matched as a pattern rather than as a line of source (#378). The old form
+    // was the exact 62 characters including the trailing semicolon, so wrapping
+    // the body in braces — which changes nothing a user or a browser can see —
+    // failed it, and a test that fails on a reformat is a test somebody deletes
+    // the next time it does. What has to hold is the comparison guarding the
+    // write, and that is what this now says: remove either guard and the
+    // assignment no longer sits behind a `!==` on its own previous value.
+    expect(app, "the tab title is written without comparing it first")
+      .toMatch(/if\s*\(\s*prev\?\.title\s*!==\s*next\.title\s*\)\s*\{?\s*document\.title\s*=\s*next\.title\s*;/);
+    expect(app, "the favicon href is rewritten without comparing the state first")
+      .toMatch(/if\s*\(\s*prev\?\.icon\s*!==\s*next\.icon\s*\)\s*\{/);
   });
 
   it("counts through the shared module rather than spelling the rule out again", () => {

@@ -181,8 +181,13 @@ describe("the boundary the rename must not cross", () => {
     // product name is wrong: a registry query or an `npm i -g` naming ccdeck
     // resolves a different package than the one this build publishes as.
     const selfUpdate = read("src", "server", "self-update.mjs");
-    expect(selfUpdate).toContain(`export function upgradeName(pkgRoot, name = "agents-deck")`);
-    expect(selfUpdate).toContain(`export function upgradeCommand(pkgRoot, name = "agents-deck")`);
+    // The default is the fact; the line breaks are not (#378). Both of these
+    // were exact signatures, so reformatting the parameter list failed them
+    // while the package the upgrade installs stayed exactly the same.
+    expect(selfUpdate, "upgradeName stopped defaulting to the published package")
+      .toMatch(/export function upgradeName\(\s*pkgRoot,\s*name\s*=\s*"agents-deck",?\s*\)/);
+    expect(selfUpdate, "upgradeCommand stopped defaulting to the published package")
+      .toMatch(/export function upgradeCommand\(\s*pkgRoot,\s*name\s*=\s*"agents-deck",?\s*\)/);
     expect(JSON.parse(read("package.json")).name).toBe("agents-deck");
   });
 });

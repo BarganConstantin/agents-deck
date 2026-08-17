@@ -9,7 +9,7 @@ import type { GraphState } from "../reducer";
 import type { WaitingBlock } from "../types";
 import { shortModel, stateLabel, waitingSentence } from "./AgentNode";
 
-interface Row {
+export interface Row {
   sessionId: string;
   label: string;
   cwdBasename?: string;
@@ -27,13 +27,23 @@ interface Row {
  *  one — and a permission prompt outranks an idle one, because the first is a
  *  decision a session is stalled on and the second is a turn that simply ended.
  *  Waiting is not the row's `state`: an idle_prompt sits on a session that is
- *  legitimately done and still reads `done` two columns to the left. */
-function rank(r: Row): number {
+ *  legitimately done and still reads `done` two columns to the left.
+ *
+ *  Exported for the suite, along with buildRows below (#378). Both were
+ *  module-private, which meant a bare-node suite could not call either and the
+ *  only thing standing over this ordering was a regex matching the literal text
+ *  `isAlarming(r.waiting) ? 0 : 1` somewhere in this file. Measured: reversing
+ *  the two tiers here AND reversing the longest-blocked-first comparator below
+ *  left all 1849 tests green, because the reversed expressions still contain
+ *  the text the regex looked for. Neither function renders anything — they are
+ *  a rule about what the sidebar puts at the top, and a rule that cannot be
+ *  called is a rule nothing can check. */
+export function rank(r: Row): number {
   if (r.waiting) return isAlarming(r.waiting) ? 0 : 1;
   return r.state === "active" ? 2 : 3;
 }
 
-function buildRows(state: GraphState, now: number): Row[] {
+export function buildRows(state: GraphState, now: number): Row[] {
   const rows: Row[] = [];
   for (const a of state.agents.values()) {
     if (a.kind !== "root") continue;

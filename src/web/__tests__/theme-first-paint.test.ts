@@ -162,9 +162,20 @@ describe("the inline bootstrap in index.html", () => {
   });
 });
 
+// These two read App.tsx as text because a React component cannot be rendered
+// in bare node. #378 loosened them from exact source lines to patterns: what
+// they own is that App's first theme comes from storedTheme and that the toggle
+// still writes both places, and none of that changes when somebody wraps the
+// initialiser in an arrow or hoists documentElement into a local. A test that
+// fails on a reformat teaches people to delete tests.
 describe("App", () => {
   it("starts from the same resolution the bootstrap used, not a second rule", () => {
-    expect(app).toContain("useState<Theme>(storedTheme)");
+    // `useState<Theme>(storedTheme)` and `useState<Theme>(() => storedTheme())`
+    // are the same lazy initialiser written two ways. What may not change is
+    // WHICH function answers, because a second rule here is the drift the whole
+    // file exists to prevent.
+    expect(app, "App no longer takes its first theme from storedTheme")
+      .toMatch(/useState<Theme>\(\s*(?:\(\)\s*=>\s*)?storedTheme\s*(?:\(\s*\))?\s*\)/);
     expect(app).not.toContain('readStored("agent-dag.theme")');
   });
 
@@ -172,8 +183,12 @@ describe("App", () => {
     // Redundant on first mount — the bootstrap already wrote that attribute
     // from that value — and deliberately not guarded: see App.tsx. Every later
     // run is the T toggle, which is the only reason it is still here.
-    expect(app).toContain("document.documentElement.dataset.theme = theme");
-    expect(app).toContain("window.localStorage.setItem(THEME_KEY, theme)");
+    // Not pinned to `document.documentElement` spelled out: hoisting the root
+    // into a local changes nothing about the write, and the write is the fact.
+    expect(app, "the toggle no longer writes data-theme")
+      .toMatch(/\.dataset\.theme\s*=\s*theme/);
+    expect(app, "the toggle no longer persists the choice")
+      .toMatch(/localStorage\.setItem\(\s*THEME_KEY\s*,\s*theme\s*\)/);
   });
 });
 
