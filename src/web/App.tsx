@@ -26,6 +26,7 @@ import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from 
 import ClearConfirm from "./components/ClearConfirm";
 import { clearActionFor, type ClearSource } from "./clear-confirm";
 import { escapeOutcome, modalStack } from "./modal-dismiss";
+import { canvasKeyIntent, shouldReleaseFocusOnEscape, stepTarget } from "./canvas-keys";
 import { pruneStaleEntries, measuredNodeIds } from "./prune";
 import { isUnplaced, needsLayout, recordPlacement, stampPlaceholder, type Provisional } from "./placement";
 import { createRenderCoalescer } from "./coalesce";
@@ -54,6 +55,36 @@ function cssVar(name: string): string {
 }
 
 const nodeTypes = { agent: AgentNode, sessionGroup: SessionGroupNode };
+
+/** The class React Flow puts on the wrapper it renders around every node — the
+ *  element it makes tabbable, not the .agent-node card AgentNode draws inside
+ *  it. That distinction is the whole reason the keyboard handling lives in
+ *  App.tsx: a keydown fires on the focused wrapper and bubbles UP, so an
+ *  onKeyDown on AgentNode's own root would never see it. */
+const RF_NODE_CLASS = "react-flow__node";
+
+/** True when this element IS a node wrapper. Deliberately not a `closest()`
+ *  walk: the context donut inside a card is a real <button> with its own
+ *  Enter, and matching an ancestor would have answered the donut's keys too. */
+function isCanvasNodeElement(el: Element | null | undefined): boolean {
+  return !!el && el.classList?.contains?.(RF_NODE_CLASS) === true;
+}
+
+/** Move the keyboard onto an agent card. Used when j/k traverses while the
+ *  keyboard is already on the canvas, so the card the selection moved to is
+ *  also the card Enter and Tab now speak about.
+ *
+ *  preventScroll because the canvas is a transformed plane inside a fixed-size
+ *  box: the browser's own "scroll it into view" would shove the whole layer
+ *  sideways behind the panels, and fitView is already bringing the node on
+ *  screen properly. CSS.escape because an agent id is a session id and has
+ *  never been promised to be a bare identifier. */
+function focusCanvasNode(id: string): void {
+  try {
+    const el = document.querySelector(`.${RF_NODE_CLASS}[data-id="${CSS.escape(id)}"]`);
+    (el as HTMLElement | null)?.focus({ preventScroll: true });
+  } catch {}
+}
 
 /**
  * How long a session takes to slide out of the way of one that grew.
@@ -1896,34 +1927,34 @@ function Inner() {
 
   /** Step through visible agents in render order. `direction` is +1 for
    *  next (j) or -1 for previous (k). Selecting moves the canvas to keep
-   *  the chosen agent in view. */
+   *  the chosen agent in view.
+   *
+   *  The order and the wrap-around live in canvas-keys.ts, where they can be
+   *  tested without a canvas; what stays here is the two things that need one,
+   *  the fit and the focus. */
   const stepAgent = useCallback((direction: 1 | -1) => {
     const current = nodesRef.current;
-    if (current.length === 0) return;
-    // Use the same order ReactFlow's nodes prop has — left-to-right by
-    // worldspace position then top-to-bottom. That matches what the eye
-    // expects when pressing j.
-    const ordered = current
-      .slice()
-      .sort((a, b) => (a.position.y - b.position.y) || (a.position.x - b.position.x));
-    const selectedId = primarySelectedIdRef.current;
-    const currentIdx = selectedId
-      ? ordered.findIndex(n => n.id === selectedId)
-      : -1;
-    let next: number;
-    if (currentIdx === -1) {
-      next = direction === 1 ? 0 : ordered.length - 1;
-    } else {
-      next = (currentIdx + direction + ordered.length) % ordered.length;
-    }
-    const target = ordered[next];
+    const targetId = stepTarget(
+      current.map(n => ({ id: n.id, x: n.position.x, y: n.position.y })),
+      primarySelectedIdRef.current,
+      direction,
+    );
+    const target = targetId ? current.find(n => n.id === targetId) : undefined;
     if (!target) return;
+    // Traversal takes the keyboard with it, but only when the keyboard was
+    // already on a card. j from <body> is the shortcut it has always been —
+    // it selects, and every other single-key shortcut stays live because
+    // nothing is focused. j from a card is navigation, and leaving focus
+    // behind on the card the user just stepped off would make the next Enter
+    // re-select the one they left rather than the one they moved to.
+    const follow = isCanvasNodeElement(document.activeElement);
     selectAgent(target.id, false);
     // Fit-view to the chosen node so it lands on screen even if the user
     // had panned away.
     window.setTimeout(() => {
       try { rf.fitView({ padding: 0.35, duration: 350, nodes: [target] }); } catch {}
       lastFitTimeRef.current = Date.now();
+      if (follow) focusCanvasNode(target.id);
     }, 30);
   }, [selectAgent, rf]);
 
@@ -1967,16 +1998,59 @@ function Inner() {
         const outcome = escapeOutcome({ overlayOpen: modalStack.depth() > 0, typing: isTypingTarget(target) });
         if (outcome === "dismiss") modalStack.dismissTop();
         else if (outcome === "blur") el?.blur();
-        else clearSelection();
+        else {
+          // And the branch that gave the keyboard its way back. Every control
+          // on this deck is a <button> or a role="button", so the gate below
+          // — which is right to leave a focused control its own keys — killed
+          // all thirteen single-key shortcuts the moment the first Tab landed,
+          // for the rest of the session: tabbing off the end of the document
+          // wraps to the first control rather than to <body>, and Escape only
+          // released focus when the user was typing, which a button never is.
+          // Releasing it here is what makes the next j, /, space or l work.
+          // The selection still clears on the same press, so nothing about the
+          // mouse's Escape changes.
+          if (shouldReleaseFocusOnEscape(target)) el?.blur();
+          clearSelection();
+        }
         return;
       }
+      // Ctrl/Cmd/Alt chords are the browser's, not ours — Ctrl+C is copy and
+      // Ctrl+R is reload, and both arrive here as the bare letter. Asked before
+      // the canvas branch below rather than after the gate it used to sit
+      // behind, so that Cmd+Enter on a focused card stays the browser's too.
+      if (isBrowserChord(e)) return;
+      // An agent card is the one focusable thing here that is not really a
+      // control: React Flow makes every node a tabbable role="button" and then
+      // answers Enter itself through a store write that a controlled `nodes`
+      // prop skips, so the card announced itself as a button and did nothing at
+      // all. This is where the keyboard gets the click's behaviour — including
+      // Shift for additive, the way Shift+click already works in onNodeClick.
+      // Checked against the array React Flow is rendering rather than trusted
+      // from the DOM: the invisible per-session drag handles are wrappers with
+      // a data-id too, and they are not agents. They are focusable={false} so
+      // no keystroke should ever arrive from one, but selecting an id that is
+      // not on the canvas would leave a selection nothing can show or clear.
+      const focusedId = isCanvasNodeElement(el) ? el?.getAttribute?.("data-id") : null;
+      const focusedNodeId = focusedId && nodesRef.current.some(n => n.id === focusedId) ? focusedId : null;
+      const intent = canvasKeyIntent(e, focusedNodeId);
+      if (intent.kind === "activate") {
+        e.preventDefault();
+        selectAgent(intent.nodeId, intent.additive);
+        return;
+      }
+      // Arrows and Delete belong to the card, whatever React Flow does or does
+      // not do with them.
+      if (intent.kind === "node") return;
       // A focused control owns its own keys: Space presses a button, letters
       // run a <select>'s type-ahead. Answering them stole the button's
       // activation key and let a bare "c" from a dropdown wipe the event log.
-      if (ownsKeystroke(target)) return;
-      // Ctrl/Cmd/Alt chords are the browser's, not ours — Ctrl+C is copy and
-      // Ctrl+R is reload, and both arrive here as the bare letter.
-      if (isBrowserChord(e)) return;
+      //
+      // A card is exempt. It wears role="button" because React Flow put it
+      // there, not because it is a control the user typed into, and the two
+      // keys it genuinely owns were answered above — so j still traverses and
+      // / still reaches the search box while a card holds focus, which is the
+      // whole point of being able to tab onto one.
+      if (intent.nodeId == null && ownsKeystroke(target)) return;
       if (e.key === "/") { e.preventDefault(); searchInputRef.current?.focus(); return; }
       if (e.key === " ") { e.preventDefault(); togglePause(); }
       if (e.key === "c" || e.key === "C") requestClear("shortcut");
@@ -1992,7 +2066,7 @@ function Inner() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestClear, handleRelayout, handleFit, clearSelection, stepAgent, togglePause]);
+  }, [requestClear, handleRelayout, handleFit, clearSelection, selectAgent, stepAgent, togglePause]);
 
   const agentCount = stateRef.current.agents.size;
   const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
@@ -2156,9 +2230,15 @@ function Inner() {
               <span className="selected-label">{selected.label}</span>
               {c.total > 0 && <span className="selected-cost">{fmtCost(c.total)}{rate ? <span className="selected-rate"> · {rate}</span> : null}</span>}
               {extra > 0 && <span className="selected-extra">+{extra}</span>}
+              {/* A mouse shortcut, not a control. It sits inside the ribbon's
+                  own <button>, so it can never be a button itself — nesting one
+                  is invalid, and it carried no tabIndex, which left a
+                  role="button" labelled "Deselect" that no keyboard could ever
+                  reach or operate. The keyboard has the same verb on Escape
+                  from anywhere on the page, so the honest markup is decoration
+                  with a click on it. */}
               <span
-                role="button"
-                aria-label="Deselect"
+                aria-hidden
                 className="selected-close"
                 onClick={(e) => { e.stopPropagation(); clearSelection(); }}
               >×</span>
@@ -2879,6 +2959,11 @@ function EmptyDetail({ count, workspace }: { count: number; workspace: string | 
       <h3 style={{ marginTop: 4 }}>Shortcuts</h3>
       <div className="shortcuts">
         <div className="sc"><kbd>drag</kbd><span>move a node</span></div>
+        {/* Two rows the keyboard needed and the list never had: Tab reaches the
+            cards and Enter is what a click on one does, and Esc is the way back
+            out of any control to where the letters below work again. */}
+        <div className="sc"><kbd>tab</kbd><span>reach the cards</span></div>
+        <div className="sc"><kbd>enter</kbd><span>select the focused card</span></div>
         <div className="sc"><kbd>/</kbd><span>focus search</span></div>
         <div className="sc"><kbd>space</kbd><span>pause / resume</span></div>
         <div className="sc"><kbd>J</kbd><span>next agent</span></div>
@@ -2890,7 +2975,7 @@ function EmptyDetail({ count, workspace }: { count: number; workspace: string | 
         <div className="sc"><kbd>U</kbd><span>usage panel</span></div>
         <div className="sc"><kbd>C</kbd><span>clear canvas</span></div>
         <div className="sc"><kbd>T</kbd><span>toggle theme</span></div>
-        <div className="sc"><kbd>Esc</kbd><span>deselect</span></div>
+        <div className="sc"><kbd>Esc</kbd><span>deselect, release focus</span></div>
       </div>
     </>
   );

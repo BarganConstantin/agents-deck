@@ -791,6 +791,9 @@ function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerP
   const { x, y, zoom } = useViewport();
 
   return (
+    // aria-hidden on the whole layer, connectors and bubbles alike, and nothing
+    // inside it takes focus — see the note on the bubble below for why this is
+    // decoration rather than a control surface.
     <div className="tool-bursts-layer" aria-hidden>
       <svg className="tool-bursts-svg">
         {bursts.map(b => {
@@ -840,15 +843,30 @@ function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerP
         const dimClass = isDimmed || isSpotOut ? " dim" : "";
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
+            {/* Decoration, and now honest about it.
+
+                Every clickable bubble used to be a role="button" tabIndex={0}
+                with a carefully written aria-label, inside a layer marked
+                aria-hidden — the classic focusable-inside-aria-hidden failure,
+                and at the scale this layer works at: a live deck put 105 of the
+                page's 166 focusables in here, so two thirds of the tab order
+                was stops that announce as nothing and expire on their own
+                timer while the user is tabbing through them.
+
+                Of the two ways out, this is the one the layer's own behaviour
+                already argues for. The bubbles are a transient trace of what
+                each agent just ran; they fade, they move with the viewport, and
+                they are a second view of the tools the detail panel lists as
+                real <button>s (ToolRow), which is where a keyboard reaches the
+                exact same modal with a stable, ordered, announced list. So the
+                mouse affordance stays — hover, cursor and onClick are
+                untouched — and the accessibility tree keeps the one statement
+                that was already true about this layer. */}
             <div
               className={`tool-burst cat-${b.category}${b.mcpHue != null ? " mcp-hue" : ""} status-${b.status}${b.fading ? " fading" : ""}${clickable ? " clickable" : ""}${b.isSub ? " sub" : ""}${dimClass}`}
               style={innerStyle}
               title={title}
-              role={clickable ? "button" : undefined}
-              tabIndex={clickable ? 0 : undefined}
-              aria-label={clickable ? `Open ${b.toolName} ${b.status === "inflight" ? "in flight" : b.status} — click for details` : undefined}
               onClick={clickable ? () => onOpenTool!(b.toolId) : undefined}
-              onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenTool!(b.toolId); } } : undefined}
             >
               <span className="tb-emoji">{b.emoji}</span>
               <span className="tb-name">{b.name}</span>

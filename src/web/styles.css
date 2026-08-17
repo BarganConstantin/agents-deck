@@ -1930,10 +1930,9 @@ button.btn.icon-btn {
   translate: 0 -1px;
   box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px var(--cat-accent, rgba(255,255,255,0.15));
 }
-.tool-burst.clickable:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+/* A bubble has no :focus-visible rule because a bubble cannot be focused: the
+   layer is aria-hidden decoration and the tools it draws are reached from the
+   detail panel's list, which is real buttons. See ToolBursts.tsx. */
 
 @keyframes bubble-spawn {
   0%   {
