@@ -2,7 +2,7 @@
 // Single-file pure Node HTTP server, zero deps.
 import { createServer } from "node:http";
 import { readFile, stat, mkdir, appendFile, open, truncate, readdir, unlink } from "node:fs/promises";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, dirname as pdirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1858,6 +1858,37 @@ async function handleSoundHookSet(req, res) {
 // already answers "which deck am I talking to", and it is the one route the UI
 // can read before a single event has arrived.
 let _workspace = "";
+
+/**
+ * The one spelling of `--workspace` everything downstream compares against.
+ * Empty — including a value that is nothing but spaces — stays empty, which is
+ * how every reader of it says "machine-wide".
+ *
+ * Called once, in bin/deck.js, where the flag arrives: that process's cwd is the
+ * shell the user typed the command in, and it is the only process on either
+ * capture path whose cwd is the one a relative `--workspace ./sub` was written
+ * against. The raw string used to go straight into the discovery file, and
+ * hook.js resolved it inside its own process — which the host CLI runs with the
+ * AGENT's cwd — so `--workspace ./sub` scoped Claude sessions to a `sub`
+ * directory under whatever the agent happened to be working in, a different
+ * directory per agent and none of them the one asked for. The Codex path
+ * resolved the same string in the server process and was right. Resolving here
+ * makes both of them right, and for the same reason bin/deck.js already resolves
+ * the events log before publishing it: what goes in the discovery file is read
+ * by other processes that cannot reconstruct the context it was written in.
+ *
+ * Symlinks are resolved too, because a process's cwd — which is what both
+ * providers report — comes from getcwd() and has none left in it. Without this,
+ * `--workspace /tmp/proj` on a Mac is scoped to /tmp/proj while every session
+ * inside it reports /private/tmp/proj, and the deck stays empty. A path that
+ * does not exist yet keeps its resolved form rather than failing: scoping a deck
+ * to a directory you are about to create is not an error.
+ */
+export function canonicalWorkspace(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") return "";
+  const abs = resolve(raw);
+  try { return realpathSync(abs); } catch { return abs; }
+}
 
 function handleHealth(_req, res) {
   send(res, 200, {
