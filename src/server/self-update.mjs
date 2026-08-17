@@ -85,16 +85,29 @@ export function isOlder(a, b) {
 
 // ── what is on disk ──────────────────────────────────────────────────────────
 
+/** A package directory's own manifest, or null when there is not one worth
+ *  reading there.
+ *
+ *  Shared by everything below that asks a directory who it is, so the three
+ *  callers cannot drift on what a missing, truncated or non-object package.json
+ *  means. A JSON document is not necessarily an object — `null`, `"ccdeck"` and
+ *  `[]` all parse — and a manifest that is not an object has no fields to read,
+ *  so it is refused here once rather than guarded against three times. */
+function readManifest(dir) {
+  try {
+    const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    return meta && typeof meta === "object" ? meta : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Version currently written in the package's own package.json. Deliberately
  *  read fresh on every call: that is the whole point — it changes under a
  *  running process when npm replaces the install. */
 export function installedVersion(pkgRoot) {
-  try {
-    const v = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"))?.version;
-    return typeof v === "string" ? v : null;
-  } catch {
-    return null;
-  }
+  const v = readManifest(pkgRoot)?.version;
+  return typeof v === "string" ? v : null;
 }
 
 /** npx keeps each package in its own content-addressed cache directory, so
@@ -203,6 +216,15 @@ export function npxRestartSpec(pkgRoot, name = "agents-deck") {
 // path, so argv[1] reads `agent-dag.js` under all three names, and on Windows
 // npm's .cmd/.ps1 shims never pass the typed name on at all. The directory npm
 // built is the one carrier that survives every platform.
+//
+// The other two names need no layout at all, and that is why the first fix
+// missed one of them. `agents-deck` and `agent-dag` are the same tarball
+// published twice with the manifest renamed between the two, so the deck IS the
+// whole package under both and sits directly under the global node_modules with
+// nothing above it — hostPackage correctly finds no host, and the answer falls
+// through to a default that is right for one of the two and wrong for the
+// other. What both of them do carry is their own package.json, which npm's
+// rename made authoritative: see installedName.
 
 /** Every name this deck is published under.
  *
@@ -214,6 +236,41 @@ export function npxRestartSpec(pkgRoot, name = "agents-deck") {
  *  user may type. They are equal only because the rename made them so, and a
  *  test pins them against each other rather than either side assuming it. */
 export const ALIAS_PACKAGES = ["agents-deck", "agent-dag", "ccdeck"];
+
+/** Which of those three THIS build was published as, out of its own manifest.
+ *
+ *  The other half of the same bug, and the easier half. `agent-dag` is not a
+ *  stub and is not nested inside anything — `npm i -g agent-dag` puts the deck
+ *  straight into `<prefix>/lib/node_modules/agent-dag` — so hostPackage finds no
+ *  host above it and there is no layout to read the answer out of. There does
+ *  not need to be: CI publishes that name by renaming the manifest in the
+ *  tarball (`npm pkg set name=agent-dag` in .github/workflows/publish.yml), so
+ *  the running copy's own package.json says `agent-dag` and has all along.
+ *
+ *  It was never read. `name` is a parameter with a default in every exported
+ *  function here, and not one caller in the deck passes it — index.mjs and
+ *  bin/deck.js both call versionReport and startUpgrade with a pkgRoot and
+ *  nothing else — so the default WAS the answer, and the default is a guess
+ *  about which of three names this build carries. For `npm i -g agent-dag` it
+ *  guessed wrong: the user was told to run `npm i -g agents-deck@latest`, which
+ *  installs a second, unrelated global package while their `agent-dag` binary
+ *  stays exactly where it was, and the version check went on caching under a
+ *  package this install is not.
+ *
+ *  Confined to the three names, for the reason hostNameFromMeta is: the answer
+ *  becomes an argument in the `npm i -g` this process spawns, and startUpgrade
+ *  promises that vector can only ever name this deck. A fork that republishes
+ *  under a fourth name adds it to the list above, which is one line and a
+ *  deliberate one — rather than having the deck hand npm a package name it has
+ *  never heard of because a directory on disk said so.
+ *
+ *  `fallback` is what to answer when the manifest is missing, unreadable, or
+ *  names something that is not one of ours — the caller's own `name`, so every
+ *  shape that cannot prove which alias it is keeps the behaviour it had. */
+export function installedName(pkgRoot, fallback = "agents-deck") {
+  const self = readManifest(pkgRoot)?.name;
+  return typeof self === "string" && ALIAS_PACKAGES.includes(self) ? self : fallback;
+}
 
 /** The directory of the package this one is installed INSIDE, or null when it
  *  is not inside one. Pure — path arithmetic only, so a Windows layout can be
@@ -253,9 +310,7 @@ export function hostNameFromMeta(meta, name = "agents-deck") {
 export function hostPackage(pkgRoot, name = "agents-deck") {
   const root = hostRoot(pkgRoot);
   if (!root) return null;
-  let meta = null;
-  try { meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")); } catch { return null; }
-  const host = hostNameFromMeta(meta, name);
+  const host = hostNameFromMeta(readManifest(root), name);
   return host ? { root, name: host } : null;
 }
 
@@ -275,20 +330,33 @@ export function hostPackage(pkgRoot, name = "agents-deck") {
  *  consistent by construction: whatever the command will install is what gets
  *  asked about, and the per-name marker follows the same name. Each install
  *  shape carries that answer somewhere different — npx in the spec it recorded,
- *  a stub install in the layout npm built, a plain global install nowhere,
- *  because there the published name is already the right one. */
+ *  a stub install in the layout npm built, a plain global install in the
+ *  manifest of the package it is. All three are read; none is assumed. */
 export function upgradeName(pkgRoot, name = "agents-deck") {
+  // The published name this build actually carries, which outranks `name` in
+  // every branch below because `name` is a default at every call site in the
+  // deck and the manifest on disk is not a guess. It replaces the parameter
+  // rather than sitting beside it: this one function is where all four of the
+  // registry-shaped answers meet — the dist-tag that is fetched, the marker it
+  // is cached in, the command the user is shown, and the argv npm is spawned
+  // with — so resolving the name once here is what keeps those four naming one
+  // package, which is the property the whole function exists to hold.
+  const self = installedName(pkgRoot, name);
   // A checkout installs nothing at all, so the published name is the only
   // sensible subject for the version question — and the only one whose
   // dist-tag says anything about the branch the maintainer is sitting on.
-  if (isGitCheckout(pkgRoot)) return name;
-  if (isNpxInstall(pkgRoot)) return bareSpecName(npxRestartSpec(pkgRoot, name)) ?? name;
+  if (isGitCheckout(pkgRoot)) return self;
+  // npx recorded the spec the user typed, which is a better answer than the
+  // manifest: `npx ccdeck` unpacks a deck whose manifest says `agents-deck`,
+  // and re-running the name they did not type would move them off the stub.
+  // The manifest is what is left when that record cannot be read.
+  if (isNpxInstall(pkgRoot)) return bareSpecName(npxRestartSpec(pkgRoot, self)) ?? self;
   // Left: a global install, where the answer is whichever package owns the
-  // directory npm would rewrite. That is `name` for `npm i -g agents-deck` and
-  // for `npm i -g agent-dag`, and the stub for `npm i -g ccdeck` — the one
-  // shape where the two differ, and the one where naming `name` installed a
-  // tree this process could not see.
-  return hostPackage(pkgRoot, name)?.name ?? name;
+  // directory npm would rewrite. That is the stub for `npm i -g ccdeck`, where
+  // the deck is nested one level down inside a package it is not named after,
+  // and this build's own name for `npm i -g agents-deck` and `npm i -g
+  // agent-dag`, where the deck IS the whole package and nothing is above it.
+  return hostPackage(pkgRoot, self)?.name ?? self;
 }
 
 /** The exact line the user can paste, for the way THIS copy was installed. */
@@ -636,7 +704,12 @@ export function upgradeBlock(pkgRoot) {
   // node_modules goes with it. In practice both pairs answer the same, since
   // one npm install created them with one owner — but the question is about the
   // tree the command touches, and that tree is the host's.
-  const target = hostPackage(pkgRoot)?.root ?? pkgRoot;
+  //
+  // Asked with this build's own name rather than with the default, for the same
+  // reason upgradeName is: the host is recognised by the dependency it declares
+  // on us, and "us" is whatever the manifest here says — `agents-deck` under the
+  // stub npm publishes today, but nothing in this rule should assume that.
+  const target = hostPackage(pkgRoot, installedName(pkgRoot))?.root ?? pkgRoot;
   return upgradeBlockedReason({
     git: isGitCheckout(pkgRoot),
     npx: isNpxInstall(pkgRoot),
