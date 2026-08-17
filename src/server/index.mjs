@@ -1918,6 +1918,21 @@ async function handleSoundHookSet(req, res) {
 // can read before a single event has arrived.
 let _workspace = "";
 
+// Which CLIs this deck is actually watching. Decided in bin/deck.js — from
+// whether each one is on the machine, and from --claude/--no-claude and
+// --codex/--no-codex — and passed in here, because the browser had no way to
+// learn it and so drew both sides of the UI on every machine.
+//
+// That is the whole of #402 and its mirror. A Codex-only machine got the
+// accounts panel open on first run, telling it to sign into a CLI it does not
+// have; a Claude-only machine permanently carried "Quota unavailable. / Run
+// codex login to authenticate." Same missing fact, two directions.
+//
+// Defaults are both true, which is what an older deck effectively reported by
+// saying nothing — and the browser reads a missing field as "could not say" and
+// shows both, so the two agree.
+let _providers = { claude: true, codex: true };
+
 /**
  * The one spelling of `--workspace` everything downstream compares against.
  * Empty — including a value that is nothing but spaces — stays empty, which is
@@ -1957,6 +1972,7 @@ function handleHealth(_req, res) {
     clients: sseClients.size,
     uptimeMs: Math.round(process.uptime() * 1000),
     workspace: _workspace,
+    providers: _providers,
   });
 }
 
@@ -2343,10 +2359,13 @@ let _onRestart = null;
 // ask; the second ask must not re-enter the shutdown.
 let _restarting = false;
 
-export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true, onRestart = null } = {}) {
+export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true, claude = true, onRestart = null } = {}) {
   _onRestart = typeof onRestart === "function" ? onRestart : null;
   _canRestart = _onRestart != null && persist != null;
   _workspace = typeof workspace === "string" ? workspace : "";
+  // `!== false` rather than a cast: a caller that omits the field means "yes",
+  // which is how every embedder that predates this option keeps working.
+  _providers = { claude: claude !== false, codex: codex !== false };
   const removed = await sweepStaleDiscovery();
   if (removed > 0) console.log(`  swept ${removed} stale discovery file(s)`);
   if (persist) {

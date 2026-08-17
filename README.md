@@ -117,9 +117,20 @@ ccdeck [options]
       --no-persist         RAM-only mode — don't write or replay the log
       --codex              Force Codex capture even if ~/.codex/ is missing
       --no-codex           Skip Codex capture (Claude only)
+      --claude             Force Claude capture even if Claude Code wasn't found
+      --no-claude          Skip Claude entirely — no hooks, no claude-swap,
+                           no Accounts panel (Codex only)
       --uninstall          Remove ccdeck's hooks from settings files
   -h, --help               Show this help
 ```
+
+ccdeck looks for each CLI before it does anything on that CLI's behalf. Claude
+Code counts as present when its binary is on `PATH` (or in one of the places its
+installers put it), or when its config dir carries traces of having been used;
+Codex counts as present when `~/.codex/` exists. On a machine with only one of
+them, the other one's hooks, installs and panels are skipped rather than shown
+empty — the boot banner says which way it went, and `--claude` / `--codex`
+override it if the guess is wrong.
 
 `--workspace` is a filter this deck applies to itself, not a claim on the sessions it matches: **every** running deck whose workspace contains a session's directory draws that session, so a machine-wide deck and one scoped to `~/proj` both show the agents working inside `~/proj`. It reads the same way on both capture paths — Claude Code's hook and Codex's rollout files — and the events log still gets exactly one copy of each event, whichever decks are up. A relative path is resolved against the directory you start the deck in, and once, so both paths scope to the same tree.
 
@@ -146,6 +157,14 @@ npx ccdeck --uninstall
 ```
 
 Removes every hook entry ccdeck injected from `~/.claude/settings.json`, and `~/.codex/hooks.json` if present.
+
+It removes the hook entries and nothing else. The forwarder script
+(`~/.claude/agent-dag/hook.js`), the discovery directory around it, the events
+log, and the tools ccdeck installed for you — claude-swap, ccusage, and a `uv`
+binary if it had to fetch one — are all left in place, and each has its own
+uninstaller. Deleting `~/.claude/agent-dag/` and `~/.agents-deck/` clears
+ccdeck's own files; `uv tool uninstall claude-swap` (or `pipx uninstall
+claude-swap`) removes the account switcher.
 
 ## Design
 

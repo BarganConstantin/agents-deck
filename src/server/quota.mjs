@@ -28,11 +28,11 @@
 // 2 and 3 are rate-floored (SELF_POLL_MS) and gated behind the same 429
 // cooldown; 1 is not, because it is a local file read.
 import { activeAccountUsage, requestCollection } from "./claude-accounts.mjs";
-import { claudeConfigDir } from "./claude-dir.mjs";
+import { claudeCliCandidates, claudeConfigDir } from "./claude-dir.mjs";
 import { run } from "./exec.mjs";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join, posix as posixPath, win32 as winPath } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { PRODUCT } from "./brand.mjs";
 
@@ -334,42 +334,10 @@ function parseUsageText(raw) {
   return Object.keys(result).length > 0 ? result : null;
 }
 
-/**
- * Every place the `claude` CLI is known to live, in the order to try them.
- *
- * Pure, and the platform, environment and home directory are parameters, so the
- * Windows list can be checked from a Mac — which is the only way this list stays
- * right, since it exists entirely for machines the author is not sitting at.
- */
-export function quotaClaudeCandidates(platform = process.platform, env = process.env, home = homedir()) {
-  // The path flavour follows the PLATFORM ARGUMENT, not the host: node's `join`
-  // would emit forward slashes when the Windows list is built on a Mac.
-  const { join } = platform === "win32" ? winPath : posixPath;
-  if (platform !== "win32") {
-    return [
-      "claude",
-      join(home, ".local", "bin", "claude"),
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-    ];
-  }
-  return [
-    // The native installer, which ships a bare claude.exe and NO .cmd shim. It
-    // was the one install this branch could not reach: the npm path below does
-    // not exist on such a machine, and the bare-name fallback used to be spelled
-    // `claude.cmd`, which cmd.exe cannot resolve to an .exe — PATHEXT supplies a
-    // missing extension, it never substitutes one that is already there.
-    join(home, ".local", "bin", "claude.exe"),
-    // `npm i -g @anthropic-ai/claude-code`. npm's global prefix is %APPDATA%\npm
-    // — Roaming rather than Local, deliberately, since it follows the user
-    // between machines — and APPDATA is read from the environment because a
-    // roaming profile puts it on a network share, not under the home directory.
-    join(env.APPDATA || join(home, "AppData", "Roaming"), "npm", "claude.cmd"),
-    // Last resort: the bare name, which cmd.exe resolves through PATH + PATHEXT
-    // and so finds claude.exe and claude.cmd alike.
-    "claude",
-  ];
-}
+// Where the `claude` CLI can be. The list moved to claude-dir.mjs, which is the
+// module that owns every "where does Claude Code live" answer the deck has —
+// the config dir was already there, and the boot-time presence check that reads
+// this same list had no business importing a quota poller to get at it.
 
 /** Which `claude` to run for `--print /usage`: the first candidate that exists.
  *
@@ -396,7 +364,7 @@ export function quotaClaudeBin(platform = process.platform, env = process.env,
   // A bare name is left to spawn's own PATH lookup (and, on Windows, to the
   // PATHEXT walk exec.mjs does by hand); a full path is only worth naming when
   // it is actually there.
-  return quotaClaudeCandidates(platform, env, home)
+  return claudeCliCandidates(platform, env, home)
     .find(c => !c.includes(sep) || exists(c)) ?? "claude";
 }
 
