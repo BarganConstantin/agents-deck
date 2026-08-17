@@ -31,6 +31,10 @@ import { PRODUCT as SERVER_PRODUCT } from "../../server/brand.mjs";
 import { COMMANDS, PREFERRED, invokedAs, invokedName, knownCommand, renameNotice } from "../../server/invoked-as.mjs";
 // @ts-expect-error — plain JS module, no types
 import { glyphs, labelColumn, palette, statusLine, stripAnsi } from "../../server/term.mjs";
+// The pair the browser used to confuse with the question above: which install
+// shape this is, versus whether this copy may `npm i -g` over itself (#363).
+// @ts-expect-error — plain JS module, no types
+import { upgradeBlock, upgradeMode } from "../../server/self-update.mjs";
 
 const repo = fileURLToPath(new URL("../../..", import.meta.url));
 const read = (...parts: string[]) => readFileSync(join(repo, ...parts), "utf8");
@@ -232,7 +236,10 @@ describe("what gets said, and to whom", () => {
       expect(`${notice.said} ${notice.fix}`).not.toMatch(/[!]/);
     }
     expect(app).toContain("{oldName} still works — the deck is called {PRODUCT} now.");
-    expect(app).toContain(`\`${"${PRODUCT}"} already works here — same install, no download.\``);
+    // Only the first line is written in App.tsx. The second one is renameNotice's
+    // `fix`, handed over by /api/version — see "one fact, one place" below for
+    // why it stopped being written twice.
+    expect(app).toContain("{version.renameFix}");
     expect(app).not.toMatch(/deprecated/i);
   });
 
@@ -318,7 +325,8 @@ describe("the wiring, which is the half no pure function can hold", () => {
     // `name` is the package an upgrade installs and the update flow hangs off
     // it; for a global install that is the published package whichever bin was
     // typed, so the two answers are genuinely different questions.
-    expect(server).toContain("invokedAs: invokedName({ pkgRoot: PKG_ROOT })");
+    expect(server).toContain("const invoked = invokedName({ pkgRoot: PKG_ROOT });");
+    expect(server).toContain("invokedAs: invoked");
     expect(read("src", "server", "self-update.mjs")).toContain("name: target,");
   });
 
@@ -329,6 +337,124 @@ describe("the wiring, which is the half no pure function can hold", () => {
     expect(app).toContain("window.localStorage.setItem(OLD_NAME_DISMISSED_KEY, oldName)");
     expect(app).toContain("oldNameDismissed !== oldName");
     expect(app).toContain("version.invokedAs !== PRODUCT");
+  });
+});
+
+// #363. The notice ends on one of two sentences — "type ccdeck, it is already
+// there" for an install that put all three commands on the PATH, and "next
+// time: npx ccdeck" where no such install exists — and the browser used to
+// pick between them itself, off `upgradeMode`. That field sounds like the same
+// question and is a different one: it answers whether an in-app `npm i -g` is
+// allowed, and upgradeBlockedReason tests the opt-out FIRST, so
+// `AGENTS_DECK_NO_INSTALL=1` flattens it to null for an npx run exactly as it
+// does for a global one. Every npx user with that variable set was therefore
+// told the global-install line and sent to a command their machine does not
+// have — while the terminal row, which asks isNpxInstall directly, printed the
+// right one a few lines above. Two surfaces, one fact, opposite answers.
+describe("one fact, one place: which line the rename notice ends with", () => {
+  const app = read("src", "web", "App.tsx");
+  const server = read("src", "server", "index.mjs");
+
+  // The JSX comments carry the reasoning, including the name of the field this
+  // must no longer branch on, so the assertion below reads the code only.
+  const withoutComments = (jsx: string) => jsx.replace(/\{\/\*[^]*?\*\/\}/g, "");
+  const bannerJsx = () => {
+    const start = app.indexOf("oldNameOpen && oldName ? (");
+    expect(start, "the rename banner moved — this test needs a new anchor").toBeGreaterThan(-1);
+    return app.slice(start, app.indexOf("dismissOldName}", start));
+  };
+
+  /** Runs `body` with one AGENTS_DECK_* variable set, and puts it back. These
+   *  are read through process.env at call time by design — display-name.test.ts
+   *  owns that boundary — so the only way to ask the question is to set it. */
+  function withEnv(key: string, value: string | undefined, body: () => void) {
+    const was = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    try { body(); } finally {
+      if (was === undefined) delete process.env[key];
+      else process.env[key] = was;
+    }
+  }
+
+  it("still says npx under the opt-out that flattens upgradeMode to null", () => {
+    // THE regression, in the two functions that disagreed. An npx cache
+    // directory, a user who has turned installs off, and the two answers side
+    // by side: `upgradeMode` goes null — correctly, it is being asked whether
+    // it may install — while the sentence the user reads stays npx.
+    const pkgRoot = npxCache("d1", { _npx: { packages: ["agents-deck"] } });
+    withEnv("AGENTS_DECK_NO_INSTALL", "1", () => {
+      expect(upgradeBlock(pkgRoot)).toBe("opted_out");
+      expect(upgradeMode(upgradeBlock(pkgRoot))).toBeNull();
+      expect(renameNotice({ invoked: "agents-deck", pkgRoot }).fix).toBe(`next time: npx ${PREFERRED}`);
+    });
+  });
+
+  it("is not affected by AGENTS_DECK_NO_UPDATE_CHECK, which only silences npm", () => {
+    // Worth pinning because the two variables read like a pair and are not:
+    // versionReport checks both before asking the registry, but upgradeBlock
+    // reads only NO_INSTALL, so the update-check opt-out never reached this bug.
+    const pkgRoot = npxCache("d2", { _npx: { packages: ["agent-dag"] } });
+    withEnv("AGENTS_DECK_NO_UPDATE_CHECK", "1", () => {
+      expect(upgradeMode(upgradeBlock(pkgRoot))).toBe("npx");
+    });
+  });
+
+  it("follows the directory this copy runs from, whatever the environment says", () => {
+    // The whole matrix: the advice is a fact about the install, so no variable
+    // may move it. `_npx` in the path or not — that is the entire question.
+    const cache = npxCache("d3", { _npx: { packages: ["agent-dag"] } });
+    const shapes: [string, string, string][] = [
+      ["npx", cache, `next time: npx ${PREFERRED}`],
+      ["global", "/usr/local/lib/node_modules/agents-deck", `${PREFERRED} already works here — same install, no download`],
+      ["global (windows)", "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\agents-deck", `${PREFERRED} already works here — same install, no download`],
+    ];
+    for (const value of [undefined, "1"]) {
+      withEnv("AGENTS_DECK_NO_INSTALL", value, () => {
+        for (const [label, pkgRoot, fix] of shapes) {
+          expect(renameNotice({ invoked: "agent-dag", pkgRoot }).fix, `${label} / ${value}`).toBe(fix);
+        }
+      });
+    }
+  });
+
+  it("exists for every shape that shows the banner at all", () => {
+    // The browser now renders the server's sentence or nothing, so a shape that
+    // reaches the banner with no sentence to end it would be a half-drawn
+    // notice. There is none: both sides answer off the same `invoked`.
+    const cache = npxCache("d4", { _npx: { packages: ["ccdeck"] } });
+    const shapes: [string, string | null][] = [
+      [cache, invokedAs({ pkgRoot: cache, argv1: join(cache, "bin", "agent-dag.js"), platform: "linux" })],
+      ["/usr/local/lib/node_modules/agents-deck", "agents-deck"],
+      ["/usr/local/lib/node_modules/agents-deck", "agent-dag"],
+      ["/usr/local/lib/node_modules/agents-deck", null],
+      ["/home/me/src/ccdeck", null],
+    ];
+    for (const [pkgRoot, invoked] of shapes) {
+      const banner = invoked !== null && invoked !== PRODUCT;
+      expect(renameNotice({ invoked, pkgRoot }) !== null, `${pkgRoot} / ${invoked}`).toBe(banner);
+    }
+  });
+
+  it("is computed once, on the server, by the function the terminal already calls", () => {
+    expect(server).toContain('import { invokedName, renameNotice } from "./invoked-as.mjs";');
+    expect(server).toContain("const rename = renameNotice({ invoked, pkgRoot: PKG_ROOT });");
+    expect(server).toContain("renameFix: rename?.fix ?? null");
+    // No `dash`: the glyph tier is a terminal concern and the default is the em
+    // dash a browser should get. bin/deck.js is the only caller that passes one.
+    expect(server).not.toMatch(/renameNotice\(\{[^}]*dash/);
+  });
+
+  it("is rendered by the browser, not decided there", () => {
+    const jsx = bannerJsx();
+    expect(jsx).toContain('{version?.renameFix ? <span className="ver-sub">{version.renameFix}</span> : null}');
+    expect(app).toContain("renameFix?: string | null;");
+    // The branch itself is gone, not merely corrected — this is the assertion
+    // that stops the next person deriving the same fact from the same field.
+    expect(withoutComments(jsx)).not.toContain("upgradeMode");
+    // …and with it both sentences, which now exist once, in invoked-as.mjs.
+    expect(app).not.toContain("already works here");
+    expect(app).not.toMatch(/Run npx|npx \$\{PRODUCT\}/);
   });
 });
 

@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
-import { invokedName } from "./invoked-as.mjs";
+import { invokedName, renameNotice } from "./invoked-as.mjs";
 import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1380,7 +1380,28 @@ async function handleVersion(req, res) {
   // command that was typed and is silent wherever it cannot be proven — every
   // Windows global install, and every `npm i -g ccdeck`, whose stub spawns the
   // deck by absolute path and leaves nothing in argv to read.
-  send(res, 200, { ...report, canRestart: _canRestart, invokedAs: invokedName({ pkgRoot: PKG_ROOT }) });
+  const invoked = invokedName({ pkgRoot: PKG_ROOT });
+  // The second half of that notice, computed here rather than in the browser.
+  //
+  // The banner needs one more fact than the name: whether typing `ccdeck` is
+  // enough (a global install ships all three commands, so it already is) or
+  // whether the whole answer is `npx ccdeck`. The browser used to derive that
+  // from `upgradeMode`, which reads like the same question and is not — it
+  // answers "may this copy install over itself", and `AGENTS_DECK_NO_INSTALL=1`
+  // makes it null for EVERY shape including npx, because upgradeBlockedReason
+  // tests the opt-out before it tests npx. So an npx user who opted out of
+  // installs was told the global-install line and sent to a command that does
+  // not exist on their machine, while the terminal row two feet away said
+  // `npx ccdeck` — one fact, two surfaces, opposite answers (#363).
+  //
+  // renameNotice is where that fact is decided for the terminal, so it decides
+  // it here too and the browser renders the string rather than a branch. No
+  // `dash` argument on purpose: the glyph tier is a terminal concern, and the
+  // default em dash is what a browser should get.
+  const rename = renameNotice({ invoked, pkgRoot: PKG_ROOT });
+  send(res, 200, {
+    ...report, canRestart: _canRestart, invokedAs: invoked, renameFix: rename?.fix ?? null,
+  });
 }
 
 // Runs `npm i -g <this deck>@latest`, and only that: the argument vector is
