@@ -7,6 +7,7 @@ import { PRODUCT } from "../brand";
 import type { GraphState } from "../reducer";
 import type { AgentState } from "../types";
 import { fmtTokens } from "../token-format";
+import type { Providers } from "../providers";
 import { shortModel, stateLabel } from "./AgentNode";
 
 // ── Quota types ────────────────────────────────────────────────────────────
@@ -214,7 +215,13 @@ function QuotaBar({ pct, label, reset, resetAt, windowSec, limitReached, nowSec 
 // ── Quota fetch hook ───────────────────────────────────────────────────────
 const QUOTA_POLL_MS = 60_000;
 
-function useQuota() {
+/**
+ * @param enabled whether this deck watches Claude Code at all. False stops the
+ *   poll rather than only hiding its output: /api/quota is not a cheap read —
+ *   it can spawn `claude --print /usage` — and a machine with no Claude Code
+ *   would pay for that once a minute forever to render nothing.
+ */
+function useQuota(enabled: boolean) {
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -230,12 +237,13 @@ function useQuota() {
   };
 
   useEffect(() => {
+    if (!enabled) return;
     fetch_(true); // force on mount — avoids stale ok:false cache from prior run
     timerRef.current = window.setInterval(() => fetch_(false), QUOTA_POLL_MS);
     return () => { if (timerRef.current != null) window.clearInterval(timerRef.current); };
-  }, []);
+  }, [enabled]);
 
-  const refresh = () => fetch_(true);
+  const refresh = () => { if (enabled) fetch_(true); };
   return { quota, loading, refresh };
 }
 
@@ -315,7 +323,10 @@ interface CodexUsageData {
 
 const CODEX_POLL_MS = 60_000;
 
-function useCodexQuota() {
+/** @param enabled whether this deck watches Codex — see useQuota above, which
+ *   states the same rule for the other side. A Codex poll refreshes an OAuth
+ *   token against OpenAI, which is not work to do on a machine with no Codex. */
+function useCodexQuota(enabled: boolean) {
   const [data, setData] = useState<CodexQuotaData | null>(null);
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -331,16 +342,17 @@ function useCodexQuota() {
   };
 
   useEffect(() => {
+    if (!enabled) return;
     fetch_(true); // force on mount — get fresh data immediately
     timerRef.current = window.setInterval(() => fetch_(false), CODEX_POLL_MS);
     return () => { if (timerRef.current != null) window.clearInterval(timerRef.current); };
-  }, []);
+  }, [enabled]);
 
-  const refresh = () => fetch_(true);
+  const refresh = () => { if (enabled) fetch_(true); };
   return { data, loading, refresh };
 }
 
-function useCodexUsage() {
+function useCodexUsage(enabled: boolean) {
   const [data, setData] = useState<CodexUsageData | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -352,10 +364,11 @@ function useCodexUsage() {
   };
 
   useEffect(() => {
+    if (!enabled) return;
     fetch_();
     timerRef.current = window.setInterval(fetch_, CODEX_POLL_MS);
     return () => { if (timerRef.current != null) window.clearInterval(timerRef.current); };
-  }, []);
+  }, [enabled]);
 
   return { data };
 }
@@ -363,13 +376,15 @@ function useCodexUsage() {
 interface Props {
   state: GraphState;
   now: number;
+  /** Which CLIs this deck watches — see src/web/providers.ts. */
+  providers: Providers;
   onClose: () => void;
 }
 
-export default function UsagePanel({ state, now, onClose }: Props) {
-  const { quota, loading: quotaLoading, refresh: refreshQuota } = useQuota();
-  const { data: codexQuota, loading: codexLoading, refresh: refreshCodex } = useCodexQuota();
-  const { data: codexUsage } = useCodexUsage();
+export default function UsagePanel({ state, now, providers, onClose }: Props) {
+  const { quota, loading: quotaLoading, refresh: refreshQuota } = useQuota(providers.claude);
+  const { data: codexQuota, loading: codexLoading, refresh: refreshCodex } = useCodexQuota(providers.codex);
+  const { data: codexUsage } = useCodexUsage(providers.codex);
 
   // Tick every 30s so countdowns + pace stay live without parent re-render
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
@@ -519,13 +534,24 @@ export default function UsagePanel({ state, now, onClose }: Props) {
         <h3>Usage</h3>
         {burnRate && <span className="up-rate">{burnRate}</span>}
         <div className="up-header-right">
+          {/* Named after what is actually below it, and gone when neither
+              section is. On a Codex-only deck "Refresh Claude + Codex quota"
+              promises a section that is not there, which is the same lie in
+              miniature as the panel this change removed; with both CLIs absent
+              the control refreshes nothing at all. */}
+          {(providers.claude || providers.codex) && (
           <button
             type="button"
             className="btn up-refresh-btn"
             onClick={refreshAll}
             disabled={anyLoading}
-            title="Refresh Claude + Codex quota"
+            title={
+              providers.claude && providers.codex ? "Refresh Claude + Codex quota"
+                : providers.codex ? "Refresh Codex quota"
+                  : "Refresh Claude quota"
+            }
           >{anyLoading ? "…" : "↻"}</button>
+          )}
           <button
             type="button"
             className="btn icon-btn up-close"
@@ -537,6 +563,7 @@ export default function UsagePanel({ state, now, onClose }: Props) {
       </div>
 
       {/* ── Claude quota ── */}
+      {providers.claude && (
       <section className="up-section up-quota-section">
         <h4 className="up-section-title">
           Claude quota
@@ -587,8 +614,14 @@ export default function UsagePanel({ state, now, onClose }: Props) {
           <div className="up-quota-na up-quota-loading">Checking…</div>
         )}
       </section>
+      )}
 
-      {/* ── Codex quota ── */}
+      {/* ── Codex quota ──
+          The mirror of the accounts panel, and fixed by the same fact arriving
+          from /api/health: a Claude-only machine used to carry "Quota
+          unavailable. / Run codex login to authenticate." permanently, for a
+          CLI it has no reason to install. */}
+      {providers.codex && (
       <section className="up-section up-quota-section">
         <h4 className="up-section-title">
           Codex quota
@@ -705,6 +738,7 @@ export default function UsagePanel({ state, now, onClose }: Props) {
           </div>
         )}
       </section>
+      )}
 
       {/* ── Cost + tokens ──
           Gated on TOKENS, not on cost. The two tables used to live inside a

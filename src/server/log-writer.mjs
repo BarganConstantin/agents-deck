@@ -73,17 +73,29 @@ export function electWriters(decks, platform = process.platform) {
 
 /**
  * Would a deck scoped to `workspace` capture a rollout running in `cwd`? An
- * empty workspace is unscoped and captures every session.
+ * empty workspace is unscoped and captures every session; a rollout that never
+ * said where it runs is inside no workspace, so only an unscoped deck draws it.
  *
- * Case is folded on every platform here, which the hook's own cwdInWorkspace
- * deliberately does not do. That stays as it was, because this predicate now
- * answers two questions with one function: whether THIS deck tails a rollout,
- * and whether another deck tails it too. Model the other deck's capture with a
- * rule stricter than the one it actually runs and the election covers the wrong
- * set — a deck that writes without being elected, or an elected deck that never
- * saw the file. Being wrong in the over-matching direction on Linux costs a deck
- * a sibling tree it was not scoped to; being wrong in either direction here
- * costs a duplicated log line or a lost one.
+ * This answers two questions with one function — whether THIS deck tails a
+ * rollout, and whether another deck tails it too — and that is only sound while
+ * the rule below is the rule every deck actually runs. Model another deck's
+ * capture with anything else and the election covers the wrong set: a deck that
+ * writes without being elected, or an elected deck that never opened the file.
+ *
+ * It is also the rule hook/hook.js runs for the sessions it delivers, under the
+ * name capturesSession — that script is copied out of the package and run
+ * standalone, so the two are written twice and pinned equal by a test walking
+ * one table of paths through both. They were not equal: case was folded here on
+ * every platform, so on Linux a deck scoped to /srv/proj captured Codex sessions
+ * from /srv/Proj and Claude sessions from neither. Those are two real
+ * directories there, and the hook's own comment says what folding them together
+ * costs — a deck handed the events of a tree it was not scoped to. So the fold
+ * is per-platform on both sides now, and `--workspace` means one thing.
+ *
+ * (The narrow window that opens: two decks on Linux whose workspaces differ only
+ * in case, one of them old enough to still fold, both containing one rollout's
+ * cwd. Each models the other as tailing the file; one of them is wrong, and the
+ * cost is a single log line written twice.)
  *
  * The platform is a parameter, following the hook's cwdInWorkspace and
  * spawnSpec in src/server/exec.mjs, so the Windows separator is testable from a
@@ -93,8 +105,9 @@ export function codexCwdInWorkspace(cwd, workspace, platform = process.platform)
   if (!workspace || typeof workspace !== "string") return true;
   if (!cwd || typeof cwd !== "string") return false;
   const p = platform === "win32" ? win32 : posix;
-  const a = p.resolve(cwd).toLowerCase();
-  const b = p.resolve(workspace).toLowerCase();
+  const fold = s => (foldsCase(platform) ? s.toLowerCase() : s);
+  const a = fold(p.resolve(cwd));
+  const b = fold(p.resolve(workspace));
   if (a === b) return true;
   // A root ("C:\", "/") already ends in the separator; appending a second one
   // would match nothing.
@@ -106,13 +119,15 @@ export function codexCwdInWorkspace(cwd, workspace, platform = process.platform)
  * it? `decks` is every deck registered right now, `pid` identifies this one
  * among them, and `cwd` is the workspace the rollout is running in.
  *
- * The group is every deck that tails this same rollout — the hook's targets are
- * narrowed to the longest workspace match, but nothing narrows these: each deck
- * decides for itself, so all of them whose workspace contains the cwd read the
- * file and all of them would write it. A deck started with `--no-codex` tails
- * nothing and is left out; electing it would mean the rollout's events reach no
- * log at all. A deck too old to say either way is assumed to be tailing, which
- * is what it was doing before this field existed.
+ * The group is every deck that tails this same rollout: each deck decides for
+ * itself, so all of them whose workspace contains the cwd read the file and all
+ * of them would write it. The hook builds the same group the same way for the
+ * events it delivers — it used to narrow them to the longest workspace match
+ * first, which is the asymmetry the predicate above describes the end of. A deck
+ * started with `--no-codex` tails nothing and is left out; electing it would
+ * mean the rollout's events reach no log at all. A deck too old to say either
+ * way is assumed to be tailing, which is what it was doing before this field
+ * existed.
  */
 export function writesCodexLog({ decks, pid, cwd, platform = process.platform }) {
   const live = Array.isArray(decks) ? decks : [];

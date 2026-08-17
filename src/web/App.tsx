@@ -45,6 +45,7 @@ import { SESSION_GROUP_TYPE, minimapNodeColor } from "./minimap";
 import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import { versionChipLabel, versionChipTitle } from "./version-chip";
 import { emptyScope } from "./scope";
+import { ASSUMED, readProviders, type Providers } from "./providers";
 import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
 import { promptTime, shortAgo } from "./relative-time";
@@ -879,17 +880,34 @@ function Inner() {
   // the stream reconnects, because that is the far end of a restart and the
   // only point the answer can have changed.
   const [workspace, setWorkspace] = useState<string | null>(null);
+  // Which CLIs this deck watches, from the same request. Claude-only surfaces
+  // are drawn only when Claude Code is here and Codex-only surfaces only when
+  // Codex is — see providers.ts, which also owns what to believe when the
+  // server does not say. Re-asked on reconnect with the scope, because a
+  // restart is exactly when --no-claude or a newly installed CLI takes effect.
+  const [providers, setProviders] = useState<Providers>(ASSUMED);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/health")
       .then(r => r.ok ? r.json() : null)
       .then(d => {
-        if (cancelled || !d || typeof d.workspace !== "string") return;
+        if (cancelled) return;
+        // Read before the workspace guard below, not after: `workspace` is a
+        // separate field with its own reason to be missing, and letting it
+        // decide whether providers are read would hide the panels of anyone
+        // whose deck reports one and not the other.
+        setProviders(readProviders(d));
+        if (!d || typeof d.workspace !== "string") return;
         setWorkspace(d.workspace);
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [live]);
+  // The keydown handler below is bound once and reads its world through refs;
+  // `A` has to see today's answer rather than the one that shipped with the
+  // first render, when nothing had come back from /api/health yet.
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
   // Keyed to the version it is about, so dismissing today's notice does not
   // silence next month's release.
   const noticeKey = notice ? `${notice.kind}:${notice.to}` : "";
@@ -2073,7 +2091,10 @@ function Inner() {
       if (e.key === "l" || e.key === "L") toggleSessionList();
       if (e.key === "h" || e.key === "H") setUsageHistoryOpen(o => !o);
       if (e.key === "u" || e.key === "U") setUsagePanelOpen(o => !o);
-      if (e.key === "a" || e.key === "A") toggleAccountsPanel();
+      // Nothing to disclose on a deck with no Claude Code: the button is not
+      // rendered and the panel is not mounted, so an unguarded `A` would only
+      // toggle a persisted flag nobody can see the effect of.
+      if (e.key === "a" || e.key === "A") { if (providersRef.current.claude) toggleAccountsPanel(); }
       if (e.key === "j" || e.key === "J") stepAgent(1);
       if (e.key === "k" || e.key === "K") stepAgent(-1);
       if (e.key === "t" || e.key === "T") setTheme(t => (t === "dark" ? "light" : "dark"));
@@ -2500,7 +2521,12 @@ function Inner() {
             </button>
           )}
           {/* Same disclosure as the usage panel — a sidebar that opens beside
-              the canvas and takes no focus with it. */}
+              the canvas and takes no focus with it.
+              Gone entirely without Claude Code, rather than present and inert.
+              A disabled control is a promise that something could be enabled;
+              there is no account to switch to on a machine whose only CLI is
+              Codex, which has exactly one logged-in account and no store. */}
+          {providers.claude && (
           <button
             className="btn icon-btn"
             onClick={toggleAccountsPanel}
@@ -2514,6 +2540,7 @@ function Inner() {
               <path d="M2.4 12c0-2.3 2.1-3.7 4.6-3.7s4.6 1.4 4.6 3.7" />
             </svg>
           </button>
+          )}
           {/* And the third, sharing the left slot with accounts. */}
           <button
             className="btn icon-btn"
@@ -2719,11 +2746,18 @@ function Inner() {
         <UsagePanel
           state={stateRef.current}
           now={now}
+          providers={providers}
           onClose={() => setUsagePanelOpen(false)}
         />
       )}
 
-      {accountsPanelOpen && (
+      {/* Claude-only, and now conditional on Claude Code actually being here.
+          Every account in it is a Claude account, the store behind it is
+          claude-swap's, and both of its empty states end at `claude auth login`
+          — which on a Codex-only machine dead-ends at "the claude CLI could not
+          be run: not on PATH". The panel is also open by default, so that was
+          the first thing such a user saw. */}
+      {accountsPanelOpen && providers.claude && (
         <AccountsPanel onClose={() => setAccountsPanelOpen(false)} />
       )}
 

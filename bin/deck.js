@@ -75,14 +75,15 @@ if (flags.uninstall) {
 
 const port = Number(flags.port ?? process.env.AGENT_DAG_PORT ?? 4317);
 // Default = machine-wide (capture every CC session on this box). Pass
-// `--workspace <path>` (or `--scope`) to restrict to a single tree.
-const workspace = flags.workspace != null
+// `--workspace <path>` (or `--scope`) to restrict to a single tree. Canonicalized
+// just below, once the module that owns that rule is loaded.
+const rawWorkspace = flags.workspace != null
   ? flags.workspace
   : (flags.scope ? process.cwd() : "");
 const openBrowser = flags.noOpen !== true;
 // The events log lives beside the discovery files, so it follows the Claude
 // config dir rather than assuming ~/.claude — see src/server/claude-dir.mjs.
-const { claudeConfigDir } =
+const { claudeConfigDir, hasClaudeInstalled } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/claude-dir.mjs")).href);
 // Resolved here rather than left as typed: the discovery file publishes this
 // path so the hook can tell which decks share one log and elect a single
@@ -99,8 +100,17 @@ const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
 // the watcher tails, and the watcher lives in that module. Recomputing the path
 // here is how the banner came to print ~/.codex/sessions on machines whose
 // sessions are somewhere else entirely — see the row further down.
-const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR } =
+const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR, canonicalWorkspace } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
+
+// Resolved here rather than left as typed, for the reason the events log above
+// is: the discovery file publishes this path, and the hook that reads it runs in
+// a process whose cwd is the agent's — so a relative `--workspace ./sub` meant
+// one directory to the Codex watcher inside this process and a different one per
+// agent to the hook. One canonical spelling, computed in the one process that
+// knows what the user meant, is what both capture paths compare against. See
+// canonicalWorkspace.
+const workspace = canonicalWorkspace(rawWorkspace);
 
 // Whether the server starts the Codex rollout watcher. Nothing is installed
 // and no directory is created either way — Codex hooks are not used any more,
@@ -109,6 +119,25 @@ const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR } =
 const wantCodex = flags.noCodex
   ? false
   : (flags.codex === true || hasCodexInstalled());
+
+// The same question for the other CLI, and the one nobody was asking. README
+// offers "Claude Code CLI or OpenAI Codex CLI (or both)"; a Codex-only machine
+// nonetheless got a Python account-switcher installed for a CLI it does not
+// have, an accounts panel open on first run, and a banner line telling it to
+// sign into that CLI (#402). Everything the deck installs or opens on the
+// Claude side now hangs off this one answer, and it is stated in the banner so
+// a wrong answer is visible rather than mysterious.
+//
+// `--claude` is the escape hatch for a false negative, which is the failure
+// that matters: hasClaudeInstalled looks for the binary and for traces of use,
+// and a machine that hides Claude Code from both would otherwise lose its hooks
+// with no way to ask for them back. `--no-claude` is the opt-out the Claude side
+// never had — the mirror of --no-codex — and it is also what a Codex-only user
+// with a settings.json the installer refuses to rewrite needs, since that
+// refusal is fatal at boot on a component they do not use.
+const wantClaude = flags.noClaude
+  ? false
+  : (flags.claude === true || hasClaudeInstalled());
 
 const WEB_DIST = join(PKG_ROOT, "dist", "web", "index.html");
 if (!existsSync(WEB_DIST)) {
@@ -229,16 +258,28 @@ async function step(label, work) {
  * rejection.
  */
 function startupWork() {
+  // Every job below this line serves Claude Code and only Claude Code: the
+  // hooks go in Claude Code's settings.json, claude-swap switches Claude
+  // accounts, and ccusage reads Claude Code's own session logs. On a machine
+  // without Claude Code all three are work done for a CLI that is not there —
+  // two of them installs the user did not ask for — so they are not started at
+  // all rather than started and then reported as failures. `null` is how each
+  // one says "not attempted", which reportStartup tells apart from "tried and
+  // could not".
+
   // Settings the installer cannot parse are settings it cannot rewrite without
   // losing them, so it refuses — and that refusal is reported rather than
   // thrown, because it is the only thing the user can act on.
-  const hooks = installHooks({ provider: "claude" }).then(v => ({ ok: true, v }), err => ({ ok: false, err }));
+  const hooks = wantClaude
+    ? installHooks({ provider: "claude" }).then(v => ({ ok: true, v }), err => ({ ok: false, err }))
+    : Promise.resolve(null);
 
   // claude-swap backs the multi-account panel, and an empty store leaves that
   // panel useless even when the tool is there — so the account already signed
   // in is registered once. Bounded inside seedFirstAccount: empty store only,
   // once ever, never with NO_INSTALL set.
   const cswap = (async () => {
+    if (!wantClaude) return null;
     const { ensureCswap } = await import(pathToFileURL(join(PKG_ROOT, "src/server/cswap-install.mjs")).href);
     const cs = await ensureCswap();
     const usable = cs.state === "present" || cs.state === "installed" || cs.state === "upgrading";
@@ -249,7 +290,10 @@ function startupWork() {
 
   // ccusage backs the usage-history modal. Primed at boot rather than on first
   // open so a cold machine pays the install while the deck is still starting.
+  // Nothing is lost by skipping the prime: runCcusage falls back to npx, so the
+  // modal still answers if it is ever opened — it just pays the wait itself.
   const ccusage = (async () => {
+    if (!wantClaude) return null;
     if (process.env.AGENTS_DECK_NO_INSTALL === "1") return null;
     const { primeCcusage } = await import(pathToFileURL(join(PKG_ROOT, "src/server/ccusage.mjs")).href);
     return primeCcusage();
@@ -280,14 +324,22 @@ async function reportStartup(jobs) {
   }));
 
   const hooks = await step(`installing Claude hooks${G.ellipsis}`, jobs.hooks);
-  if (!hooks.ok) {
+  if (hooks === null) {
+    // Said in the same shape as the Codex row below, because it is the same
+    // sentence: this deck is not watching that CLI, and here is why. It also
+    // retires the one boot failure a Codex-only machine could hit — an
+    // unparseable or unwritable settings.json used to exit(1) below, killing a
+    // deck over a file belonging to a CLI the user does not run.
+    write(row({ label: "Claude hooks", detail: `skipped ${G.dash} no Claude Code found, or --no-claude` }));
+  } else if (!hooks.ok) {
     // The file it names is one only the user can repair, and every Claude Code
     // session on this machine is reading it too.
     write(row({ mark: G.fail, tone: P.err, label: "Claude hooks", detail: "not installed" }));
     console.error(`\n  ${PRODUCT}: ${hooks.err.message}\n`);
     process.exit(1);
+  } else {
+    write(row({ mark: G.ok, label: "Claude hooks", detail: fileLink(hooks.v.hookPath) }));
   }
-  write(row({ mark: G.ok, label: "Claude hooks", detail: fileLink(hooks.v.hookPath) }));
 
   // Codex CLI hooks never fire on Windows (sandbox refuses to spawn the hook
   // command). Instead the server tails Codex's rollout JSONL files directly, so
@@ -306,7 +358,13 @@ async function reportStartup(jobs) {
 
   const swap = await step(`checking claude-swap${G.ellipsis}`, jobs.cswap);
   const cs = swap?.cs;
-  if (cs?.state === "present") {
+  if (!wantClaude) {
+    // claude-swap is a Python tool that switches Claude Code accounts, and the
+    // deck used to fetch a uv binary to install it on machines with no Claude
+    // Code at all. Saying so is the point of the row: it is the one place a
+    // user can learn that the accounts panel is missing on purpose.
+    write(row({ label: "claude-swap", detail: `skipped ${G.dash} accounts are Claude-only` }));
+  } else if (cs?.state === "present") {
     write(row({ mark: G.ok, label: "claude-swap", detail: `v${cs.version} (accounts panel enabled)` }));
   } else if (cs?.state === "installed") {
     write(row({ mark: G.ok, label: "claude-swap", detail: `installed v${cs.version} via ${cs.via}` }));
@@ -450,7 +508,7 @@ function restartTarget() {
 }
 
 const starting = startServer({
-  port, persist, workspace, codex: wantCodex,
+  port, persist, workspace, codex: wantCodex, claude: wantClaude,
   // Withheld when nothing is supervising us: without a parent, exiting is just
   // exiting, and /api/restart answers 501 so the UI hides the control.
   onRestart: SUPERVISED ? requestRestart : null,
@@ -609,6 +667,8 @@ function parseArgs(args) {
     else if (a === "--history") out.history = args[++i];
     else if (a === "--codex") out.codex = true;
     else if (a === "--no-codex") out.noCodex = true;
+    else if (a === "--claude") out.claude = true;
+    else if (a === "--no-claude") out.noClaude = true;
   }
   return out;
 }
@@ -629,8 +689,12 @@ Options:
       --no-persist         Don't write or replay events log (RAM-only)
       --codex              Force-enable Codex capture even if ~/.codex/ missing
       --no-codex           Skip Codex capture (Claude only)
+      --claude             Force-enable Claude capture even if Claude Code wasn't found
+      --no-claude          Skip Claude entirely: no hooks, no claude-swap, no accounts panel
       --uninstall          Remove ${PRODUCT}'s hooks from ~/.claude/settings.json and
-                           ~/.codex/hooks.json, and restore any sound hooks of yours it parked
+                           ~/.codex/hooks.json, and restore any sound hooks of yours it parked.
+                           Hook entries only: the forwarder script, ~/.claude/agent-dag/,
+                           the events log, ~/.agents-deck/ and claude-swap all stay
   -h, --help               Show this help
 `);
 }
