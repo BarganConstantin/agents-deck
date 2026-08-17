@@ -1,7 +1,7 @@
 import React from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
-import { billedInputTokens, cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel } from "../pricing";
+import { billedInputTokens, cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel, UNPRICED_LABEL } from "../pricing";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
@@ -13,7 +13,15 @@ import { ContextDonut } from "./ContextModal";
  *  row whose operands don't produce its own result is worse than no row. */
 export function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefined): string {
   const rates = ratesForModel(modelId);
-  if (!rates) return "no rates for this model";
+  // This branch was unreachable until #400: the only element carrying this
+  // tooltip was gated on the same ratesForModel call that returns null here, so
+  // the graceful answer existed and could never be read. It names the model now
+  // because that is the one thing the reader needs in order to act on it — the
+  // sentence is otherwise a claim about nothing, and the id is what goes in the
+  // issue asking for the row.
+  if (!rates) {
+    return `model: ${modelId}\nno published rate in this build — the tokens are counted, the dollars are not`;
+  }
   const fmtN = (n: number) => n.toLocaleString();
   const fmtR = (r: number) => `$${r}/MTok`;
   const c = costForUsage(usage, modelId);
@@ -128,7 +136,25 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
             <b>{fmtTok(data.usage.inputTokens + data.usage.outputTokens)}</b> tok
           </span>
         )}
-        {data.model && ratesForModel(data.model) && (() => {
+        {data.model && (() => {
+          // An unpriced model says so, in the slot the money would have used.
+          // The gate here used to be `ratesForModel(data.model) &&`, which took
+          // the whole element away the moment the lookup failed: a gpt-5.1-codex
+          // card showed `412.3k tok` and then nothing, indistinguishable from a
+          // session that had spent nothing, and the tooltip written for exactly
+          // this case sat behind the failing call. The marker only appears once
+          // there are tokens to price — a card with no usage yet has nothing to
+          // be unpriced about, and would otherwise carry this the whole time it
+          // was starting up.
+          const rates = ratesForModel(data.model);
+          if (!rates) {
+            if ((data.usage.inputTokens + data.usage.outputTokens) <= 0) return null;
+            return (
+              <span className="cost-unpriced" title={costBreakdownTooltip(data.usage, data.model)}>
+                {UNPRICED_LABEL}
+              </span>
+            );
+          }
           const c = costForUsage(data.usage, data.model);
           if (c.total <= 0) return null;
           const elapsedSec = Math.max(0, ((data.endedAt ?? now) - data.startedAt) / 1000);

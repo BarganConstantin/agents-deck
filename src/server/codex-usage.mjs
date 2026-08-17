@@ -54,10 +54,16 @@ function foldTokenLine(series, raw) {
   const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
   series.push({
     ts:     isNaN(ts) ? null : ts,
-    inp:    u.input_tokens         ?? 0,
-    out:    u.output_tokens        ?? 0,
-    cacheR: u.cached_input_tokens  ?? 0,
-    total:  u.total_tokens         ?? ((u.input_tokens ?? 0) + (u.output_tokens ?? 0)),
+    inp:    u.input_tokens             ?? 0,
+    out:    u.output_tokens            ?? 0,
+    cacheR: u.cached_input_tokens      ?? 0,
+    // Read even though every value observed so far is zero: emptyWindow() has
+    // declared a cacheCreateTokens field since this file was written and nothing
+    // ever incremented it, so the window shape promised a number it could not
+    // produce. OpenAI populating the field is the only thing that has to change
+    // for the count to become real, and it should not also need a code change.
+    cacheW: u.cache_write_input_tokens ?? 0,
+    total:  u.total_tokens             ?? ((u.input_tokens ?? 0) + (u.output_tokens ?? 0)),
   });
 }
 
@@ -111,10 +117,12 @@ async function readTokenSeries(filePath) {
 // Tokens spent within [windowStartMs, now]: the last cumulative snapshot minus
 // the last snapshot taken *before* the window opened. If the session began
 // inside the window (no prior snapshot), the baseline is zero and the full
-// cumulative end counts. Fields are returned non-overlapping so they sum to
+// cumulative end counts. Three of the fields are non-overlapping and sum to
 // `total`: `input` is fresh (non-cached) input, `cacheRead` is the cached
 // portion, `output` is output. (Codex's input_tokens includes cache, so we
-// subtract it out to avoid double-counting.)
+// subtract it out to avoid double-counting.) `cacheCreate` is the exception and
+// is documented as one where it is returned below — it is a slice of `input`
+// rather than a fourth disjoint bucket.
 function windowDelta(series, windowStartMs) {
   if (!series || series.length === 0) return null;
   const end = series[series.length - 1];
@@ -127,11 +135,21 @@ function windowDelta(series, windowStartMs) {
   const dInp    = Math.max(0, end.inp    - (base?.inp    ?? 0));
   const dOut    = Math.max(0, end.out    - (base?.out    ?? 0));
   const dCacheR = Math.max(0, end.cacheR - (base?.cacheR ?? 0));
+  const dCacheW = Math.max(0, end.cacheW - (base?.cacheW ?? 0));
   const dTotal  = Math.max(0, end.total  - (base?.total  ?? 0));
   return {
     inputTokens:     Math.max(0, dInp - dCacheR), // fresh (non-cached) input
     outputTokens:    dOut,
     cacheReadTokens: dCacheR,
+    // Reported alongside the three above rather than carved out of `input`, and
+    // deliberately not part of the sum that reaches `total`. Codex's own
+    // arithmetic — total_tokens === input_tokens + output_tokens, in 171 of 171
+    // usage objects measured — puts the written tokens inside `input_tokens`,
+    // so subtracting them here would silently shrink the token line this
+    // window's only reader prints. Pricing is where the split has to happen and
+    // where it does happen (see billedInputTokens); this is a count, and the
+    // count is right as it stands.
+    cacheCreateTokens: dCacheW,
     totalTokens:     dTotal,
   };
 }
@@ -197,10 +215,11 @@ export async function fetchCodexUsage({ force = false } = {}) {
 
   const addTo = (win, d) => {
     if (!d || d.totalTokens <= 0) return;
-    win.inputTokens      += d.inputTokens;
-    win.outputTokens     += d.outputTokens;
-    win.cacheReadTokens  += d.cacheReadTokens;
-    win.totalTokens      += d.totalTokens;
+    win.inputTokens       += d.inputTokens;
+    win.outputTokens      += d.outputTokens;
+    win.cacheReadTokens   += d.cacheReadTokens;
+    win.cacheCreateTokens += d.cacheCreateTokens;
+    win.totalTokens       += d.totalTokens;
     win.sessionCount++;
   };
 

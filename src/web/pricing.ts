@@ -150,6 +150,64 @@ const RATES: Array<{ match: RegExp; rates: ModelRates | ((now: number) => ModelR
   { match: /^gpt[-_]5[-_.]2\b/i,
     rates: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
 
+  // The 5.1 and 5 generations. Rates verified 2026-08-17 against
+  // developers.openai.com/api/docs/pricing and the per-model pages under
+  // developers.openai.com/api/docs/models/*.
+  //
+  // The table used to stop at 5.2, which was not a decision about old models —
+  // it is what a Codex user can be running today. `model = "gpt-5.1-codex-max"`
+  // in ~/.codex/config.toml pins a live session to one of these ids, and every
+  // rollout written before 5.2 shipped carries one, so the whole 5.1/5 estate
+  // priced out at exactly nothing. Note what that does NOT look like: the cost
+  // does not read $0.00, it disappears — every surface hides its cost element
+  // when the total is zero, so the tokens are counted and no money is shown
+  // beside them and nothing says why.
+
+  // gpt-5.1-codex-mini — $0.25 / $2  (cached $0.025)  ← before the 5.1 rows
+  { match: /^gpt[-_]5[-_.]1[-_]codex[-_]mini/i,
+    rates: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 } },
+
+  // gpt-5.1 and its codex / codex-max / chat-latest variants — $1.25 / $10
+  // (cached $0.125). OpenAI prices the codex-tuned 5.1 models identically to
+  // the base one, so a single row is the whole generation minus the mini tier.
+  //
+  // `(?!\d)` rather than the `\b` the rows above use, and the difference is not
+  // cosmetic: `\b` is a boundary between a word character and a non-word one,
+  // and `_` is a word character — so `gpt_5_1_codex`, a spelling every `[-_]`
+  // in this table exists to accept, fails `\b` after the version digit and
+  // reaches no row at all. The lookahead says what the boundary was for, which
+  // is that `gpt-5.10` must not be read as `gpt-5.1`.
+  { match: /^gpt[-_]5[-_.]1(?!\d)/i,
+    rates: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } },
+
+  // gpt-5-pro — $15 / $120  (no cached rate published)
+  { match: /^gpt[-_]5[-_]pro\b/i,
+    rates: { input: 15, output: 120, cacheRead: 15, cacheWrite: 0 } },
+
+  // gpt-5-mini — $0.25 / $2  (cached $0.025)  ← before bare gpt-5
+  { match: /^gpt[-_]5[-_]mini/i,
+    rates: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 } },
+
+  // gpt-5-nano — $0.05 / $0.40  (cached $0.005)  ← before bare gpt-5
+  { match: /^gpt[-_]5[-_]nano/i,
+    rates: { input: 0.05, output: 0.40, cacheRead: 0.005, cacheWrite: 0 } },
+
+  // gpt-5 / gpt-5-codex — $1.25 / $10  (cached $0.125).
+  //
+  // The lookahead is what keeps this row from becoming the catch-all that
+  // CODEX_CONTEXT_DEFAULTS ends with (`{ match: /^gpt[-_]5/i, window: 400_000 }`
+  // — see below), and the asymmetry between the two tables is deliberate rather
+  // than an oversight. A context window is a coarse capability that moves in
+  // powers of ten and only sizes a donut, so guessing 400K for an unrecognised
+  // gpt-5* is a good guess and a cheap wrong one. A PRICE is the number a user
+  // checks their bill against: if OpenAI ships a gpt-5.7 at $4/$20 and this row
+  // swallowed it, every surface in the deck would print a confident figure a
+  // third of the real spend, with nothing on screen to suggest it was invented.
+  // `not priced` beside the token count is the honest answer to a model this
+  // build has never heard of, and refusing the guess is what makes it reachable.
+  { match: /^gpt[-_]5(?![-_.]\d)/i,
+    rates: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } },
+
   // codex-mini-latest — retired 2026-02-12. Kept so historical sessions still
   // cost out; new sessions can no longer produce it.
   { match: /^codex[-_]mini/i,
@@ -256,15 +314,36 @@ export function cacheWriteBreakdown(usage: TokenUsage, rates: ModelRates): Cache
  *  charged again, cheaper, on the cache-read line. Claude reports the two
  *  disjoint, so its count stands as-is.
  *
+ *  Cache WRITES are subtracted on the same argument, and only for the families
+ *  that price them. Codex's `total_token_usage` carries two headline counts and
+ *  a set of qualifier fields that are subsets of them: measured over the 171
+ *  usage objects in this machine's rollouts, `total_tokens` equals
+ *  `input_tokens + output_tokens` in every single one, while
+ *  `cached_input_tokens` and `reasoning_output_tokens` are each ≤ their
+ *  headline. `cache_write_input_tokens` is the same shape and the same naming
+ *  convention, so it too is part of `input_tokens` — which means billing it at
+ *  the cache-write rate WITHOUT taking it off the input line would charge those
+ *  tokens twice, at input + cache-write together. Subtracting it only when a
+ *  non-zero cache-write rate exists is what keeps every token billed exactly
+ *  once in both directions: gpt-5.6 charges its written tokens at $6.25/Mtok
+ *  instead of $5, and every other Codex family — where a zero rate means
+ *  "writes cost nothing extra", not "writes are free of the input charge" —
+ *  leaves them on the input line where they were always billed correctly.
+ *
  *  Exported so the cost tooltip prints THIS number beside the input dollars.
  *  It used to print `usage.inputTokens`, which on a cache-heavy Codex session
  *  is close to an order of magnitude larger — the one place a user goes to
  *  check the pricing showed a multiplication that missed its own printed
  *  result, reading exactly like the deck overcharging by 10x. */
-export function billedInputTokens(usage: TokenUsage, modelId: string | undefined): number {
-  return isCodexModel(modelId)
-    ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
-    : usage.inputTokens;
+export function billedInputTokens(
+  usage: TokenUsage,
+  modelId: string | undefined,
+  now: number = Date.now(),
+): number {
+  if (!isCodexModel(modelId)) return usage.inputTokens;
+  const rates = ratesForModel(modelId, now);
+  const written = (rates?.cacheWrite ?? 0) > 0 ? Math.max(0, usage.cacheCreateTokens) : 0;
+  return Math.max(0, usage.inputTokens - usage.cacheReadTokens - written);
 }
 
 export function costForUsage(
@@ -275,7 +354,7 @@ export function costForUsage(
   const rates = ratesForModel(modelId, now);
   if (!rates) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 
-  const input      = billedInputTokens(usage, modelId) * rates.input / 1_000_000;
+  const input      = billedInputTokens(usage, modelId, now) * rates.input / 1_000_000;
   const output     = usage.outputTokens      * rates.output     / 1_000_000;
   const cacheRead  = usage.cacheReadTokens   * rates.cacheRead  / 1_000_000;
   const cw = cacheWriteBreakdown(usage, rates);
@@ -339,6 +418,24 @@ export function effectiveContextWindow(
   if (typeof live === "number" && live > 0) return live;
   return contextWindowForModel(modelId);
 }
+
+/** What a surface prints in the slot a dollar figure would occupy when the deck
+ *  holds no rate for the model.
+ *
+ *  It is not `fmtCost(0)`. That returns "—", which is this file's word for a
+ *  number it knows to be zero, and the two facts are worth different things to
+ *  a reader: "this session cost nothing" is an answer, and "we cannot price
+ *  this model" is an admission. Printing "$0.00" for real spend would be worse
+ *  than either — a figure that is wrong rather than absent — and printing
+ *  nothing at all is what shipped before #400: the element carrying the cost
+ *  was gated on the rates lookup that had just failed, so a session on an
+ *  unpriced model showed its tokens with a hole where the money goes.
+ *
+ *  One constant rather than three string literals, for the reason stateLabel
+ *  in AgentNode is one function: the node chip, the by-model table and the
+ *  by-session list are three views of the same fact, and a reader who sees two
+ *  of them has to be able to tell that they say the same thing. */
+export const UNPRICED_LABEL = "not priced";
 
 export function fmtCost(usd: number): string {
   if (usd <= 0) return "—";
