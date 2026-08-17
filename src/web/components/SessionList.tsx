@@ -3,6 +3,7 @@
 // + model chip + cost + tool count gives a fast scan of what's running.
 // Toggle visibility via the L key or the topbar button (see App.tsx).
 import React, { useMemo } from "react";
+import { isAlarming } from "../ambient-counts";
 import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { WaitingBlock } from "../types";
@@ -28,7 +29,7 @@ interface Row {
  *  Waiting is not the row's `state`: an idle_prompt sits on a session that is
  *  legitimately done and still reads `done` two columns to the left. */
 function rank(r: Row): number {
-  if (r.waiting) return r.waiting.kind === "permission" ? 0 : 1;
+  if (r.waiting) return isAlarming(r.waiting) ? 0 : 1;
   return r.state === "active" ? 2 : 3;
 }
 
@@ -97,10 +98,12 @@ interface Props {
 export default function SessionList({ state, now, selectedIds, onSelect, onClose }: Props) {
   const rows = useMemo(() => buildRows(state, now), [state, state.lastSeq, now]);
   const liveCount = rows.filter(r => r.state === "active").length;
-  // Permission only, like the topbar chip and the tab strip. An idle prompt is
-  // a turn that ended, not a session that is stuck: it keeps its row and its
-  // place at the top of the sort, but it is not what this number is counting.
-  const waitingCount = rows.filter(r => r.waiting?.kind === "permission").length;
+  // Permission only, like the topbar chip and the tab strip — and through the
+  // same predicate they use, rather than a fourth hand-written copy of it. An
+  // idle prompt is a turn that ended, not a session that is stuck: it keeps its
+  // row and its place at the top of the sort (see rank() above, which asks the
+  // same question), but it is not what this number is counting.
+  const waitingCount = rows.filter(r => isAlarming(r.waiting)).length;
 
   return (
     // Named for the topbar toggle's aria-controls — see UsagePanel.

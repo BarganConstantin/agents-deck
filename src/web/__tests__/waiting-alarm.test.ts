@@ -13,14 +13,24 @@
 // line, its place above running in the sort, and CC's verbatim sentence in the
 // tooltip. Only the alarm goes.
 //
-// No DOM — plain node, vitest — so the two counters are re-derived here from the
-// same shapes App.tsx and SessionList.tsx build them from, and the label rule is
-// imported and called directly.
+// No DOM — plain node, vitest — so this drives the shapes App.tsx and
+// SessionList.tsx build their rows from, and calls the shipped rules on them
+// directly.
+//
+// #377: the alarm predicate was re-derived here rather than imported, because
+// until then it existed only inline inside a React component that bare node
+// cannot render. That is also why ambient-signal.test.ts kept its own copy, and
+// why that copy silently went stale. The rule now lives in ambient-counts.ts,
+// so both suites call the same function the app calls and neither can drift
+// from it; the source-text checks below shrank to the one thing text is
+// actually good for, which is proving the call sites did not quietly grow a
+// second definition beside it.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { waitingLabel, waitingSentence } from "../components/AgentNode";
 import { ambientSignal } from "../ambient";
+import { isAlarming } from "../ambient-counts";
 import type { AgentNodeData, WaitingBlock } from "../types";
 
 const src = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
@@ -36,9 +46,10 @@ const root = (id: string, waiting: WaitingBlock | null): Partial<AgentNodeData> 
   ({ id, sessionId: id, kind: "root", label: id, state: "active", waiting });
 
 describe("what raises an alarm", () => {
-  // The rule both call sites share, stated once here so the two tests below
-  // cannot drift from each other the way the call sites did.
-  const alarming = (w: WaitingBlock | null | undefined) => w?.kind === "permission";
+  // The rule both call sites share — imported, not restated. A restatement is
+  // what #377 was: a second copy of this expression that #348 never reached,
+  // asserting the superseded counting as correct for thirty releases.
+  const alarming = isAlarming;
 
   it("counts a permission block and not an idle one", () => {
     const agents = [
@@ -98,18 +109,32 @@ describe("the two call sites", () => {
   // Counting `waiting` truthiness is the bug. If either file goes back to it,
   // the alarm goes back to being three quarters noise — and nothing else in the
   // suite would notice, because both surfaces still work, they just lie.
-  it("filter on the kind rather than on the block existing", () => {
+  //
+  // The behaviour is pinned above, against the imported rule; what is left for
+  // text to check is that the call sites still ASK that rule. A file that stops
+  // importing ambient-counts.ts and answers the question itself passes every
+  // behavioural case in this repo while shipping whatever it likes, which is
+  // the shape #377 turned out to have.
+  it("ask the shared rule rather than deciding for themselves", () => {
+    // The CALL, not the import: an import can sit unused above a file that has
+    // grown the loop back inline, which is exactly what a careless revert of
+    // this refactor looks like.
     const app = src("../App.tsx");
-    expect(app, "App.tsx counts any block again").toMatch(/kind === "root" && a\.waiting\?\.kind === "permission"/);
+    expect(app, "App.tsx no longer counts blocked sessions through ambient-counts.ts")
+      .toMatch(/blockedSessions\(stateRef\.current\.agents\.values\(\)\)/);
+    expect(app, "App.tsx grew its own copy of the alarm rule again")
+      .not.toMatch(/for \(const a of stateRef\.current\.agents\.values\(\)\) \{\s*\n\s*if \(a\.kind === "root"/);
 
     const list = src("../components/SessionList.tsx");
-    expect(list, "SessionList counts any block again").toMatch(/r\.waiting\?\.kind === "permission"/);
-    expect(list).not.toMatch(/rows\.filter\(r => r\.waiting\)/);
+    expect(list, "SessionList counts any block again")
+      .toMatch(/rows\.filter\(r => isAlarming\(r\.waiting\)\)/);
   });
 
   it("keeps idle sorted above running, which is not an alarm but is still news", () => {
     // rank(): permission 0, idle 1, active 2, rest 3. Dropping idle out of the
-    // count must not drop it out of the ordering.
-    expect(src("../components/SessionList.tsx")).toMatch(/r\.waiting\.kind === "permission" \? 0 : 1/);
+    // count must not drop it out of the ordering — the sidebar is the surface
+    // idle keeps, so the two questions have to stay separable. Asserted as text
+    // because rank() is module-private to a component this suite cannot render.
+    expect(src("../components/SessionList.tsx")).toMatch(/isAlarming\(r\.waiting\) \? 0 : 1/);
   });
 });
