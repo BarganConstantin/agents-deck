@@ -176,6 +176,89 @@ export function npxRestartSpec(pkgRoot, name = "agents-deck") {
   return npxSpecFromMeta(meta, name);
 }
 
+// ── the package that installed us ────────────────────────────────────────────
+//
+// Two of the three names on npm are this tarball republished; the third is not
+// this tarball at all. `ccdeck` is a stub that ships nothing but bin/ and
+// depends on `agents-deck`, so `npm i -g ccdeck` produces a layout no other
+// install does: npm stopped hoisting a global package's dependencies in v7, so
+// the deck lands at `<prefix>/lib/node_modules/ccdeck/node_modules/agents-deck`
+// and the process runs out of a directory owned by a package it is not named
+// after.
+//
+// #351 taught the stub to FIND the deck there. Nothing downstream learned about
+// it, so every self-update surface went on naming `agents-deck` — which in that
+// layout resolves to `<prefix>/lib/node_modules/agents-deck`, a directory this
+// process never reads and a `npm i -g ccdeck` user usually does not have at
+// all. "Update now" therefore installed a second, unrelated tree: the running
+// install never moved, so installedVersion stayed put, the restart notice never
+// came, and the banner offered the identical update forever while the upgrade
+// reported "done".
+//
+// So the name to install is not the name this build was PUBLISHED under, it is
+// the name the install was REACHED under — and under the stub layout that is
+// written on disk one directory up. Read from there rather than from argv[1]
+// (invoked-as.mjs answers the neighbouring question of which command the user
+// TYPED, and cannot answer this one): the stub spawns the deck by absolute
+// path, so argv[1] reads `agent-dag.js` under all three names, and on Windows
+// npm's .cmd/.ps1 shims never pass the typed name on at all. The directory npm
+// built is the one carrier that survives every platform.
+
+/** Every name this deck is published under.
+ *
+ *  `agents-deck` and `agent-dag` are one tarball published twice — see
+ *  .github/workflows/publish.yml, which renames it between the two — and
+ *  `ccdeck` is the stub that depends on it. The same three strings as
+ *  invoked-as.mjs's COMMANDS, and deliberately not that list: this is the set
+ *  of npm PACKAGES a `npm i -g` may name, that is the set of bin commands a
+ *  user may type. They are equal only because the rename made them so, and a
+ *  test pins them against each other rather than either side assuming it. */
+export const ALIAS_PACKAGES = ["agents-deck", "agent-dag", "ccdeck"];
+
+/** The directory of the package this one is installed INSIDE, or null when it
+ *  is not inside one. Pure — path arithmetic only, so a Windows layout can be
+ *  tested on a POSIX box and both separators are split on, exactly as npxRoot
+ *  does it and for the same reason. */
+export function hostRoot(pkgRoot) {
+  if (typeof pkgRoot !== "string") return null;
+  const parts = pkgRoot.split(/[\\/]/);
+  // `<host>/node_modules/<us>` and nothing else: the segment directly above us
+  // has to be the node_modules npm nested us into, and the one above that is
+  // the host. A scoped package would sit one level deeper, under `@scope`, and
+  // is refused here rather than guessed at — none of the three names is scoped.
+  if (parts.length < 3 || parts[parts.length - 2] !== "node_modules") return null;
+  // Keep the separator the input used: a Windows path must come back as one.
+  const sep = pkgRoot.includes("\\") && !pkgRoot.includes("/") ? "\\" : "/";
+  return parts.slice(0, -2).join(sep) || null;
+}
+
+/** The host package's name, out of its own manifest — but only when it is one
+ *  of this deck's aliases AND it declares a dependency on us.
+ *
+ *  The alias half is the load-bearing one. Any project that lists `agents-deck`
+ *  in its dependencies and runs it out of its own node_modules — a workspace, a
+ *  CI job, a tool that embeds the deck — is in exactly the same shape on disk
+ *  as the stub, and answering with THAT name would have the deck offering to
+ *  `npm i -g their-app@latest`: a package it has no business installing, and on
+ *  a private name one that does not exist. Confining the answer to the three
+ *  published names leaves every such install with the fallback it has today. */
+export function hostNameFromMeta(meta, name = "agents-deck") {
+  const host = typeof meta?.name === "string" ? meta.name : null;
+  if (!host || !ALIAS_PACKAGES.includes(host)) return null;
+  return typeof meta?.dependencies?.[name] === "string" ? host : null;
+}
+
+/** The same, answered against the filesystem: `{ root, name }` for the alias
+ *  package this copy was installed as a dependency of, or null. */
+export function hostPackage(pkgRoot, name = "agents-deck") {
+  const root = hostRoot(pkgRoot);
+  if (!root) return null;
+  let meta = null;
+  try { meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")); } catch { return null; }
+  const host = hostNameFromMeta(meta, name);
+  return host ? { root, name: host } : null;
+}
+
 /** The package an upgrade would actually install here — the only package worth
  *  asking npm about.
  *
@@ -188,14 +271,24 @@ export function npxRestartSpec(pkgRoot, name = "agents-deck") {
  *  install — the ETARGET below, with a window measured in publishes rather than
  *  in seconds of propagation.
  *
- *  Deriving the name from the resolved upgrade spec keeps the two halves
+ *  Deriving the name from what would actually be installed keeps the two halves
  *  consistent by construction: whatever the command will install is what gets
- *  asked about, and the per-name marker follows the same name. A global install
- *  installs `name` and a checkout installs nothing, so both keep asking about
- *  the name this build was published under. */
+ *  asked about, and the per-name marker follows the same name. Each install
+ *  shape carries that answer somewhere different — npx in the spec it recorded,
+ *  a stub install in the layout npm built, a plain global install nowhere,
+ *  because there the published name is already the right one. */
 export function upgradeName(pkgRoot, name = "agents-deck") {
-  if (!isNpxInstall(pkgRoot) || isGitCheckout(pkgRoot)) return name;
-  return bareSpecName(npxRestartSpec(pkgRoot, name)) ?? name;
+  // A checkout installs nothing at all, so the published name is the only
+  // sensible subject for the version question — and the only one whose
+  // dist-tag says anything about the branch the maintainer is sitting on.
+  if (isGitCheckout(pkgRoot)) return name;
+  if (isNpxInstall(pkgRoot)) return bareSpecName(npxRestartSpec(pkgRoot, name)) ?? name;
+  // Left: a global install, where the answer is whichever package owns the
+  // directory npm would rewrite. That is `name` for `npm i -g agents-deck` and
+  // for `npm i -g agent-dag`, and the stub for `npm i -g ccdeck` — the one
+  // shape where the two differ, and the one where naming `name` installed a
+  // tree this process could not see.
+  return hostPackage(pkgRoot, name)?.name ?? name;
 }
 
 /** The exact line the user can paste, for the way THIS copy was installed. */
@@ -204,7 +297,11 @@ export function upgradeCommand(pkgRoot, name = "agents-deck") {
   // so `npm run build` is part of the answer rather than an afterthought.
   if (isGitCheckout(pkgRoot)) return "git pull && npm run build";
   if (isNpxInstall(pkgRoot)) return `npx -y ${upgradeName(pkgRoot, name)}@latest`;
-  return `npm i -g ${name}@latest`;
+  // Through upgradeName for the same reason the npx line above it is: the
+  // printed command is the user's escape hatch when the button fails or is not
+  // offered, and one that names a package this install cannot be replaced by is
+  // worse than none — it looks like it worked.
+  return `npm i -g ${upgradeName(pkgRoot, name)}@latest`;
 }
 
 // ── what npm has ─────────────────────────────────────────────────────────────
@@ -533,12 +630,19 @@ function dirWritable(p) {
 
 /** The same question, answered against the real filesystem and environment. */
 export function upgradeBlock(pkgRoot) {
+  // Whatever `npm i -g` would rewrite is what has to be writable, and under the
+  // stub layout that is not this directory: `npm i -g ccdeck` replaces
+  // <prefix>/lib/node_modules/ccdeck, and the copy running out of its nested
+  // node_modules goes with it. In practice both pairs answer the same, since
+  // one npm install created them with one owner — but the question is about the
+  // tree the command touches, and that tree is the host's.
+  const target = hostPackage(pkgRoot)?.root ?? pkgRoot;
   return upgradeBlockedReason({
     git: isGitCheckout(pkgRoot),
     npx: isNpxInstall(pkgRoot),
     // npm -g rewrites the package directory and its parent (the global
     // node_modules), so both have to be ours to write.
-    writable: dirWritable(pkgRoot) && dirWritable(resolve(pkgRoot, "..")),
+    writable: dirWritable(target) && dirWritable(resolve(target, "..")),
     optedOut: process.env.AGENTS_DECK_NO_INSTALL === "1",
   });
 }
@@ -726,15 +830,22 @@ export function upgradeStatus() {
  * Start `npm i -g <name>@latest` in the background.
  *
  * Returns immediately with the accepted command, or a refusal. Never installs
- * anything except this package, and never at a version the caller chose — the
- * argument vector is fixed here, not assembled from request input.
+ * anything except this deck — under one of its own three published names, and
+ * never at a version the caller chose. The argument vector is fixed here, not
+ * assembled from request input: the only thing that varies is which alias, and
+ * that is read off the install on disk and confined to ALIAS_PACKAGES.
  */
 export function startUpgrade({ pkgRoot, name = "agents-deck" }) {
   if (_upgrade.state === "running") return { ok: true, already: true, command: _upgrade.command };
   const blocked = upgradeBlock(pkgRoot);
   if (blocked) return { ok: false, reason: blocked, command: upgradeCommand(pkgRoot, name) };
 
-  const args = ["install", "-g", `${name}@latest`, "--no-audit", "--no-fund", "--loglevel", "error"];
+  // The package this install can actually be replaced by — the stub for a
+  // `npm i -g ccdeck`, the published name everywhere else. Installing `name`
+  // there wrote a tree this process never reads, so the version on disk never
+  // moved and the same update was offered forever.
+  const target = upgradeName(pkgRoot, name);
+  const args = ["install", "-g", `${target}@latest`, "--no-audit", "--no-fund", "--loglevel", "error"];
   const command = `npm ${args.join(" ")}`;
   _upgrade = { state: "running", command, error: null, at: Date.now() };
 

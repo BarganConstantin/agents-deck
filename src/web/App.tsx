@@ -2430,11 +2430,20 @@ function Inner() {
                   below, which is the command that actually installs. */}
               <strong>{PRODUCT} v{notice.to} is out — you are on v{notice.from}.</strong>
               {/* One button when we can actually install; the command, always,
-                  because the button can fail and the command never does. */}
+                  because the button can fail and the command never does.
+
+                  The tooltip's fallback matters more than it looks:
+                  `upgrade.command` is the vector npm was actually spawned with
+                  and exists only once an install has started, so before the
+                  first click the fallback is the whole of what it says — and a
+                  hardcoded `agents-deck` was wrong for every `npm i -g ccdeck`,
+                  where the install names the stub instead. `version.command` is
+                  the server's own answer to the same question, correct in every
+                  install shape, and the same string the copy button carries. */}
               {version?.upgradeMode === "install" && upgradeState !== "failed" && (
                 <button type="button" className="ver-act" onClick={startUpgrade}
                   disabled={upgradeState === "running" || upgradeState === "done"}
-                  title={`Runs ${version?.upgrade?.command ?? "npm install -g agents-deck@latest"} here, then restarts once nothing is running.`}>
+                  title={`Runs ${version?.upgrade?.command ?? version?.command ?? "npm i -g"} here, then restarts once nothing is running.`}>
                   {upgradeState === "running" ? "installing…"
                     : upgradeState === "done" ? "installed"
                     : "Update now"}

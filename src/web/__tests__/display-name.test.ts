@@ -89,12 +89,15 @@ describe("the product's display name", () => {
   it("has replaced every agents-deck the client could put in front of a user", () => {
     const left = client.flatMap(([path, text]) =>
       codeLines(text).filter(l => l.includes("agents-deck")).map(l => `${path}: ${l.trim()}`));
-    // The one survivor names the npm package, not the product: it is the
-    // fallback for the command the update button runs, and `npm install -g
-    // ccdeck@latest` would install a different package than the one this deck
-    // reports upgrades for.
-    expect(left).toHaveLength(1);
-    expect(left[0]).toContain("npm install -g agents-deck@latest");
+    // There is no survivor left. The last one was the update button's tooltip,
+    // hardcoded to `npm install -g agents-deck@latest` on the reasoning that
+    // the package and the product are different words — which was true, and
+    // was still the wrong string: #358 made the deck install whichever of its
+    // three names the running copy was reached under, so a `npm i -g ccdeck`
+    // user was shown a command that installs a tree their deck never reads.
+    // The tooltip takes the server's answer now, and the client no longer
+    // spells any npm package name at all.
+    expect(left, left.join("\n")).toHaveLength(0);
   });
 });
 

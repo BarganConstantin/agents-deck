@@ -1375,14 +1375,18 @@ async function handleVersion(req, res) {
   //
   // It is deliberately not folded into `name`, which is documented as the
   // package an upgrade would install and is load-bearing for the update flow.
-  // The two answer different questions and diverge everywhere but npx: `name`
-  // for a global install is the published package whichever bin was typed.
+  // The two answer different questions and give different answers: `name` is
+  // read off the install on disk and is always known, while this one is the
+  // command that was typed and is silent wherever it cannot be proven — every
+  // Windows global install, and every `npm i -g ccdeck`, whose stub spawns the
+  // deck by absolute path and leaves nothing in argv to read.
   send(res, 200, { ...report, canRestart: _canRestart, invokedAs: invokedName({ pkgRoot: PKG_ROOT }) });
 }
 
-// Runs `npm i -g agents-deck@latest`, and only that: the argument vector is
-// fixed inside self-update.mjs, so nothing about what gets installed comes from
-// the request. Answers immediately — progress is read back from /api/version.
+// Runs `npm i -g <this deck>@latest`, and only that: the argument vector is
+// fixed inside self-update.mjs — including which of the three published names
+// it installs, which comes from the layout npm built rather than from the
+// request. Answers immediately — progress is read back from /api/version.
 async function handleUpgrade(_req, res) {
   const { startUpgrade } = await import(
     pathToFileURL(join(PKG_ROOT, "src/server/self-update.mjs")).href
