@@ -319,17 +319,39 @@ describe("nothing else in the deck invents a focus stop", () => {
     });
   }
 
-  it("sets tabIndex nowhere, so every focus stop is a real control", () => {
+  it("adds no tab stop of its own, so every focus stop is a real control", () => {
     // The deck's focusables are <button>, <input>, <select> and the wrappers
     // React Flow builds for the canvas — all of which the browser and the
     // library put in the tab order themselves, in the right place, announced.
     // The one hand-rolled tabIndex in the app was the burst bubble, inside
     // aria-hidden. If a later feature needs a roving tabindex on the canvas
     // this line is the thing to revisit deliberately, which is the point of it.
+    //
+    // Revisited once, by #381, and narrowed rather than widened: what this
+    // guard is about is INVENTED TAB STOPS, and a negative tabIndex invents
+    // none — it is the opposite, an element the browser will never tab to and
+    // that script can still focus. The skip link needs exactly that on <main>,
+    // because a fragment target has to be focusable for focus to actually
+    // land there. So zero and above stay banned outright, and the one negative
+    // value in the app is pinned to the element that earns it, below.
+    // `tabIndex={0}`, `tabIndex="0"`, `tabIndex={2}` — anything whose value
+    // starts with a digit. A leading `-` is not a digit, which is the whole
+    // distinction this regex is drawn to make.
     const offenders = components(web)
-      .filter(p => /tabIndex/.test(code(readFileSync(p, "utf8"))))
+      .filter(p => /tabIndex=\{?["']?\d/.test(code(readFileSync(p, "utf8"))))
       .map(p => p.slice(web.length));
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps its one negative tabIndex on the skip link's target and nowhere else", () => {
+    // A tabindex="-1" is cheap to add and easy to leave behind, and the shape
+    // it leaves behind is a mouse-focusable div nobody can reach by keyboard.
+    // One in the app, on <main>, is the whole allowance.
+    const negatives = components(web)
+      .flatMap(p => [...code(readFileSync(p, "utf8")).matchAll(/tabIndex=\{-\d+\}/g)]
+        .map(() => p.slice(web.length)));
+    expect(negatives).toEqual(["App.tsx"]);
+    expect(code(app)).toMatch(/<main\n\s+id="canvas"\n\s+tabIndex=\{-1\}/);
   });
 
   it("has no role=\"button\" left that a keyboard cannot operate", () => {

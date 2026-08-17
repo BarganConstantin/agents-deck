@@ -388,6 +388,13 @@ const CONTROLS: Control[] = [
   { at: "button.btn.danger", fillFrom: "button.btn", states: ["button.btn.danger:hover"], beds: ["--panel"] },
   { at: ".search input", states: [".search input:focus"], beds: TOPBAR },
   { at: ".topbar .waiting-stat", states: [".topbar .waiting-stat:hover"], beds: TOPBAR },
+  // The skip link (#381). It is only ever on screen while it holds focus, and
+  // it is drawn over the topbar it skips past — so the beds are the bar's two
+  // ends, like every other control up here. It gets the sweep rather than an
+  // exemption because it is the one control on this deck whose entire audience
+  // cannot see it until the moment it appears: nobody discovers it by looking,
+  // which means it has to be legible the first frame it is there.
+  { at: ".skip-link", beds: TOPBAR },
   // version banner
   { at: ".ver-banner .ver-cmd", states: [".ver-banner .ver-cmd:hover"], beds: BANNER },
   { at: ".ver-banner .ver-act", states: [".ver-banner .ver-act:hover:not(:disabled)"], beds: BANNER },

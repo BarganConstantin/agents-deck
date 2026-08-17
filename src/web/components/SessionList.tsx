@@ -119,7 +119,10 @@ export default function SessionList({ state, now, selectedIds, onSelect, onClose
     // Named for the topbar toggle's aria-controls — see UsagePanel.
     <aside className="session-list" id="session-list" aria-label="Sessions">
       <div className="sl-header">
-        <h3>Sessions <span className="sl-count">{rows.length}</span></h3>
+        {/* h2, under the topbar's h1 — the level every panel title sits at
+            (#381). This <aside> was already the shape the other two panels
+            were given there; only its heading moved. */}
+        <h2>Sessions <span className="sl-count">{rows.length}</span></h2>
         {/* Beside the live count, not instead of it: the two answer different
             questions, and a session can be both (a permission prompt lands
             mid-turn). Codex sessions are counted in neither — they emit no

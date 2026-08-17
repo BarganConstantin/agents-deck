@@ -122,7 +122,10 @@ function SsCostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
     return <span key={cls} className={`cb-seg ${cls}`} style={{ width: `${pct}%` }} title={`${label}: ${fmtCost(val)} (${pct.toFixed(0)}%)`} />;
   };
   return (
-    <div className="cost-bar cost-bar-lg" aria-label="Cost breakdown">
+    // role="img" — without it the label beside it is dropped by the
+    // accessibility tree, for the reason UsagePanel's copy of this bar spells
+    // out (#381).
+    <div className="cost-bar cost-bar-lg" role="img" aria-label="Cost breakdown">
       {seg(cost.input, "cb-input", "input")}
       {seg(cost.output, "cb-output", "output")}
       {seg(cost.cacheRead, "cb-cache-r", "cache read")}

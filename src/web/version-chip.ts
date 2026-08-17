@@ -56,3 +56,37 @@ export function versionChipLabel(c: VersionChipCopy): string {
   if (c.checking) return `${v}, checking npm for a newer release`;
   return `${v}, check npm for a newer release`;
 }
+
+/** What the chip is about once a drift has been found. */
+export type VersionNoticeCopy = {
+  /** "restart" — the new code is already on disk; "upgrade" — it is on npm. */
+  kind: "restart" | "upgrade";
+  /** The version this process is actually running. */
+  from: string;
+  /** The version it could be running. */
+  to: string;
+  /** Whether the banner this chip toggles is on screen right now. */
+  open: boolean;
+};
+
+/** The accessible name of the chip's OTHER branch — the one that is lit
+ *  because something is out of date (#381).
+ *
+ *  It had none, which meant its name fell back to its text: `v1.33.143`, byte
+ *  for byte what the healthy chip beside it says. The branch that has news was
+ *  the quieter of the two, and the drift it exists to report was carried
+ *  entirely by an amber dot (`.v-dot`, aria-hidden) and a `title` — colour and
+ *  a hover, which is WCAG 1.4.1 twice over.
+ *
+ *  The banner below says the same thing, and that is not a substitute: the
+ *  banner is dismissible and this chip is deliberately not, so once it is
+ *  dismissed the chip is the only surface left carrying the fact. */
+export function versionNoticeLabel(n: VersionNoticeCopy): string {
+  const what = n.kind === "restart"
+    ? `v${n.to} is installed and waiting for a restart`
+    : `v${n.to} is available on npm`;
+  // The verb is what the NEXT click does, not what the chip is showing — a
+  // toggle whose name describes its current state reads backwards to anyone
+  // deciding whether to press it.
+  return `Version v${n.from}, ${what} — ${n.open ? "hide" : "show"} the notice`;
+}

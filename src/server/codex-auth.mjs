@@ -14,12 +14,20 @@
 // a rejected promise from a background poll would take the server down.
 import { readFile, chmod, unlink, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { CODEX_HOME } from "./codex-dir.mjs";
 import { createTemp, renameWithRetry } from "./installer.mjs";
 import { PRODUCT } from "./brand.mjs";
 
-const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-const AUTH_PATH  = join(CODEX_HOME, "auth.json");
+// This file used to resolve CODEX_HOME itself, as `process.env.CODEX_HOME ??
+// join(homedir(), ".codex")`. `??` falls back on null and undefined only, so an
+// empty CODEX_HOME — what `export CODEX_HOME=$SOME_UNSET_VAR` leaves in a
+// profile — survived it, and join("", "auth.json") is the CWD-relative
+// "auth.json". Of all five readers this was the expensive one to get wrong: the
+// rotated refresh token below is single-use, so a write that lands in whatever
+// directory the deck was started from does not lose a read, it burns the
+// credential and costs the user a `codex login`. codex-dir.mjs owns the rule now
+// and treats an empty value as "not set" (#375).
+const AUTH_PATH = join(CODEX_HOME, "auth.json");
 
 // Same client id + endpoint the Codex CLI uses (codex-rs/login/src/auth/manager.rs).
 const CLIENT_ID   = process.env.CODEX_APP_SERVER_LOGIN_CLIENT_ID ?? "app_EMoamEEZ73f0CkXaXp7hrann";

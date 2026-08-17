@@ -210,7 +210,12 @@ describe("the cost bar inside the usage panel", () => {
     // sibling of, so the rules matched nothing. The same class of mistake here
     // would put the width back where it was without touching this stylesheet.
     expect(usage).toMatch(/className="usage-panel"/);
-    expect(usage).toMatch(/<div className="cost-bar" aria-label="Cost breakdown">/);
+    // The role between the class and the label arrived with #381, which is what
+    // makes that label reach the accessibility tree at all — a <div> with no
+    // role resolves to `generic` and a generic element cannot be named. Nothing
+    // this test is about changed with it; the assertion is still "the bar is
+    // written in THIS file", which is what makes the scoped width rule run.
+    expect(usage).toMatch(/<div className="cost-bar" role="img" aria-label="Cost breakdown">/);
     // The last segment is the one an overhanging bar clips, and it is the
     // priciest token class in the panel.
     const segments = [...usage.matchAll(/"cb-(input|output|cache-r|cache-w)"/g)].map(m => m[1]);

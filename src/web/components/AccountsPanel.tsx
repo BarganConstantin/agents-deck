@@ -437,12 +437,23 @@ export default function AccountsPanel({ onClose }: Props) {
   };
 
   return (
-    // Named for the topbar toggle's aria-controls — see UsagePanel.
-    <div className="accounts-panel" id="accounts-panel" aria-label="Claude accounts">
+    // Named for the topbar toggle's aria-controls — see UsagePanel, which also
+    // carries the reason this is an <aside> and not the <div> it was: the
+    // aria-label on a roleless <div> resolved to `generic` and the tree threw
+    // the name away (#381). This panel is the left sidebar beside the canvas,
+    // which is complementary content by any reading.
+    <aside className="accounts-panel" id="accounts-panel" aria-label="Claude accounts">
       <div className="ap-header">
-        <h3>Accounts</h3>
+        {/* h2, under the topbar's h1 — the level every panel title sits at. */}
+        <h2>Accounts</h2>
         <div className="ap-header-right">
+          {/* The `+` is one glyph, so `title` was its whole accessible name.
+              A last-resort name source that a touch user never sees and that
+              some readers are configured to ignore is not a name; this is the
+              second and last of the two the #381 sweep found. The tooltip stays
+              as the longer hover sentence. */}
           <button type="button" className="btn ap-add" onClick={() => setAddOpen(true)}
+            aria-label="Add an account"
             title="Sign in to another Claude account, or paste one shared from another deck">+</button>
           <button type="button" className="btn ap-refresh" onClick={() => load(true)}
             disabled={reloading} aria-label="Reload accounts"
@@ -887,6 +898,6 @@ export default function AccountsPanel({ onClose }: Props) {
           onChanged={() => load(true)}
         />
       )}
-    </div>
+    </aside>
   );
 }
