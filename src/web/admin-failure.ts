@@ -193,34 +193,80 @@ function npxMissing(text: string): boolean {
 // None of npxMissing's four alternates matches that: `MODULE_NOT_FOUND` is not
 // `not found`, the underscore is not a space. So it fell through to
 // CCUSAGE_REASONS.run_failed — "ccusage could not report usage — try again" —
-// and trying again is the one thing that cannot work when npm is broken on
-// disk. Every retry re-runs the identical spawn for the identical stack.
+// and trying again is the one thing that cannot work when the wrong script is
+// being loaded. Every retry re-runs the identical spawn for the identical stack.
 //
 // It gets its own sentence rather than a fifth alternate on NO_NPX because the
 // remedy is a different one. NO_NPX says npx is not on PATH and to install
-// Node's npm/npx; here npx IS on PATH and installed, and what is wrong is the
-// installation itself — so the answer is to repair it, and saying "not on this
+// Node's npm/npx; here npx IS on PATH and it launched, so saying "not on this
 // deck's PATH" to someone who can see it on their PATH is the kind of wrong
 // that makes a reader stop believing the rest.
-const NPX_BROKEN =
-  "ccusage could not be started — npm/npx is installed on this machine but damaged: Node could not load the script the shim points at. Reinstall Node (npm and npx come with it), then reopen this modal";
+//
+// What this sentence must NOT do is name a cause it cannot see, which is what
+// #450 was: it read this shape as "the machine's npm is damaged" and told a
+// Windows user to reinstall Node. Their npm demonstrably worked — they had
+// started the deck with `npx ccdeck` moments earlier, and `npm i -g ccdeck`
+// installed twelve packages cleanly on the same machine. The same stack is
+// produced by the deck reaching the WRONG npx: `npx ccdeck` prepends a
+// `node_modules\.bin` for every ancestor of the cwd onto the deck's PATH
+// (measured: 19 entries from a plain shell, 29 under npx), and fallbackSpec
+// asks cmd.exe for a bare `npx.cmd`, so a project-local shim earlier on that
+// PATH computes `%~dp0\node_modules\npm\bin\npx-cli.js` against its own `.bin`
+// folder and dies exactly like a damaged install would. Node's stderr cannot
+// tell the two apart, so this says what was run and what came back, and hands
+// over the check that does tell them apart.
+//
+// The diagnostic names both spellings because this modal is the same build on
+// every platform: `where` is cmd.exe's, `which` is the shell's, and a reader on
+// the wrong one would otherwise be handed a command that does not exist.
+const NPX_UNLOADABLE =
+  "ccusage could not be started — the deck launched npx and Node could not load the npm script it points at. The deck may have reached the wrong npx rather than a damaged one: run `where npx` (`which npx` off Windows) and `npm config get prefix` in a plain terminal, and if npx works there, start the deck from a global install instead of `npx ccdeck`";
+
+// A copy of ccusage that npx itself fetched, and that will not load. This is the
+// deck's own doing twice over — the deck asked npx for the package, and npx put
+// it under its cache — so nothing about it is evidence against the user's Node.
+//
+// It needs saying separately because "try again" is wrong here in a way it is
+// not wrong for the managed install: ~/.agents-deck/ccusage is thrown away and
+// rebuilt by discardDamagedInstall on the very next call, so trying again IS the
+// repair there, while nothing in this deck ever rewrites npx's cache. Left to
+// the reason map, a half-unpacked tarball under `_npx` would re-run identically
+// for as long as the cache survives.
+const NPX_CACHE_UNLOADABLE =
+  "ccusage could not be started — the copy npx fetched will not load: Node could not resolve a file inside it. That copy is in npx's own cache, which the deck never rewrites, so clear it with `npm cache clean --force` and reopen this modal";
+
+/** Node saying it could not load a file it was pointed at, in either module
+ *  system: CommonJS throws `MODULE_NOT_FOUND`, ESM `ERR_MODULE_NOT_FOUND` with
+ *  "Cannot find package" for a bare specifier. Mirrors cannotLoadModule in
+ *  ccusage.mjs, which is the server half of the same judgement. */
+const cannotLoad = (text: string): boolean =>
+  /\b(?:ERR_)?MODULE_NOT_FOUND\b|cannot find (?:module|package)/i.test(text);
 
 /**
- * npm or npx present, launched, and unable to load its own code.
+ * The unloadable file is one of npm's OWN program files.
  *
- * Both halves are required. The module-resolution wording alone would also
- * match ccusage failing to load something of ITS own — a half-written managed
- * install under ~/.agents-deck, which ccusage.mjs now rebuilds by itself and
- * which has nothing to do with the user's Node — and blaming the machine's npm
- * for that would send someone to reinstall Node over a cache directory the deck
- * owns. Naming npm or npx is what makes the sentence about their installation:
- * the shim's own script is the file in the message, `npm-prefix.js` or
- * `npx-cli.js`, and a Windows path separator is a word boundary like any other.
+ * This is the half #450 got wrong, and the correction is the whole fix. The old
+ * test was "the text mentions npm or npx anywhere", which sounds like a
+ * discriminator and is not one: npx runs every package it fetches out of a
+ * directory NAMED after npm — `AppData\Local\npm-cache\_npx\…` on Windows,
+ * `~/.npm/_npx/…` on POSIX (verified on a working machine) — and `\bnpm\b`
+ * matches the `npm` in `npm-cache` and in `.npm` just as happily as the one in
+ * `node_modules\npm\bin`, because `-` and `.` are word boundaries. So on the npx
+ * fallback branch the old predicate had no discriminating power at all: every
+ * module-resolution failure inside ccusage was reported as a damaged npm.
+ *
+ * Asking instead which FILE Node could not load is the discriminator, and it is
+ * the one npxFailureHint in npx.mjs already uses, so the repo gains no second
+ * spelling. npm's program files live in the `bin` directory of a
+ * `node_modules/npm`; the basename alternates catch a message that quotes only
+ * the file, and tolerate the `.cmd` spelling a shim-relative path can carry.
  */
-function npxBroken(text: string): boolean {
-  return /\bnpm\b|\bnpx\b/i.test(text)
-    && /\b(?:ERR_)?MODULE_NOT_FOUND\b|cannot find (?:module|package)/i.test(text);
-}
+const NPM_OWN_PROGRAM =
+  /node_modules[\\/]npm[\\/]bin[\\/]|\bnpm-prefix\.js\b|\bnp[mx][-.][\w.-]*cli\.js\b/i;
+
+/** Anywhere under npx's package cache. `_npx` is npm's own name for that
+ *  subdirectory on every platform, and nothing else in a path is spelled it. */
+const NPX_CACHE = /[\\/]_npx[\\/]/i;
 
 /**
  * The one sentence to show for a failed ccusage run — never the raw output.
@@ -228,10 +274,20 @@ function npxBroken(text: string): boolean {
  * evidence the modal hangs on the status line's title.
  */
 export function explainCcusageFailure(out: CcusageFailure, fallback: string): string {
-  // Broken before missing: they cannot both be true of one machine, and this is
-  // the more specific claim of the two.
-  if (npxBroken(commandOutput(out))) return NPX_BROKEN;
-  if (npxMissing(commandOutput(out))) return NO_NPX;
+  const text = commandOutput(out);
+  if (cannotLoad(text)) {
+    // The deck's own fetched copy first. A file under `_npx` is one npx put
+    // there because this deck asked for it, so it is never evidence about the
+    // user's npm installation — even on the exotic day the unloadable file
+    // inside that cache happens to be an npm program file itself.
+    if (NPX_CACHE.test(text)) return NPX_CACHE_UNLOADABLE;
+    if (NPM_OWN_PROGRAM.test(text)) return NPX_UNLOADABLE;
+    // Everything else that cannot load a module is the managed install under
+    // ~/.agents-deck, which ccusage.mjs discards and rebuilds by itself — so the
+    // reason map's "try again" is not a shrug here, it is the instruction that
+    // triggers the repair.
+  }
+  if (npxMissing(text)) return NO_NPX;
   if (out?.reason && CCUSAGE_REASONS[out.reason]) return CCUSAGE_REASONS[out.reason];
   // A build talking to a newer server still names the thing that happened,
   // which is more than the CLI's last line ever did.
