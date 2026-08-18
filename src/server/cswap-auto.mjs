@@ -34,7 +34,18 @@ const SETTINGS = {
 
 // ── settings ───────────────────────────────────────────────────────────────
 
-/** Parse `cswap config` — "key   value   (default)" per line. */
+/**
+ * Parse `cswap config` — "key   value   (default)" per line.
+ *
+ * Exported for its test rather than for a caller (#383). The two callers here —
+ * `autoStatus`, which hands the map straight to the settings panel, and
+ * `tickInterval`, which takes the poll interval out of it — both reduce the
+ * parse to something a test cannot see through: the panel takes whatever shape
+ * it is given, and the interval collapses four fields to one number that is
+ * clamped anyway. The parse itself is a regex over human-formatted output from a
+ * separate Python tool, on both line-ending conventions. See
+ * cswap-auto-readers.test.ts.
+ */
 export async function readCswapConfig() {
   const r = await run(await cswapBin(), ["config"]);
   if (!r.ok) return null;
@@ -117,6 +128,13 @@ async function runAutoTick() {
  * budget that is already the scarce resource here, and the user would have two
  * things switching their account with no single place showing why. So the deck
  * reports it and stays out of the way.
+ *
+ * Exported for its test rather than for a caller (#383). Its two callers reduce
+ * it to a boolean on a status object and to a skipped tick, so neither can show
+ * WHICH command line was matched — and the matching is the whole function. The
+ * two halves also run completely different commands, `ps` against
+ * `Get-CimInstance`, so on any one machine only half of it is ever exercised at
+ * all. See cswap-auto-readers.test.ts, which drives both from either host.
  */
 export async function externalAutoRunning() {
   // A line is the user's loop if it runs `cswap auto` without --once. Our own

@@ -95,8 +95,15 @@ export const CODEX_TOOL_SPECS: Record<string, CodexToolSpec> = {
   run: { category: "web", emoji: "🌐", label: "Web" },
 };
 
-/** Codex tool name → category, for merging into the one category table. */
-export const CODEX_TOOL_CATEGORY: Record<string, ToolCategory> =
+/** Codex tool name → category, for merging into the one category table.
+ *
+ *  Not exported, and deliberately the odd one out among the five derived tables
+ *  below it. The other four are spread into ToolBursts.tsx's own literals, so
+ *  they have to cross the module boundary; the category merge happens HERE, six
+ *  lines down, and every consumer — the canvas, the detail strip, the filter
+ *  chips — asks `categoryFor()` instead. Exporting it would offer a second way
+ *  to answer the bucket question, which is the exact duplication #417 removed. */
+const CODEX_TOOL_CATEGORY: Record<string, ToolCategory> =
   Object.fromEntries(Object.entries(CODEX_TOOL_SPECS).map(([name, s]) => [name, s.category]));
 
 /** Codex tool name → primary-bubble emoji. */
@@ -126,6 +133,22 @@ export const CODEX_SHELL_TOOLS: ReadonlySet<string> =
  * eight names TOOL_CATEGORY mapped to "other", which is the default anyway — so
  * merging them changes no answer for any tool either of them knew. It removes
  * the only way they could ever disagree again.
+ *
+ * WHY THOSE EIGHT NAMES ARE NOT LISTED HERE (#383). ScheduleWakeup, CronCreate,
+ * CronList, CronDelete, Monitor, PushNotification, RemoteTrigger and ToolSearch
+ * each used to sit here mapped to "other", and `categoryFor` below reads this
+ * table with `?? "other"` — so a row whose value IS "other" answers exactly what
+ * no row at all answers. Nothing in the deck asks whether a name is PRESENT:
+ * there is no `in`, no `Object.keys`, no `hasOwnProperty` anywhere against this
+ * table, so the eight were eight lines that could not change a rendered pixel.
+ * They are gone rather than kept as documentation because DETAIL_TOOL_CAT was
+ * already living proof of the cost: it was a copy of this table that omitted
+ * exactly these eight, and the deck could not tell the two apart. The names are
+ * not forgotten — all eight still carry real emoji in TOOL_EMOJI
+ * (ToolBursts.tsx), which is where a reader looking for them will find them.
+ * Should the schedule family ever earn its own bucket, that is a new
+ * ToolCategory member and eight rows naming it, not eight rows naming the
+ * default.
  */
 export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
@@ -137,9 +160,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   TaskList: "task", TaskGet: "task", TaskOutput: "task", TaskStop: "task",
   EnterPlanMode: "plan", ExitPlanMode: "plan", AskUserQuestion: "plan",
   Skill: "plan", Workflow: "plan",
-  ScheduleWakeup: "other", CronCreate: "other", CronList: "other",
-  CronDelete: "other", Monitor: "other", PushNotification: "other",
-  RemoteTrigger: "other", ToolSearch: "other",
   // …and every Codex name, from the one spec table above.
   ...CODEX_TOOL_CATEGORY,
 };
