@@ -323,7 +323,15 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
    does get a ring — landing somewhere with no sign you landed is the failure
    this link exists to fix, one step later. Inset, because .canvas-wrap fills
    its grid cell to the window edge and the shared 2px outward offset would
-   draw the ring off screen on two sides. */
+   draw the ring off screen on two sides.
+   "Programmatically" is now the whole of it, and that is enforced next door
+   rather than here: a mouse could also focus the canvas, and the browser
+   re-decides :focus-visible for an element that is ALREADY focused the moment a
+   key is pressed, so this rule fired for every click on empty canvas one
+   keystroke later (#434). No selector can tell those two arrivals apart — the
+   question is asked after focus has landed — so App.tsx's releasePointerFocus
+   takes the pointer's arrival away instead, and this declaration is left saying
+   exactly what it said before. */
 .canvas-wrap:focus-visible { outline-offset: -3px; }
 
 /* ---------------- topbar ---------------- */
