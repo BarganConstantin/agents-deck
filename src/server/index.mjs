@@ -2164,9 +2164,31 @@ async function handleRestart(req, res) {
 
   if (_restarting) return send(res, 202, { ok: true, already: true });
   _restarting = true;
-  send(res, 200, { ok: true, mode });
+  // Accepted either way — the ask is good and the launcher holds on to it — but
+  // the two are not the same event and answering 200 to both would be this
+  // window's second untruth rather than its first. Between this listener
+  // accepting its first connection and bin/deck.js finishing the rest of its
+  // startup there is a real stretch during which a restart cannot be run yet,
+  // and a caller that reads the body should be able to tell that it is waiting
+  // on a boot rather than on a supervisor. See markDeckReady, and requestRestart
+  // in bin/deck.js for the half that does the waiting.
+  if (_deckReady) send(res, 200, { ok: true, mode });
+  else send(res, 202, { ok: true, mode, booting: true, detail: "the deck is still starting up; the restart runs as soon as it has finished booting" });
   // Let the response flush before the listener goes away.
-  setTimeout(() => { try { _onRestart(mode); } catch { _restarting = false; } }, 120).unref();
+  setTimeout(() => {
+    try { _onRestart(mode); }
+    catch (err) {
+      // This catch is where #448 lived: it released the server's half of the
+      // latch and said nothing, while the launcher's half stayed set with
+      // nothing left to clear it, and every later restart answered "ok" and did
+      // nothing for the rest of the process's life. The launcher now owns its
+      // own failures; this stays as the outer net, and it says so — one line,
+      // message only, because the terminal underneath is repainted every 800ms
+      // by the pulse and a stack dumped into it is a stack nobody can read.
+      _restarting = false;
+      console.error(`${PRODUCT}: restart request failed: ${err?.message ?? err}`);
+    }
+  }, 120).unref();
 }
 
 /** The other end of the latch above, for the upgrade that never happened.
@@ -2178,6 +2200,22 @@ async function handleRestart(req, res) {
  * "already restarting" for the rest of the deck's life. */
 export function releaseRestart() {
   _restarting = false;
+}
+
+/** The launcher saying its boot is over: everything a shutdown would have to
+ *  tear down now exists.
+ *
+ *  This server starts accepting from inside startServer, before that call has
+ *  even returned to bin/deck.js — so /api/restart is answerable for the whole
+ *  of the startup that follows it, which on a cold boot includes the discovery
+ *  file's first fsynced write and spawning the browser. The listener cannot see
+ *  any of that from here; it has to be told. Called once, from bin/deck.js.
+ *
+ *  Only /api/restart reads it, and only to answer honestly. Nothing is refused
+ *  on the strength of it: the restart is still handed to the launcher, which
+ *  holds it until it can run it (#448). */
+export function markDeckReady() {
+  _deckReady = true;
 }
 
 async function handleQuota(req, res) {
@@ -2837,10 +2875,19 @@ let _onRestart = null;
 // A restart is in flight. Several browser tabs watching the same deck will each
 // ask; the second ask must not re-enter the shutdown.
 let _restarting = false;
+// Whether the launcher has finished booting — see markDeckReady. False for the
+// whole window between this listener accepting its first connection and
+// bin/deck.js reaching the end of its startup, which is a window /api/restart
+// is reachable in and cannot answer for on its own.
+let _deckReady = false;
 
 export async function startServer({ port = 4317, host = "127.0.0.1", persist = null, portRange = [4318, 4400], workspace = "", codex = true, claude = true, onRestart = null } = {}) {
   _onRestart = typeof onRestart === "function" ? onRestart : null;
   _canRestart = _onRestart != null && persist != null;
+  // A new listener is a new boot, whatever a previous one had got as far as
+  // reporting. Nothing but bin/deck.js ever sets this, and it does so once, at
+  // the end of the startup that begins with this call.
+  _deckReady = false;
   _workspace = typeof workspace === "string" ? workspace : "";
   // `!== false` rather than a cast: a caller that omits the field means "yes",
   // which is how every embedder that predates this option keeps working.
