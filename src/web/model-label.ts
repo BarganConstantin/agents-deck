@@ -40,6 +40,8 @@
 // this moves ONE helper, the one #462 is about, and touches none of the other
 // eight.
 
+import { bareModelId } from "./model-id";
+
 /** Family names and variant qualifiers are printed in one casing, whatever the
  *  id spells them in, so `GPT-5.3 Codex` and `GPT-5.3 Codex Spark` read as two
  *  members of one family rather than two unrelated strings. The issue proposed
@@ -54,6 +56,7 @@ function titleWord(word: string): string {
  *    "claude-opus-4-7-20250101"            → "Opus 4.7"
  *    "claude-haiku-4-5"                    → "Haiku 4.5"
  *    "anthropic.claude-sonnet-4-5-…-v1:0"  → "Sonnet 4.5"
+ *    "us.anthropic.claude-opus-5"          → "Opus 5"
  *    "gpt-5.3-codex"                       → "GPT-5.3 Codex"
  *    "gpt-5.3-codex-spark"                 → "GPT-5.3 Codex Spark"
  *    "gpt-5.4-nano"                        → "GPT-5.4 Nano"
@@ -62,8 +65,16 @@ function titleWord(word: string): string {
  *  Falls back to the raw id if the shape is unfamiliar so we never hide info.
  *
  *  Two things are dropped before matching, because an id carries them and a
- *  chip has no room for them: Bedrock's `anthropic.` namespace, and the release
- *  date Anthropic stamps on every Claude id. The date was being read as a third
+ *  chip has no room for them: the provider namespace, and the release date
+ *  Anthropic stamps on every Claude id. The namespace strip used to be a local
+ *  `^anthropic\.` and now comes from model-id.ts, which #475 needed anyway for
+ *  the rate table — and which covers the form this one missed: a Bedrock
+ *  cross-region inference profile is `us.anthropic.…`, not `anthropic.…`, so
+ *  every id from the shape Bedrock actually hands out fell through to the
+ *  raw-id fallback and printed forty characters of ARN-ish text in a chip sized
+ *  for eleven.
+ *
+ *  The date was being read as a third
  *  version component ever since this was written — "Opus 4.7.20250101", against
  *  the "Opus 4.7" promised right above — because eight digits satisfy the same
  *  `\d+` as the one or two a version number has. Length is what tells them
@@ -89,7 +100,7 @@ function titleWord(word: string): string {
  *
  *  Structural: every branch either shortens the id or preserves its length
  *  exactly — `gpt-` becomes `GPT-`, each `-` or `_` becomes one space or one
- *  dot, and `anthropic.` and the 8-digit date are removed — so
+ *  dot, and the provider namespace and the 8-digit date are removed — so
  *  `shortModel(id).length <= id.length` for every id there is. The raw id was
  *  always a legal return value from this function, so no label can now be wider
  *  than something the surfaces already had to be able to draw.
@@ -123,7 +134,7 @@ function titleWord(word: string): string {
  *  numbers down is that the next qualifier is measured against them rather than
  *  guessed at. */
 export function shortModel(id: string): string {
-  const bare = id.replace(/^anthropic\./, "").replace(/[-_]\d{8}(?!\d)/, "");
+  const bare = bareModelId(id).replace(/[-_]\d{8}(?!\d)/, "");
   const claude = bare.match(/^claude[-_](opus|sonnet|haiku|fable|mythos)[-_](\d+(?:[-_.]\d+)*)/i);
   if (claude) {
     const family = titleWord(claude[1]);

@@ -1,4 +1,5 @@
 // Event → graph reducer. Pure-ish: same events in any order = same end state.
+import { bareModelId } from "./model-id";
 import type { AgentNodeData, ContextBreakdown, HookEnvelope, HookPayload, TokenUsage, ToolCall, WaitingBlock } from "./types";
 
 function emptyUsage(): TokenUsage {
@@ -72,7 +73,15 @@ function addUsage(into: TokenUsage, add: TokenUsage): void {
 /** Model ids we recognise. Claude family: claude-* . Codex family: gpt-*,
  *  o*-, codex-* . The regex is permissive on purpose — Codex publishes new
  *  slugs frequently and we'd rather pick up an unknown gpt variant than
- *  miss it. */
+ *  miss it.
+ *
+ *  Tested against the id with its provider namespace stripped (#475). This is
+ *  the gate the whole Bedrock story turns on and the reason the issue's own
+ *  account of the bug was one step short: a Bedrock id is
+ *  `us.anthropic.claude-opus-5`, which failed `^claude` HERE, so the model was
+ *  never attached to an agent at all and `ratesForModel` was never reached to
+ *  return the `null` it was blamed for. Fixing the rate table without this one
+ *  would have changed nothing a Bedrock user could see. */
 const MODEL_PATTERN = /^(?:claude[-_]|gpt[-_]|o\d|codex[-_])/i;
 
 /** Recursively look for a `model` string anywhere in the payload — both
@@ -80,7 +89,12 @@ const MODEL_PATTERN = /^(?:claude[-_]|gpt[-_]|o\d|codex[-_])/i;
 function extractModel(node: unknown, depth = 0): string | null {
   if (!node || typeof node !== "object" || depth > 6) return null;
   const obj = node as Record<string, unknown>;
-  if (typeof obj.model === "string" && MODEL_PATTERN.test(obj.model)) {
+  if (typeof obj.model === "string" && MODEL_PATTERN.test(bareModelId(obj.model))) {
+    // The RAW id is what is stored and passed on. pricing.ts and model-label.ts
+    // each strip it again for their own matching, and both of them also have to
+    // handle an id that arrives from somewhere other than here — so normalising
+    // once, here, would buy nothing and would lose the string the model chip's
+    // `title` and the usage panel's per-model key are meant to show.
     return obj.model;
   }
   for (const v of Object.values(obj)) {

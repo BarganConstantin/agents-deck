@@ -152,7 +152,18 @@ const transcriptScans = new Map();        // path -> scan state
 const transcriptScanInFlight = new Map(); // path -> in-progress scan promise
 const MAX_TRANSCRIPT_SCANS = 256;         // bound the per-path state
 
-const MODEL_ID_RE = /^claude[-_]/i;
+// The transcript's `message.model`, and the only filter standing between it and
+// every model the deck shows. Bedrock and Mantle put a provider namespace in
+// front of the id — `us.anthropic.claude-opus-5`, `anthropic.claude-opus-5` —
+// so a bare `^claude` dropped every line a Bedrock session writes and the deck
+// showed those users no model, no context window and no cost at all (#475).
+//
+// The prefix list is `VENDOR_PREFIX_RE` in src/web/model-id.ts, written out a
+// second time here rather than imported: this file is plain .mjs that node runs
+// straight off disk with no build step, so it cannot reach a `.ts` module.
+// bedrock-model-ids.test.ts sweeps both against one list of ids so the copies
+// cannot drift apart.
+const MODEL_ID_RE = /^(?:(?:us-gov|global|apac|us|eu|jp|au)\.anthropic\.|anthropic\.)?claude[-_]/i;
 const USAGE_BLOCK_RE = /"usage"\s*:\s*\{([^}]+)\}/g;
 // CC `/clear` and `/compact` write a marker into the transcript and reset the
 // context window to ~0 while the JSONL keeps growing — everything before the
