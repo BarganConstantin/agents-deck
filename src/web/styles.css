@@ -134,6 +134,39 @@
   color-scheme: light;
 }
 
+/* Geometry, in its own block and in neither theme: an inset and a control
+   height are the same numbers on white as they are on black, so they do not
+   belong in either palette above. #380 found the deck had no such block and
+   the numbers had drifted apart because of it.
+
+   --panel-inset is the one distance every panel prints at. The usage panel
+   already used 14px for all five of its rows, and the accounts panel used it
+   for every row too — the two sidebar HEADERS wrote 12px on their right, and
+   the session row reached 17px by summing three separate rules, so a header
+   and the rows underneath it stepped 2px, 3px and 5px apart. Measured, dark
+   and light alike: the accounts header controls ended at x=275 over rows that
+   ended at x=273; the session header ran 14 → 227 over rows that ran 17 → 222.
+   It is stated once here and read by every rule that sets a panel's horizontal
+   content edge. Two rules that already agreed keep their literal 14 —
+   `.up-section` and `.usage-panel .cost-bar` — because panel-overflow.test.ts
+   parses those two as NUMBERS to redo #369's overflow arithmetic, and a var()
+   there would read as NaN. panel-rhythm.test.ts asserts they equal this token,
+   so the pair cannot drift apart in either direction.
+
+   --ctl-h is the one height a control stands at. `.icon-btn` declared 30px and
+   `button.btn` declared none, taking whatever `padding: 6px` plus a 12px/1.45
+   line box came to — 31.4px, which is deterministic rather than
+   platform-dependent (the sheet's line-height is unitless, so it is 17.4px on
+   every OS) but is nevertheless 1.4px taller than the icon button beside it.
+   The topbar carries five icon buttons between two text buttons, so that step
+   repeated across the bar four times: tops at y=9.8 against y=10.49. Both
+   variants derive from this number now, so there is no arithmetic left that
+   could produce a second one. */
+:root {
+  --panel-inset: 14px;
+  --ctl-h: 30px;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root {
@@ -585,13 +618,36 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   0%, 100% { opacity: 1; } 50% { opacity: 0.35; }
 }
 
+/* The height is declared, not arrived at. Until #380 this rule set vertical
+   padding and let the line box decide the rest, which came to 31.4px, while
+   `.icon-btn` below declared a flat 30px — so the topbar drew a 1.4px step at
+   every boundary between a text button and an icon one, five times over, with
+   the two kinds of button agreeing on their centres (`align-items: center`)
+   and on nothing else. A bar of controls is a row, and a row has one height.
+
+   `min-height` rather than `height`, and zero vertical padding rather than a
+   smaller amount of it. The floor leaves 28px of room inside the borders for a
+   line box that is 17.4px at this font size — ten pixels of headroom, so no
+   plausible default font on any platform can push a text button past the icon
+   button beside it — and a label that ever did wrap to two lines would grow
+   the button rather than be clipped by it. The horizontal padding is untouched,
+   so no button's width moves.
+
+   `inline-flex` is what centres the label inside a box whose height it no
+   longer sets. It also lets `.icon-btn` below drop its own copy of these three
+   declarations: a square icon button is this same control with its width
+   pinned to the height, and that is now all it has to say. */
 button.btn {
   background: transparent;
   color: var(--text);
   border: 1px solid var(--ctl-edge);
-  padding: 6px 12px;
+  min-height: var(--ctl-h);
+  padding: 0 12px;
   border-radius: 6px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
   font-size: 12px;
   transition: border-color 120ms, color 120ms, background 120ms,
@@ -630,13 +686,13 @@ button.btn.danger:hover {
   color: var(--err);
   background: color-mix(in srgb, var(--err) 12%, transparent);
 }
+/* A square of the control height — the same box as the text button above with
+   its width pinned to its height, which is the whole of what "icon button"
+   means here. The 30px it used to write twice is where --ctl-h came from. */
 button.btn.icon-btn {
-  width: 30px;
-  height: 30px;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
   padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   font-size: 14px;
   line-height: 1;
 }
@@ -1165,11 +1221,19 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .app:has(.session-list):has(.detail-reopen) { grid-template-columns: 240px 1fr; }
 .app:has(.accounts-panel):has(.detail-reopen) { grid-template-columns: 288px 1fr; }
 /* Floating reopen tab pinned to the right edge. */
+/* 24px wide, not the 22 it was. This sheet sets the SC 2.5.8 floor for itself
+   twice and argues for it both times — `.ver-close` ("24px is the floor SC
+   2.5.8 sets and this was 18") and `.ap-more` ("Now a real 24x24 target") —
+   and this tab predates both. It is not a conformance failure: the spacing
+   exception covers it, since nothing sits within 24px of a tab pinned to the
+   window's edge. It is the sheet disagreeing with itself about its own floor,
+   on the only control that reopens a whole panel. Two pixels, taken from the
+   canvas the tab already floats over. */
 .detail-reopen {
   position: fixed;
   top: 64px;
   right: 0;
-  width: 22px;
+  width: 24px;
   height: 44px;
   display: grid;
   place-items: center;
@@ -2280,6 +2344,24 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 
 /* ---------------- session list sidebar ---------------- */
 
+/* The panel is the scroller, and `.sl-rows` inside it is not — which is what
+   makes the inset below hold on a platform this repo cannot render. A classic
+   scrollbar takes its width out of the CONTENT BOX of whichever element
+   scrolls, and Windows and Linux draw one where macOS overlays (the sheet asks
+   for `scrollbar-width: thin`, which is ~10px of real layout there and nothing
+   here). With the header outside the scroller and the rows inside it, that
+   width came off the rows alone: every row's right inset would have been
+   10px deeper than the header's the moment a fourth session arrived, on the
+   two platforms this deck cannot be measured on. One scroll container means
+   the header and the rows narrow together and the alignment is the same fact
+   on every OS.
+   `overflow-y` rather than the `overflow: hidden` this was: hidden clipped a
+   horizontal overflow silently instead of preventing one, and the row's own
+   containment (`min-width: 0` and an ellipsis on `.sl-label`, a wrapping
+   `.sl-row-meta`) is what actually holds the width — measured flat at a
+   2000-character session label, the same check #369 put on the two panels
+   beside this one. This is the shape `.accounts-panel` and `.usage-panel`
+   already had; the session list was the one panel with a nested scroller. */
 .session-list {
   grid-column: 1;
   grid-row: 2 / -1;
@@ -2288,24 +2370,40 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
 }
+/* Sticky for the reason `.up-header` is: the panel scrolls as a whole now, and
+   the counts and the close button have to stay reachable at row two hundred.
+   Its own --panel background is what keeps rows from showing through it. */
 .session-list .sl-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 12px 10px 14px;
+  padding: 12px var(--panel-inset) 10px;
   border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
 }
-/* h2 since #381, and pinned at the size the h3 rendered at. The other two
-   panel titles declare their own font-size (13px and 12px) so promoting them
-   changed nothing; this one never did, and a bare <h2> would have jumped from
-   the UA sheet's 1.17em to 1.5em. 1.17em is that h3 size written down rather
-   than a new number — the three panel headers already disagree with each other
-   by a few pixels and reconciling them is #380's job, not this issue's. */
+/* The reconciliation #381 left to #380. This caption was the only one of the
+   three with no size of its own, so it took the UA sheet's h3 — which #381
+   wrote down as 1.17em rather than normalising it — and rendered at 15.21px
+   and weight 700 beside a 13px/600 usage caption and a 12px/600 accounts one.
+   Three panels doing one job in three sizes and two weights, and the largest
+   of them was the one nobody had chosen. They are one caption now, declared
+   once. 13px is the middle value and the one the usage panel already used;
+   only this caption and the accounts caption move, by 2.21px and 1px.
+   This is a panel-header reconciliation, not a pass over the sheet's font
+   scale — #379 owns that, and none of the sheet's other sizes is touched. */
+.up-header h2,
+.ap-header h2,
+.session-list .sl-header h2 {
+  font-size: 13px;
+  font-weight: 600;
+}
 .session-list .sl-header h2 {
   margin: 0;
-  font-size: 1.17em;
   flex: 1;
   display: inline-flex;
   align-items: center;
@@ -2343,10 +2441,17 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .session-list .sl-close { width: 26px; height: 26px; font-size: 15px; }
 
+/* The two numbers the row's inset is made of, declared where they are about
+   and inherited by the row below — the panel-wide inset stays at :root, and
+   these two say how it is spent here. The gutter is how far the card sits off
+   the panel's edge; the edge is the row's own transparent border, which is
+   load-bearing for hover and selection (see `.sl-row` below) and therefore has
+   to be counted. */
 .session-list .sl-rows {
+  --sl-card-gutter: 4px;
+  --sl-card-edge: 1px;
   flex: 1;
-  overflow-y: auto;
-  padding: 6px;
+  padding: 6px var(--sl-card-gutter);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2358,13 +2463,34 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   font-style: italic;
 }
 
+/* The horizontal padding is derived, not chosen. What has to be true is that
+   the row's CONTENT starts on the panel's inset — the same line the header's
+   title starts on — and the row reaches that line through three boxes rather
+   than one: the list's gutter, then this card's border, then this padding. It
+   used to be 6 + 1 + 10 = 17px against a header at 14px, and the 3px step was
+   invisible in any one of the three rules. Writing the last term as what is
+   left over says the constraint out loud and makes the other two safe to
+   retune: move the gutter and the text does not move.
+   The card outdenting past the text it holds is the point, not a compromise.
+   A list where the selection pill is inset a few pixels and the label still
+   lands on the section title's column is what every sidebar of this shape
+   does; aligning the CARD to 14px instead would push the labels to 24px and
+   narrow every row by 20px to no purpose. */
 .session-list .sl-row {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 9px 10px;
+  padding: 9px calc(var(--panel-inset) - var(--sl-card-gutter) - var(--sl-card-edge));
   background: transparent;
-  border: 1px solid transparent;
+  /* Longhands rather than the `1px solid transparent` shorthand this was,
+     because the width is now a term in the padding above and has to be the
+     same fact in both places. Splitting it also keeps control-edges.test.ts
+     able to read the colour: its parser takes the first var() in a border
+     shorthand to BE the colour, and a var() width would have made a
+     transparent edge look like an unswept boundary. */
+  border-width: var(--sl-card-edge);
+  border-style: solid;
+  border-color: transparent;
   border-radius: 8px;
   cursor: pointer;
   text-align: left;
@@ -3199,17 +3325,17 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px 8px;
+  padding: 10px var(--panel-inset) 8px;
   border-bottom: 1px solid var(--line-soft);
   position: sticky;
   top: 0;
   background: var(--panel);
   z-index: 1;
 }
+/* Size and weight come from the shared panel-caption rule in the session
+   list block; this one only has to take the row it sits in. */
 .up-header h2 {
   margin: 0;
-  font-size: 13px;
-  font-weight: 600;
   flex: 1;
 }
 .up-header-right {
@@ -3237,7 +3363,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 14px 14px 6px;
+  padding: 14px var(--panel-inset) 6px;
 }
 .up-total-value {
   font-size: 26px;
@@ -3281,7 +3407,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: flex;
   flex-wrap: wrap;
   gap: 10px 16px;
-  padding: 6px 14px 10px;
+  padding: 6px var(--panel-inset) 10px;
 }
 .up-tok {
   display: flex;
@@ -3297,6 +3423,10 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-family: inherit;
 }
 
+/* One of the two insets that stay literal: panel-overflow.test.ts parses this
+   padding and the cost bar's margin above as NUMBERS to redo #369's overflow
+   arithmetic, and a var() reads as NaN there. panel-rhythm.test.ts asserts both
+   equal --panel-inset, so the literal cannot drift away from the token. */
 .up-section {
   padding: 0 14px;
   margin-top: 4px;
@@ -3707,14 +3837,14 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 12px 10px 14px;
+  padding: 12px var(--panel-inset) 10px;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
+/* Size and weight come from the shared panel-caption rule up in the session
+   list. What is left here is the one thing this caption does differently. */
 .ap-header h2 {
   margin: 0;
-  font-size: 12px;
-  font-weight: 600;
   letter-spacing: 0.02em;
 }
 .ap-header-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
@@ -3725,7 +3855,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 .ap-refresh:disabled { opacity: 0.6; cursor: default; }
 
 .ap-account {
-  padding: 9px 14px 8px;
+  padding: 9px var(--panel-inset) 8px;
   border-bottom: 1px solid var(--line-soft);
 }
 /* The active account is the one answer the panel exists to give, so it reads
@@ -3838,7 +3968,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 12px 14px;
+  padding: 12px var(--panel-inset);
   font-size: 11px;
   color: var(--muted);
 }
@@ -3869,7 +3999,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  margin: 8px 14px 0;
+  margin: 8px var(--panel-inset) 0;
   padding: 6px 8px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--err) 12%, transparent);
@@ -3899,7 +4029,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 .ap-failure-x:hover { opacity: 1; }
 /* ── auto-switch controls ── */
 .ap-auto {
-  padding: 12px 14px 11px;
+  padding: 12px var(--panel-inset) 11px;
   border-top: 1px solid var(--line);
 }
 /* One line: name on the left, the whole control cluster on the right. Nothing

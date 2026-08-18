@@ -246,21 +246,26 @@ describe("promoting the headings changed no pixels (#381)", () => {
     return all.length ? all[all.length - 1][1].replace(/\s+/g, " ").trim() : null;
   }
 
-  it("keeps the two panel captions that already declared a size", () => {
+  it("keeps every panel caption off the UA sheet's default", () => {
     // An <h2> arrives from the UA sheet at 1.5em where an <h3> arrives at
     // 1.17em, so a caption with no font-size of its own would have grown by a
-    // third. These two never depended on the default.
+    // third. That is what this issue was guarding and it still holds; what
+    // changed is that all three now say the same thing rather than 13px, 12px
+    // and the 1.17em below. #380 reconciled them — see panel-rhythm.test.ts,
+    // which is where the "all three agree" assertion lives now.
     expect(decl(".up-header h2", "font-size")).toBe("13px");
-    expect(decl(".ap-header h2", "font-size")).toBe("12px");
+    expect(decl(".ap-header h2", "font-size")).toBe("13px");
     expect(decl(".up-header h3", "font-size")).toBeNull();
     expect(decl(".ap-header h3", "font-size")).toBeNull();
   });
 
-  it("pins the one that did depend on it to the size it was rendering at", () => {
-    // 1.17em is the UA sheet's h3, written down. Not rounded to a px value:
-    // the three panel headers already disagree with each other by a few pixels
-    // and reconciling them is #380's change, not this one's.
-    expect(decl(".session-list .sl-header h2", "font-size")).toBe("1.17em");
+  it("no longer leaves the one that did depend on it at the UA sheet's number", () => {
+    // This was pinned at 1.17em — the UA sheet's h3 written down — precisely so
+    // that #381 changed no pixels, with a comment saying reconciling the three
+    // captions was #380's change. It is that value now: a declared 13px, not a
+    // multiple of whatever <body> happens to be set at.
+    expect(decl(".session-list .sl-header h2", "font-size")).toBe("13px");
+    expect(decl(".session-list .sl-header h2", "font-size")).not.toMatch(/em$/);
     expect(decl(".session-list .sl-header h3", "margin")).toBeNull();
   });
 
