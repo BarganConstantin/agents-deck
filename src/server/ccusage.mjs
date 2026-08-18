@@ -11,7 +11,7 @@
 // the current call always serves from the already-installed copy. If the
 // managed install is missing/broken we fall back to the old npx path so the
 // feature still works on a fresh machine.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -107,7 +107,7 @@ let _checkedThisRun = false; // only kick the daily check once per process boot
 
 // The last `npm install` that failed, in one line of its own words.
 //
-// Module scope rather than a value thrown out of installSync, because the two
+// Module scope rather than a value thrown out of the install, because the two
 // callers that matter never see that throw. primeCcusage runs the install at
 // boot and only logs the rejection; a second modal open that arrives while an
 // install is in flight awaits the SHARED promise, whose rejection has already
@@ -125,12 +125,26 @@ const INSTALL_ERROR_ROOM = 240;
  * Start the one shared install, remembering how it ended.
  *
  * Deduped through `_installing` the way it always was, so concurrent callers
- * cost one `npm install` between them; the only new thing is that the outcome
- * survives the promise.
+ * cost one `npm install` between them, and the outcome survives the promise.
+ *
+ * This used to read `_installing = (async () => { installSync(spec); })()`, and
+ * that wrapper was the whole of #476: an async function body runs synchronously
+ * up to its first `await`, and there was none, so the IIFE turned a throw into
+ * a rejection and bought no asynchrony at all. `installSync` was a `spawnSync`
+ * of `npm install` with a two-minute deadline, and it ran on the caller's
+ * stack — which at boot is bin/deck.js's, beside jobs that really are async.
+ * primeCcusage answered `{ state: "installing" }`, a sentence that says the
+ * wait was deferred, while the process could not accept an HTTP connection,
+ * write an SSE frame, ingest a hook or repaint the pulse line until npm exited.
+ * On a first run, with nothing cached, that is the one boot a new user judges
+ * the tool by.
+ *
+ * `install` below is the fix, and there is now exactly one install mechanism in
+ * this module rather than a synchronous one and a background one.
  */
 function startInstall(spec = "latest") {
   if (!_installing) {
-    _installing = (async () => { installSync(spec); })()
+    _installing = install(spec)
       .then(() => { _lastInstallError = null; })
       .catch(e => {
         _lastInstallError = oneLine(e?.message ?? e, INSTALL_ERROR_ROOM);
@@ -238,17 +252,21 @@ export function resolveEntry() {
 }
 
 /**
- * Everything spawnSync knows about a failed install, in the order the answer is
+ * Everything a failed install is known to have said, in the order the answer is
  * usually in.
  *
  * The old line read `(r.stderr || "").trim() || r.status`, which threw away the
- * two things most likely to be the whole story. `r.error` is where spawnSync
- * reports a failure to LAUNCH — ENOENT for a comspec that is not there, EINVAL
- * for a .cmd Node refuses to spawn directly, ETIMEDOUT when the deadline above
- * fired — and it comes with `status: null`, so what reached the terminal in
- * every one of those cases was the word "null". And npm has never confined
- * itself to stderr: a shim that dies before npm starts writes wherever Node
- * chose, and `npm ERR!` blocks have landed on stdout across majors.
+ * two things most likely to be the whole story. `error` is where a failure to
+ * LAUNCH lands — ENOENT for a comspec that is not there, EINVAL for a .cmd Node
+ * refuses to spawn directly, and the expired deadline — and it comes with no
+ * status at all, so what reached the terminal in every one of those cases was
+ * the word "null". And npm has never confined itself to stderr: a shim that
+ * dies before npm starts writes wherever Node chose, and `npm ERR!` blocks have
+ * landed on stdout across majors.
+ *
+ * The four fields are spawnSync's, because that is where they were first read
+ * off; `install` above now fills the same shape from the 'error' event, the
+ * exit status and the two collected streams.
  */
 function installFailureText(r) {
   const parts = [];
@@ -290,46 +308,95 @@ function installTreeReport() {
   return "the package is there but its bin entry could not be read or does not point inside it";
 }
 
-// Run `npm install ccusage@<spec> --prefix CACHE_DIR`. Synchronous variant for
-// the first-run cold path (we must have a binary before we can answer).
-function installSync(spec = "latest") {
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const { file, args, opts } = installSpec(spec);
-  const r = spawnSync(
-    file,
-    args,
-    { windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8", ...opts },
-  );
-  if (r.status !== 0) {
-    throw new Error(`npm install ccusage failed: ${installFailureText(r)}`);
-  }
-  // A zero exit is npm's opinion, not a fact about the disk, and the caller
-  // treats "installSync returned" as "there is something to run". Checking here
-  // is what stops a silent success: getRunner used to call resolveEntry(), get
-  // null, and fall through to the npx fallback with NOTHING recorded anywhere
-  // about why — so the modal explained the fallback's stderr and the install's
-  // half of the story was never written down at all.
-  if (!resolveEntry()) {
-    throw new Error(
-      `npm install ccusage exited 0 but left nothing runnable under ${CACHE_DIR}: `
-      + `${installTreeReport()}`,
-    );
-  }
-}
-
-// Background, non-blocking install (used by the daily update path).
-function installAsync(spec = "latest") {
-  try {
+/**
+ * Run `npm install ccusage@<spec> --prefix CACHE_DIR`, off this stack.
+ *
+ * The ONE install in this module, awaited by startInstall and dropped on the
+ * floor by the daily update path below. It was two — a `spawnSync` for the cold
+ * path and a fire-and-forget `spawn` for the background one — and the sync half
+ * is what #476 removes: nothing here needs an answer before the next tick, and
+ * a two-minute `spawnSync` at boot is two minutes of a dead process.
+ *
+ * Everything the sync path was careful about is carried over unchanged, because
+ * every one of those cares was bought with a bug report:
+ *
+ *   - the vector is `installSpec`'s, spread into spawn exactly as spawnSync got
+ *     it, which is what keeps #456's absolute `npm.cmd` and #362's per-argument
+ *     quoting on Windows. `opts` is spread LAST for the same reason it was
+ *     before: it carries windowsVerbatimArguments, and nothing above it may win.
+ *   - `windowsHide`, so no console window flashes up.
+ *   - INSTALL_TIMEOUT_MS, as a deadline this module enforces itself rather than
+ *     spawn's own `timeout` option. That option sends one signal to the process
+ *     it started, and on Windows a `.cmd` runs THROUGH cmd.exe — so the signal
+ *     would land on the wrapper and leave npm downloading, which is the same
+ *     distinction exec.mjs's `run` states and the reason killTree exists. Same
+ *     shape as runOnce below, so this file has one deadline pattern rather than
+ *     two.
+ *
+ * Diagnosis is unchanged too: `installFailureText` is handed the same four
+ * fields spawnSync used to hand it — a failure to LAUNCH in `error`, the exit
+ * status, and both output streams, because npm has never confined itself to
+ * stderr.
+ */
+function install(spec = "latest") {
+  return new Promise((resolve, reject) => {
     mkdirSync(CACHE_DIR, { recursive: true });
     const { file, args, opts } = installSpec(spec);
-    const child = spawn(
-      file,
-      args,
-      { windowsHide: true, detached: false, stdio: "ignore", ...opts },
-    );
-    child.on("error", () => {});
-    child.unref?.();
-  } catch { /* best-effort */ }
+    const child = spawn(file, args, { windowsHide: true, ...opts });
+    let out = "", err = "", settled = false;
+    let timer = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    // A child that dies emits 'error' AND THEN 'close', and a deadline that
+    // fires kills the child and so provokes both — hence `settled`. Whichever
+    // arrives first is the account that travels.
+    const failed = (r) => finish(reject, new Error(`npm install ccusage failed: ${installFailureText(r)}`));
+    timer = setTimeout(() => {
+      // The verdict is stated before the kill, the order exec.mjs's `run` uses:
+      // the answer must not depend on the killed child cooperating.
+      failed({
+        error: { message: `npm install timed out after ${INSTALL_TIMEOUT_MS}ms` },
+        stdout: out,
+        stderr: err,
+      });
+      killTree(child);
+    }, INSTALL_TIMEOUT_MS);
+    timer.unref?.();
+    child.stdout?.on("data", d => { out += d; });
+    child.stderr?.on("data", d => { err += d; });
+    child.on("error", e => failed({ error: e, stdout: out, stderr: err }));
+    child.on("close", status => {
+      if (status !== 0) return failed({ status, stdout: out, stderr: err });
+      // A zero exit is npm's opinion, not a fact about the disk, and the caller
+      // treats "the install resolved" as "there is something to run". Checking
+      // here is what stops a silent success: getRunner used to call
+      // resolveEntry(), get null, and fall through to the npx fallback with
+      // NOTHING recorded anywhere about why — so the modal explained the
+      // fallback's stderr and the install's half of the story was never written
+      // down at all.
+      if (!resolveEntry()) {
+        return finish(reject, new Error(
+          `npm install ccusage exited 0 but left nothing runnable under ${CACHE_DIR}: `
+          + `${installTreeReport()}`,
+        ));
+      }
+      finish(resolve, undefined);
+    });
+  });
+}
+
+// The daily update path's install: the same one above, with nobody listening.
+//
+// It has no shared promise and no `_lastInstallError` on purpose. This runs
+// behind a ccusage that already works, so a failed upgrade is not news the
+// modal should lead with — the copy on disk still answers, and the check comes
+// round again tomorrow.
+function installInBackground(spec = "latest") {
+  install(spec).catch(() => { /* best-effort */ });
 }
 
 // True at most once per UPDATE_CHECK_MS, gated by the marker file's mtime so the
@@ -363,7 +430,7 @@ function maybeBackgroundUpdate(installedVersion) {
     child.on("error", () => {});
     child.on("close", () => {
       const latest = out.trim();
-      if (latest && latest !== installedVersion) installAsync(latest);
+      if (latest && latest !== installedVersion) installInBackground(latest);
     });
   } catch { /* ignore */ }
 }
@@ -831,7 +898,10 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
  *
  * Returns { state: "present" | "user" | "installing" | "updating" |
  * "unavailable" }. Never throws and never blocks on the install itself — a slow
- * registry must not hold up the server.
+ * registry must not hold up the server. That second half was a claim rather
+ * than a fact until #476: `startInstall` wrapped a `spawnSync` in an async IIFE
+ * with nothing to await in it, so `{ state: "installing" }` was returned only
+ * after the install had already happened, on this stack.
  *
  * The order here is getRunner's order, and it has to be: a boot that installs a
  * managed copy while the user already has one on PATH would make getRunner's

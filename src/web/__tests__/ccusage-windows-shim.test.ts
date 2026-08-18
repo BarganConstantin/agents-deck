@@ -198,45 +198,68 @@ describe("the cmd.exe line the ccusage install and fallback produce", () => {
 
 // ── the server half, with every spawn faked ─────────────────────────────────
 //
-// Nothing real runs and nothing is installed: spawnSync is the `npm install`
-// and answers from a plan, spawn is the ccusage run and does the same.
+// Nothing real runs and nothing is installed: the `npm install` answers from
+// installReply, the ccusage run answers from a plan, and both are spawns.
 
-const { calls, installReply, runPlan, fakeChild } = vi.hoisted(() => {
+const { calls, installReply, isInstall, runPlan, fakeChild, installChild } = vi.hoisted(() => {
   type Sub = (v?: unknown) => void;
   type Reply = { stdout?: string; stderr?: string; code: number };
+  const child = (arm: (out: Sub[], err: Sub[], self: Record<string, Sub[]>) => void) => {
+    const out: Sub[] = [], err: Sub[] = [], self: Record<string, Sub[]> = {};
+    setTimeout(() => arm(out, err, self), 0);
+    return {
+      pid: 4242,
+      stdout: { on: (_ev: string, cb: Sub) => { out.push(cb); } },
+      stderr: { on: (_ev: string, cb: Sub) => { err.push(cb); } },
+      on: (ev: string, cb: Sub) => { (self[ev] ||= []).push(cb); },
+      kill: () => {},
+      unref: () => {},
+    };
+  };
   return {
     calls: [] as { file: string; args: string[] }[],
     installReply: { current: null as null | Record<string, unknown> },
     runPlan: [] as Reply[],
-    fakeChild: (reply: Reply) => {
-      const out: Sub[] = [], err: Sub[] = [], self: Record<string, Sub[]> = {};
-      setTimeout(() => {
-        if (reply.stdout) out.forEach(cb => cb(reply.stdout));
-        if (reply.stderr) err.forEach(cb => cb(reply.stderr));
-        self.close?.forEach(cb => cb(reply.code));
-      }, 0);
-      return {
-        pid: 4242,
-        stdout: { on: (_ev: string, cb: Sub) => { out.push(cb); } },
-        stderr: { on: (_ev: string, cb: Sub) => { err.push(cb); } },
-        on: (ev: string, cb: Sub) => { (self[ev] ||= []).push(cb); },
-        kill: () => {},
-        unref: () => {},
-      };
-    },
+    // Which child is the install, on either kind of machine: POSIX gets the
+    // argument vector, Windows gets one cmd.exe command line with the same
+    // words quoted into it, so the test is "an argument that says install"
+    // rather than "the argument `install`".
+    isInstall: (args: string[]) => args.some(a => a.includes("install")),
+    fakeChild: (reply: Reply) => child((out, err, self) => {
+      if (reply.stdout) out.forEach(cb => cb(reply.stdout));
+      if (reply.stderr) err.forEach(cb => cb(reply.stderr));
+      self.close?.forEach(cb => cb(reply.code));
+    }),
+    // One `npm install`, as the child that produces it. `installReply` keeps
+    // spawnSync's four fields because they are what these cases are ABOUT — a
+    // failure to LAUNCH in `error` with no status, a non-zero exit, a lying
+    // zero exit — and they are exactly what installFailureText reads. Since
+    // #476 the install is a `spawn`, so the same four arrive the way a real
+    // child delivers them: output on the streams, then 'error' and 'close'.
+    // Both of those, in that order, because that is what Node emits for a child
+    // that never started — and settling once on the pair is part of what the
+    // install now has to get right.
+    installChild: (reply: Record<string, unknown>) => child((out, err, self) => {
+      if (reply.stdout) out.forEach(cb => cb(reply.stdout));
+      if (reply.stderr) err.forEach(cb => cb(reply.stderr));
+      if (reply.error) self.error?.forEach(cb => cb(reply.error));
+      self.close?.forEach(cb => cb(reply.error ? null : reply.status));
+    }),
   };
 });
 
 vi.mock("node:child_process", () => ({
   spawn: (file: string, args: string[] = []) => {
     calls.push({ file, args });
+    if (isInstall(args)) {
+      return installChild(installReply.current ?? { status: 1, stdout: "", stderr: "test: no npm here" });
+    }
     return fakeChild((runPlan.shift() ?? { stdout: `{"daily":[],"totals":null}`, code: 0 }) as never);
   },
-  spawnSync: (file: string, args: string[] = []) => {
-    calls.push({ file, args });
-    return installReply.current ?? { status: 1, stdout: "", stderr: "test: no npm here" };
-  },
   execFile: () => { throw new Error("test: execFile blocked"); },
+  // No spawnSync: nothing in the module graph imports it, and if a change ever
+  // brings the synchronous install back, this file stops loading rather than
+  // quietly passing.
 }));
 
 // ccusage.mjs resolves ~/.agents-deck/ccusage at import time out of os.homedir(),
