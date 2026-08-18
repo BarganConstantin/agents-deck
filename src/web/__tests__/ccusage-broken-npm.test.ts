@@ -53,7 +53,9 @@ const NPM_STACK = NPX_STACK.replace("npx-cli.js", "npm-prefix.js");
 
 // ── the sentence the modal shows ────────────────────────────────────────────
 
-describe("a machine whose npm and npx are installed but broken", () => {
+// The name is deliberately about the OBSERVATION rather than the cause: #450
+// established that the deck cannot see which of the two produced this stack.
+describe("npx launched and Node could not load the script it points at", () => {
   const said = (error: string) => explainCcusageFailure({ reason: "run_failed", error }, "x");
 
   it("does not tell the user to try again, which is the one thing that cannot work", () => {
@@ -63,11 +65,24 @@ describe("a machine whose npm and npx are installed but broken", () => {
     expect(said(NPX_STACK)).not.toMatch(/try again/i);
   });
 
-  it("names the damaged installation and reinstalling Node as the remedy", () => {
+  it("names what the deck ran and what came back, without a verdict on the machine", () => {
+    // This assertion used to require the words "damaged" and "reinstall", which
+    // is the claim #450 removed. Node's stderr here is produced by a damaged npm
+    // AND by the deck's own spawn reaching the wrong npx — `npx ccdeck` prepends
+    // a `node_modules\.bin` for every ancestor of the cwd onto PATH, and
+    // fallbackSpec asks cmd.exe for a bare `npx.cmd` — and nothing in the text
+    // separates them. The reported user's npm worked (`npm i -g ccdeck` added
+    // twelve packages on the same machine), so the reinstall cost them an hour
+    // and could not have helped. What survives is the part that was right: the
+    // sentence names npx, says what failed, and offers a remedy that is not
+    // "try again".
     const out = said(NPX_STACK);
     expect(out).toMatch(/npm|npx/);
-    expect(out).toMatch(/damaged|broken/i);
-    expect(out).toMatch(/reinstall/i);
+    expect(out).toMatch(/could not load/i);
+    expect(out).not.toMatch(/reinstall/i);
+    // A check the user can run in thirty seconds, which is what tells the two
+    // causes apart.
+    expect(out).toMatch(/where npx|npm config get prefix/);
   });
 
   it("does not claim npx is missing from PATH, because it is on PATH and ran", () => {
