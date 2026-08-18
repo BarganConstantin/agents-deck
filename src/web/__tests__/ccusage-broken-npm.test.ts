@@ -247,10 +247,20 @@ const prevEnv = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   AGENTS_DECK_NO_INSTALL: process.env.AGENTS_DECK_NO_INSTALL,
+  PATH: process.env.PATH,
+  AGENTS_DECK_CCUSAGE: process.env.AGENTS_DECK_CCUSAGE,
 };
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
 delete process.env.AGENTS_DECK_NO_INSTALL;
+// #433 gave the deck a third runner — a ccusage the user provided, at
+// AGENTS_DECK_CCUSAGE or on PATH — reached when the managed install is not
+// there. This file is about the managed install and the npx fallback behind it,
+// so neither may exist here; a developer with `npm i -g ccusage` would
+// otherwise take that third path and none of these assertions would be about
+// the thing they name.
+process.env.PATH = FAKE_HOME;
+delete process.env.AGENTS_DECK_CCUSAGE;
 
 // @ts-expect-error — .mjs server module, no types
 const { cannotLoadModule, fetchCcusageDaily, primeCcusage } = await import("../../server/ccusage.mjs");

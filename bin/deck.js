@@ -396,6 +396,12 @@ async function reportStartup(jobs) {
   const cu = await jobs.ccusage;
   if (cu?.state === "present") write(row({ mark: G.ok, label: "ccusage", detail: `v${cu.version}` }));
   else if (cu?.state === "updating") write(row({ mark: G.ok, label: "ccusage", detail: `v${cu.version}, checking for update` }));
+  // A ccusage the user provided, named rather than versioned — reading a
+  // version out of it means running it, and a status row is not worth a spawn.
+  // Naming the file is the more useful half anyway: it is the answer to "which
+  // ccusage is this deck actually going to run", which is a question a machine
+  // with a managed install AND a PATH copy could not answer before #433.
+  else if (cu?.state === "user") write(row({ mark: G.ok, label: "ccusage", detail: `your own copy ${G.dash} ${cu.bin}` }));
   else if (cu?.state === "installing") write(row({ mark: G.ok, label: "ccusage", detail: "installing in background" }));
 
   const upgrade = await jobs.update;

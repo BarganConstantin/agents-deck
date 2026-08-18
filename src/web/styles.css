@@ -2204,8 +2204,17 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   white-space: nowrap;
   color: var(--text);
   /* Default animation: bubble flies out from the agent's centre. The
-     --spawn-dx/dy custom properties are injected per-bubble in JS. */
-  animation: bubble-spawn 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+     --spawn-dx/dy custom properties are injected per-bubble in JS.
+
+     220ms, not the 460ms this ran at for most of its life. A live deck was
+     sampled with 79 of these on screen at once, and 460ms was the longest
+     duration in the app sitting on its single most repetitive element — the
+     rule the accounts panel states in full at .aa-primer is that what you see
+     hundreds of times a day does not get to celebrate. The curve is unchanged
+     and it is still the overshoot; what changed is that the overshoot now
+     happens once, which is what the per-keyframe easing inside bubble-spawn is
+     for. */
+  animation: bubble-spawn 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 .tool-burst .tb-emoji {
   font-size: 13px;
@@ -2244,24 +2253,68 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   border-color: rgba(134, 239, 172, 0.55);
   background: linear-gradient(180deg, rgba(134,239,172,0.10), transparent), var(--panel);
   box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15);
-  /* Spawn THEN flash. The cascade with .tool-burst gives us a single
-     animation property here that combines spawn + done-flash so neither
-     interrupts the other. */
+  /* No delay on the flash, and that is the whole of #354's first defect.
+     The delay used to read 460ms and the comment here used to say "spawn THEN
+     flash, so neither interrupts the other" — which would be true if this list
+     started when the bubble did. It does not. `bubble-spawn` is named at the
+     same list index under both .tool-burst and this rule, so it survives the
+     class change untouched, but `bubble-done-flash` is NEW to the list at that
+     moment and therefore starts THEN, carrying its delay from the class change
+     rather than from spawn. The class change is the tool finishing, which lands
+     at an arbitrary time.
+     Measured on a real Bash call through this deck at 127.0.0.1:4409, timeline
+     ms: spawn painted at 4106, the tool settled and .status-done landed at
+     5356, `mark-pop` on the freshly-inserted ✓ started on the next frame at
+     5373 with no delay, and the flash did not paint until 5833 — 477ms after
+     the event it is reporting, and 697ms on the sub-bubble, whose delay was
+     summed to 680ms in the belief that the list restarts. One event, two
+     signals, and the sub's glow trailing the primary's by 220ms.
+     The sequencing this delay was buying is bought instead by the flash no
+     longer touching `transform`: it pulses the independent `scale` property,
+     which composes with the transform bubble-spawn is filling rather than
+     overriding it — exactly the argument .tool-burst.clickable's hover lift
+     already makes for using `translate`. Overlap is now harmless, so the flash
+     can fire on the frame the tool lands, beside the ✓. */
   animation:
-    bubble-spawn 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
-    bubble-done-flash 520ms 460ms ease-out;
+    bubble-spawn 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    bubble-done-flash 520ms ease-out;
 }
 .tool-burst.status-err {
   border-color: rgba(252, 165, 165, 0.60);
   background: linear-gradient(180deg, rgba(252,165,165,0.10), transparent), var(--panel);
   box-shadow: 0 0 0 1px rgba(252,165,165,0.35), 0 4px 12px rgba(252,165,165,0.18);
+  /* The shake carried the identical delay and therefore the identical defect —
+     a failure announced 460ms after it happened — so it loses it for the same
+     reason and by the same means: it shakes `translate`, not `transform`. */
   animation:
-    bubble-spawn 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
-    bubble-err-shake 380ms 460ms ease-in-out;
+    bubble-spawn 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    bubble-err-shake 380ms ease-in-out;
 }
 .tool-burst.fading {
-  /* Overrides whatever spawn/flash/shake was running — we're on the way out. */
-  animation: bubble-fade 600ms ease-in forwards;
+  /* Overrides whatever spawn/flash/shake was running — we're on the way out.
+
+     Two animations rather than one, and the reason is the one .confetti-bit
+     writes out at length: a single timing function governs every property in a
+     keyframe set, so a curve chosen to make movement feel committed also
+     rewrites the opacity ramp. Here the opacity ramp is not free to be
+     rewritten. The leader line to this bubble is an SVG path whose opacity
+     ToolBursts computes in JS as `1 - since / FADE_MS` — dead linear, over this
+     exact 600ms — so any curve on this fade is a curve the connector does not
+     follow, and .tool-burst-wrap's rule above is that both ends move on the
+     same frame or neither does. Movement gets a curve; the fade runs linear on
+     its own clock and lands on its line every frame.
+     The curve it stops using was `ease-in`, which was the only ease-in in this
+     sheet — the other 40 timing functions here all put their second control
+     point at x < 1, so they flatten as they land, and none of them accelerates
+     out of rest the way this did. Measured on the pre-fix sheet, 150ms into the
+     600ms exit the bubble was still at opacity 0.907 and scale 0.983 while its
+     own connector had already given up a quarter of its opacity: the bubble
+     hung, and leaving read as heavier than arriving. The 600ms itself stays —
+     FADE_MS in ToolBursts.tsx gates the element's removal and the
+     reduced-motion answer keeps it too. Only the curve was ever free. */
+  animation:
+    bubble-fade-move 600ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards,
+    bubble-fade-out 600ms linear forwards;
 }
 
 /* Per-category accent — recolours the emoji circle and adds a tinted left
@@ -2306,31 +2359,43 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .tool-burst.dim:hover { opacity: 0.6; }
 
 /* Shell sub-bubble — slightly compressed and a touch dimmer so the eye
-   parses "primary → sub" instead of "two equal bubbles". Spawn is delayed
-   ~220ms so the chain reads sequentially: Bash appears, then git/grep
-   slides out of it. The post-spawn flash/shake for status changes uses
-   sum delays so it lines up with the sub's spawn, not the primary's. */
+   parses "primary → sub" instead of "two equal bubbles". Spawn is delayed so
+   the chain reads sequentially: Bash appears, then git/grep slides out of it.
+   The delay is 110ms rather than the 220ms it was, which is not a taste change:
+   it was set at roughly half the primary's spawn so the sub leaves while the
+   primary is still arriving, and holding that ratio against a 220ms spawn is
+   what keeps the chain reading as one gesture instead of two. It also halves
+   the whole pair to 330ms, on the element the deck draws most.
+   The flash and shake below carry NO delay at all now. They used to carry the
+   sum, 220 + 460, on the theory that the animation list restarts when the
+   status class lands and the sub therefore has to wait out its own spawn. The
+   list does not restart — see .tool-burst.status-done — so that sum was 680ms
+   of pure lateness, measured, and it is what made a sub's glow trail its
+   primary's by 220ms on a tool that finished once. */
 .tool-burst.sub {
   font-size: 10.5px;
   padding: 4px 10px 4px 8px;
   opacity: 0.94;
-  animation: bubble-spawn 460ms 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: bubble-spawn 220ms 110ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 .tool-burst.sub .tb-emoji { font-size: 12px; }
 .tool-burst.sub.status-done {
   animation:
-    bubble-spawn 460ms 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
-    bubble-done-flash 520ms 680ms ease-out;
+    bubble-spawn 220ms 110ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    bubble-done-flash 520ms ease-out;
 }
 .tool-burst.sub.status-err {
   animation:
-    bubble-spawn 460ms 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
-    bubble-err-shake 380ms 680ms ease-in-out;
+    bubble-spawn 220ms 110ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    bubble-err-shake 380ms ease-in-out;
 }
 /* Fade-out wins regardless — when the underlying tool fades, sub fades
-   with primary so they leave together. */
+   with primary so they leave together. Same pair, same curves, same reason as
+   the primary's: the movement eases, the opacity does not. */
 .tool-burst.sub.fading {
-  animation: bubble-fade 600ms ease-in forwards;
+  animation:
+    bubble-fade-move 600ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards,
+    bubble-fade-out 600ms linear forwards;
 }
 
 /* Clickable bubble — pointer-events on, hover lift.
@@ -2358,16 +2423,38 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    layer is aria-hidden decoration and the tools it draws are reached from the
    detail panel's list, which is real buttons. See ToolBursts.tsx. */
 
+/* Why the easing is written INSIDE this keyframe set and not only on the
+   shorthand above. `animation-timing-function` on the shorthand is not the
+   curve of the animation, it is the default curve of every SEGMENT of it, and
+   nothing overrode it here — `getKeyframes()` on a live bubble returned the
+   overshoot curve attached to offsets 0, 0.55 AND 1. cubic-bezier(0.34, 1.56,
+   0.64, 1) peaks at progress 1.0978, so it was applied twice: once climbing
+   0.35 → 1.12, where it measured a peak of 1.1948 at 140ms, and again settling
+   1.12 → 1.00, where 9.78% of a downward segment carried it to a trough of
+   0.9883 at 370ms before it came back up. Two overshoots where one was
+   designed, and the second one is a bubble that has arrived shrinking below
+   its own size in front of the reader.
+   So the back-out curve is now spent entirely on the segment that arrives, and
+   the segment that settles gets the sheet's ordinary ease-out — the same
+   cubic-bezier(0.23, 1, 0.32, 1) that nineteen other declarations here use —
+   which is monotone and cannot overshoot at all.
+
+   The start scale is 0.92 rather than 0.35 for the reason .aa-done already
+   states beside its own entrance: nothing in the real world appears from
+   nothing. A pill that begins at just over a third of its size is not arriving,
+   it is inflating, and the travel from --spawn-dx is what carries the "this
+   came out of that agent" reading anyway. */
 @keyframes bubble-spawn {
   0%   {
     opacity: 0;
-    transform: translate(var(--spawn-dx, -28px), var(--spawn-dy, 0)) scale(0.35);
+    transform: translate(var(--spawn-dx, -28px), var(--spawn-dy, 0)) scale(0.92);
     filter: blur(3px) brightness(1.4);
   }
   55%  {
     opacity: 1;
-    transform: translate(0, 0) scale(1.12);
+    transform: translate(0, 0) scale(1.06);
     filter: blur(0) brightness(1.15);
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
   }
   /* transform only, for the reason nodeSpawn carries in full: this animation
      fills for the bubble's whole life, so anything named here is pinned against
@@ -2379,24 +2466,42 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
     transform: translate(0, 0) scale(1);
   }
 }
+/* `scale` and `translate`, the independent properties, and never `transform`.
+   These two run concurrently with bubble-spawn now that neither carries a delay
+   to hold it clear, and `transform` is the one property bubble-spawn cannot
+   share: it is declared on the base class with `both`, so it fills its 100%
+   keyframe for the bubble's whole life, and a second animation naming
+   `transform` does not compose with that, it replaces it for as long as it
+   runs. A tool that finished inside its own spawn would have snapped from
+   whatever scale the spawn had reached to this animation's 1. The independent
+   properties multiply into the same matrix instead — the same reason
+   .tool-burst.clickable's hover lift is `translate`, written out there. */
 @keyframes bubble-done-flash {
-  0%   { transform: scale(1); box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15); }
+  0%   { scale: 1; box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15); }
   40%  {
-    transform: scale(1.14);
+    scale: 1.14;
     box-shadow: 0 0 0 2px rgba(134,239,172,0.55), 0 0 22px rgba(134,239,172,0.55);
   }
-  100% { transform: scale(1); box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15); }
+  100% { scale: 1; box-shadow: 0 0 0 1px rgba(134,239,172,0.22), 0 4px 14px rgba(134,239,172,0.15); }
 }
 @keyframes bubble-err-shake {
-  0%, 100% { transform: translateX(0); }
-  15% { transform: translateX(-4px); }
-  35% { transform: translateX(4px); }
-  55% { transform: translateX(-3px); }
-  75% { transform: translateX(2px); }
+  0%, 100% { translate: 0; }
+  15% { translate: -4px; }
+  35% { translate: 4px; }
+  55% { translate: -3px; }
+  75% { translate: 2px; }
 }
-@keyframes bubble-fade {
-  from { opacity: 1; transform: scale(1)    translate(0, 0); filter: blur(0); }
-  to   { opacity: 0; transform: scale(0.82) translate(18px, -4px); filter: blur(1.5px); }
+/* One exit split in two so the curve and the fade stop sharing a clock — see
+   .tool-burst.fading. Neither half names a property the other does, so the two
+   compose cleanly, and `opacity` staying out of the movement half is what lets
+   it be linear without flattening the travel with it. */
+@keyframes bubble-fade-move {
+  from { transform: scale(1)    translate(0, 0);         filter: blur(0); }
+  to   { transform: scale(0.82) translate(18px, -4px);   filter: blur(1.5px); }
+}
+@keyframes bubble-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
 }
 @keyframes emoji-wobble {
   0%, 100% { transform: rotate(-6deg) scale(1); }

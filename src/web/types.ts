@@ -34,6 +34,27 @@ export interface ToolCall {
    *  / `response` were released to keep the tab's heap bounded. The previews
    *  survive; the modal tells the user the full payload is gone. */
   trimmed?: boolean;
+  /** Set once a `PostToolUse` / `PostToolUseFailure` event has been applied to
+   *  THIS call, which is a different fact from `endedAt != null` and is the only
+   *  one that answers "may a new outcome still change this record?".
+   *
+   *  Two writers settle a call and only one of them saw evidence. A real outcome
+   *  event reports what the tool did; `sweepStaleTools` stamps a verdict on a
+   *  call whose session went quiet, and that verdict is a guess #436 explicitly
+   *  allows a late outcome to overturn. `endedAt` cannot tell the two apart —
+   *  both write it — and neither can "missing from `toolIndex`", because the
+   *  sweep and the settle both delete the entry. So a second delivery of one
+   *  outcome and a genuinely late first one arrive at the reducer looking
+   *  identical, and `PostToolUse` is the one event whose handler does
+   *  arithmetic: it adds the call's usage to its owner, so telling them apart is
+   *  the difference between a session's spend and twice a session's spend.
+   *
+   *  Only an outcome event sets this, so it is exactly that discriminator. It is
+   *  the `ToolCall` counterpart of `reaped` on a root (#350) and it exists for
+   *  the same reason that flag does: both record WHO settled the node rather
+   *  than THAT it is settled, because only the "who" says whether later evidence
+   *  is allowed to reopen it. */
+  outcomeApplied?: boolean;
 }
 
 export interface TokenUsage {
