@@ -146,11 +146,22 @@ describe("Node unable to load one of npm's own program files", () => {
     expect(out).not.toMatch(/reinstall/i);
   });
 
-  it("hands over the check that actually separates the two causes", () => {
-    // Something the user can run in thirty seconds, instead of an hour of
-    // reinstalling a Node that was never the problem.
+  it("no longer sends the user checking a PATH and a prefix that were both fine", () => {
+    // This assertion used to require `where npx` / `npm config get prefix`, the
+    // diagnostic #450 shipped on the theory that the deck had reached the WRONG
+    // npx off an npx-extended PATH. The reported user ran it: `where npx` gave
+    // `C:\Program Files\nodejs\npx.cmd` and the prefix was the stock
+    // `%APPDATA%\npm`. #456 found the real cause — the deck asked cmd.exe for a
+    // BARE `npx.cmd`, so the shim's `%~dp0` resolved to the deck's working
+    // directory — which is the deck's own bug and nothing for the user to
+    // inspect. Sending them to look at a healthy machine a third time is the
+    // one thing this sentence must not do.
     const out = said(NPX_CLI);
-    expect(out).toMatch(/where npx|npm config get prefix/);
+    expect(out).not.toMatch(/where npx/);
+    expect(out).not.toMatch(/npm config get prefix/);
+    // What replaces it is a remedy the reader can act on: the fix is in a newer
+    // deck, and this shape only reaches a browser talking to an older one.
+    expect(out).toMatch(/update the deck/i);
   });
 
   it("reads the same whether the shim spelled itself .cmd or not", () => {
