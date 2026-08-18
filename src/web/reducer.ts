@@ -485,25 +485,80 @@ function releaseToolIds(state: GraphState, a: AgentNodeData): void {
 /** Evict the oldest "done" agents when the agents map exceeds `cap`. Only
  *  considers agents whose endedAt is older than `graceMs` so freshly-done
  *  agents (still in fade-out) aren't yanked from under the user. Mutates
- *  state in place. Returns true when at least one agent was removed. */
+ *  state in place. Returns true when at least one agent was removed.
+ *
+ *  A PARENT NEVER GOES BEFORE ITS CHILDREN (#445). This evicts individual
+ *  agents in `endedAt` order and nothing tied a subagent's fate to its root's,
+ *  so a root that finished BEFORE one of its subagents was deleted first — which
+ *  happens whenever a background subagent outlives the turn that dispatched it,
+ *  and on this machine's log that is every announced subagent — leaving
+ *  `S::A.parentId` pointing at nothing. The result is a card that belongs to
+ *  nowhere: App.tsx draws no edge for it because there is no parent node to draw
+ *  to, `SessionList.buildRows` skips it because it is not a root, so it has no
+ *  sidebar row and no cost roll-up, and it floats on the canvas with nothing to
+ *  explain it. `pruneDoneSessions` has held the opposite invariant since it was
+ *  written — it evicts whole subtrees and has a test asserting no agent is left
+ *  pointing at a deleted parent — and this is the same invariant. It is kept the
+ *  same way, too: an agent that has children leaves WITH them, so the eviction
+ *  order stays "oldest ended first" and a root's departure is never something a
+ *  later pass has to finish.
+ *
+ *  Skipping rather than cascading when a child is NOT a candidate, because that
+ *  child is the reason to keep the parent. Everything in `stale` is `done`, but
+ *  a subagent can still be `active` under a `done` root — a background Task, or
+ *  a `SubagentStop` that was lost — and one inside `graceMs` is still fading out
+ *  on screen. Taking the root then would delete the card the user is watching
+ *  work, or yank one mid-animation; leaving the whole tree alone costs a pass,
+ *  and the pass comes round every 250ms.
+ *
+ *  The one price is that the cap can undershoot: a tree leaves whole, so
+ *  evicting a root with six subagents to get one node back under the cap removes
+ *  seven. That is the trade `pruneDoneSessions` has always made for the same
+ *  reason, and undershooting a memory bound is the harmless direction. */
 export function pruneOldAgents(state: GraphState, now: number, cap: number, graceMs: number): boolean {
   if (state.agents.size <= cap) return false;
+  // Evictable on its own terms: finished, and finished long enough ago that it
+  // is not still fading out under the user's eyes.
+  const evictable = (a: AgentNodeData): boolean =>
+    a.state === "done" && a.endedAt != null && now - a.endedAt > graceMs;
+
   const stale: Array<{ id: string; endedAt: number }> = [];
+  // Children per parent, over the WHOLE map rather than over the candidates —
+  // the agents that are not candidates are exactly the ones whose parent has to
+  // stay, so they have to be visible here.
+  const childrenOf = new Map<string, string[]>();
   for (const [id, a] of state.agents) {
-    if (a.state === "done" && a.endedAt != null && now - a.endedAt > graceMs) {
-      stale.push({ id, endedAt: a.endedAt });
+    if (a.parentId != null) {
+      const kids = childrenOf.get(a.parentId);
+      if (kids) kids.push(id); else childrenOf.set(a.parentId, [id]);
     }
+    if (evictable(a)) stale.push({ id, endedAt: a.endedAt! });
   }
   if (stale.length === 0) return false;
   stale.sort((x, y) => x.endedAt - y.endedAt); // oldest first
+
   let removed = 0;
+  const drop = (id: string): void => {
+    const a = state.agents.get(id);
+    if (!a) return;
+    // #443: the agent's in-flight ids go with it. See `releaseToolIds`.
+    releaseToolIds(state, a);
+    state.agents.delete(id);
+    removed++;
+  };
+
   for (const c of stale) {
     if (state.agents.size <= cap) break;
-    // #443: the agent's in-flight ids go with it. See `releaseToolIds`.
-    const a = state.agents.get(c.id);
-    if (a) releaseToolIds(state, a);
-    state.agents.delete(c.id);
-    removed++;
+    // Already gone — a subagent whose root came up first left with it.
+    if (!state.agents.has(c.id)) continue;
+    // Read the children out of the live map rather than the snapshot: some of
+    // them may have been evicted by an earlier iteration already.
+    const kids = (childrenOf.get(c.id) ?? [])
+      .map(id => state.agents.get(id))
+      .filter((k): k is AgentNodeData => k != null);
+    if (kids.some(k => !evictable(k))) continue;
+    for (const k of kids) drop(k.id);
+    drop(c.id);
   }
   return removed > 0;
 }
@@ -518,21 +573,55 @@ export function pruneOldAgents(state: GraphState, now: number, cap: number, grac
  *  agent in it is done, so a subagent still running keeps its whole tree, and
  *  removing a root never orphans a child. `graceMs` after the last agent
  *  finishes, the session is still exempt so nothing vanishes mid-fade-out.
- *  Mutates state in place; returns true when anything was removed. */
+ *  Mutates state in place; returns true when anything was removed.
+ *
+ *  CLOSED SESSIONS GO FIRST, and that is the whole of #445. "Finished" here has
+ *  only ever meant `endedAt` is set, and `endedAt` on a root is written by
+ *  `Stop`, which is a TURN boundary on both providers — so the queue this
+ *  function evicted from was mostly terminals the user was still sitting in
+ *  front of, thinking. With the shipped constants (cap 6, grace 2 minutes) that
+ *  is not theoretical: replaying this machine's two event logs through this
+ *  reducer with the real tick, 20 sessions were evicted and 7 of them went on to
+ *  produce more events afterwards — a still-open terminal vanishing from canvas
+ *  and sidebar two minutes into thinking time and coming back on the next prompt
+ *  as a brand-new node, with its prompts, its tool history, its `firstPrompt`,
+ *  its model and its elapsed time all gone and `startedAt` reset to now. The
+ *  same replay with the ranking below evicts 17 and gets 4 of them wrong, and
+ *  all four had been silent for at least six minutes when they went — the
+ *  residue is sessions that came back after hours, which no rule here can tell
+ *  from a session that is over.
+ *
+ *  `closedAt` (types.ts) is what makes the two distinguishable, and ordering is
+ *  all it is allowed to do. The cap still holds exactly and the count of
+ *  evictions per pass is unchanged, so a board of nothing but idle sessions
+ *  still settles at `cap` with the oldest going first — which it must, because
+ *  absence of `closedAt` means "not known to be closed" and never "still open":
+ *  a killed CLI sends no `SessionEnd`, and Codex has no such record at all. What
+ *  changes is that a genuinely closed session is spent first when there is one,
+ *  and an idle-but-open one is only spent when nothing better is available. */
 export function pruneDoneSessions(state: GraphState, now: number, cap: number, graceMs: number): boolean {
-  // sessionId -> { agent ids, latest endedAt, whether anything is still live }
-  const sessions = new Map<string, { ids: string[]; endedAt: number; live: boolean }>();
+  // sessionId -> { agent ids, latest endedAt, whether anything is still live,
+  //                whether the session itself is known to be over }
+  const sessions = new Map<string, { ids: string[]; endedAt: number; live: boolean; closed: boolean }>();
   for (const [id, a] of state.agents) {
     let s = sessions.get(a.sessionId);
-    if (!s) { s = { ids: [], endedAt: 0, live: false }; sessions.set(a.sessionId, s); }
+    if (!s) { s = { ids: [], endedAt: 0, live: false, closed: false }; sessions.set(a.sessionId, s); }
     s.ids.push(id);
+    // Only the root carries `closedAt`, for the same reason it is the only one
+    // carrying `waiting` and `lastEventAt`: being over is a property of the
+    // session and not of any one agent inside it.
+    if (a.kind === "root" && a.closedAt != null) s.closed = true;
     if (a.state === "done" && a.endedAt != null) s.endedAt = Math.max(s.endedAt, a.endedAt);
     else s.live = true;
   }
 
   const finished = [...sessions.values()]
     .filter(s => !s.live && s.endedAt > 0 && now - s.endedAt > graceMs)
-    .sort((x, y) => x.endedAt - y.endedAt); // oldest-finished first
+    // Genuinely-closed sessions first, and oldest-finished first within each
+    // group — so the old ordering is exactly what remains when nothing on the
+    // board is known to be closed, which is every board a Codex-only or a
+    // kill-the-terminal user ever sees.
+    .sort((x, y) => (x.closed === y.closed ? x.endedAt - y.endedAt : x.closed ? -1 : 1));
 
   // Sessions still inside the grace period already count against the cap, so
   // the board settles at `cap` rather than briefly overshooting it.
@@ -777,6 +866,23 @@ export function sweepStaleSessions(state: GraphState, now: number, maxMs: number
     // be news. One rule — "a session nobody has heard from is not current" —
     // rather than a rule for the state and a second one for the badge.
     if (root.waiting) { root.waiting = null; changed = true; }
+
+    // The session is over, and this is the sweep saying so about the SESSION
+    // rather than about a turn (#445) — which makes it the second writer of
+    // `closedAt` and the one that matters for a terminal the user closed
+    // without exiting cleanly, since a killed CLI sends no `SessionEnd` at all.
+    // It is stamped for every root past `maxMs`, not only for the ones settled
+    // below: a root that a `Stop` already left `done` is skipped by that branch,
+    // so without this line an idle-but-open session that turned out to be gone
+    // would sit at the back of the eviction queue forever and the board would
+    // fill with this morning's terminals while today's honest endings were
+    // evicted around them. `heardAt`, not `now`, for the same reason `endedAt`
+    // uses it: that is the last moment there is evidence the session existed.
+    //
+    // `changed` is deliberately not touched, exactly as for the stack delete
+    // below — nothing on screen is drawn from this field, so writing it is not a
+    // reason to re-render this tick.
+    if (root.closedAt == null) root.closedAt = heardAt;
 
     if (root.state === "active") {
       root.state = "done";
@@ -1030,6 +1136,13 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       heard.reaped = false;
       heard.state = "active";
       heard.endedAt = undefined;
+      // And the sweep's other conclusion goes with it (#445): it stamped
+      // `closedAt` because it had decided the SESSION was gone, not just the
+      // turn, and an ending that has been withdrawn was not an ending. Only the
+      // reaped case is undone here — a `closedAt` a real `SessionEnd` wrote is
+      // not a guess, and on this machine's logs no session ever emitted another
+      // event after one (0 of 22).
+      heard.closedAt = undefined;
     }
   }
 
@@ -1219,6 +1332,14 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       const root = ensureRoot(state, sessionId, now, false);
       root.synthetic = false;
       root.state = "active";
+      // A session that is starting is not a closed one, whatever an earlier
+      // `SessionEnd` or a stale sweep concluded (#445). `/clear` is the case
+      // that reaches here — it emits SessionEnd and then SessionStart with
+      // `source: "clear"` — and while CC hands the fresh session a new id on
+      // this machine (12 of 12 in the log), `--resume` is documented to keep
+      // one, and a resumed terminal ranked as closed forever is the exact
+      // mistake this flag exists to stop making.
+      root.closedAt = undefined;
       root.startedAt = root.startedAt || now;
       if (!root.cwd && p.cwd) { root.cwd = p.cwd; root.cwdBasename = basename(p.cwd); }
       if (root.label === "session" && p.cwd) root.label = basename(p.cwd) ?? "session";
@@ -1246,6 +1367,14 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       const root = ensureRoot(state, sessionId, now, false);
       root.state = "active";
       root.endedAt = undefined;
+      // `closedAt` travels with `endedAt` everywhere except at `Stop`, which is
+      // the whole of the distinction (#445). Somebody typing into a session is
+      // the least ambiguous evidence there is that it is not closed, and it is
+      // cleared HERE rather than on any newer event because the server starts a
+      // transcript scan for every payload carrying a `transcript_path` — the
+      // SessionEnd's own included — so the three *Observed events land after a
+      // real ending and would wipe the flag a second after it was set.
+      root.closedAt = undefined;
       root.exitAt = undefined;
 
       const target = resolveOwner(state, p, now);
@@ -1433,11 +1562,44 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
       // that carries no agent_id, which is all the real UserPromptSubmit and
       // Pre/PostToolUse traffic: the user's next prompt and the root's tool
       // calls render under a subagent that finished long ago, and replay
-      // rebuilds the same wrong state on refresh. The root's turn cannot end
-      // while a Task is still running, so by here nothing on the stack is live.
+      // rebuilds the same wrong state on refresh.
+      //
+      // The stack is dropped, and the subagent NODES are still left alone, and
+      // those two are not the same decision. #442 left a question here — a Stop
+      // arriving while a SubagentStop was lost leaves that subagent `active`
+      // forever, and `runningSessionCount` counts any active agent, so the tab
+      // strip and the favicon would claim work in progress with nothing behind
+      // it. Settling every still-active subagent here would fix that case and
+      // break a bigger one, because the sentence this comment used to end on —
+      // "the root's turn cannot end while a Task is still running" — is no longer
+      // true of Claude Code. Subagents dispatched to run in the background
+      // outlive the turn that dispatched them: on this machine's log a `Stop`
+      // stepped over a still-open subagent 65 times, and in 65 of those 65 the
+      // subagent went on to emit its OWN Pre/PostToolUse afterwards — a median
+      // of 606s more work, up to 10455s. Settling them here would draw all 36
+      // announced subagents on this log `done` while their tool bubbles kept
+      // firing underneath. So the node stays `active`, which is what it is, and
+      // the genuinely lost SubagentStop is left to `sweepStaleSessions`, which
+      // settles every active agent of a session that has gone silent for
+      // STALE_SESSION_MS and is the only thing here holding evidence rather than
+      // an assumption.
+      //
+      // The stack is a different matter: it is read only for events that carry
+      // NO agent_id, and a background subagent's own traffic all carries one
+      // (3346 PreToolUse and 3280 PostToolUse on this log, every one of them
+      // keyed). Clearing it costs those events nothing and keeps the root's own
+      // next turn from being attributed to them.
       const root = ensureRoot(state, sessionId, now, false);
       root.state = "done";
       root.endedAt = now;
+      // ...and only `SessionEnd` says the SESSION is over (#445). `Stop` is a
+      // turn boundary on both providers — Claude fires it when the main agent
+      // finishes responding, and the Codex watcher maps `task_complete` /
+      // `turn_aborted` onto it per turn on purpose (#395) — so an idle terminal
+      // between turns lands here just as a closed one does, and only this line
+      // tells them apart afterwards. `pruneDoneSessions` is the reader; see
+      // `closedAt` in types.ts for why absence never means "still open".
+      if (name === "SessionEnd") root.closedAt = now;
       state.activeSubagentStack.delete(sessionId);
       break;
     }

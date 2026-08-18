@@ -343,18 +343,89 @@ describe("#443 — releasing is scoped to the ids the departing agent still owns
     expect(state.toolOwner.get("dup-1")).toBe(SUB);
   });
 
-  it("leaves the live subagent's entry alone when the root is pruned", () => {
-    const state = reRegistered();
-    const sub = state.agents.get(SUB)!;
-    const live: ToolCall = sub.tools[0];
+  /** The same re-delivery, mirrored: the settled copy is the SUBAGENT's and the
+   *  live one is the root's.
+   *
+   *  It is the shape this scenario has to take since #445, which forbids
+   *  `pruneOldAgents` from deleting an agent while something still points at it
+   *  as its parent — so the departing agent in a conditional-release test can no
+   *  longer be the root of a session whose subagent survives. Nothing about what
+   *  #443 asserts changes: one id, two `ToolCall` objects on two agents, one of
+   *  them evicted, and the maps must be judged by which object they hold rather
+   *  than by the id they hold it under.
+   *
+   *  The re-delivery lands on the root here because it carries no key: the
+   *  subagent has already stopped, so the attribution stack is empty and
+   *  `resolveOwner` falls back to the root — which is exactly what a root-level
+   *  re-delivery of a subagent's call looks like on a real log. */
+  function reRegisteredOnRoot(): GraphState {
+    let state = fresh();
+    state = send(state, T0, { hook_event_name: "SessionStart", session_id: "sess-d2", cwd: "/repo" });
+    state = send(state, T0 + SEC, {
+      hook_event_name: "SubagentStart", session_id: "sess-d2",
+      parent_tool_use_id: "k9", subagent_type: "worker",
+    });
+    state = send(state, T0 + 2 * SEC, {
+      hook_event_name: "PreToolUse", session_id: "sess-d2", parent_tool_use_id: "k9",
+      tool_name: "Grep", tool_use_id: "dup-2", tool_input: { pattern: "first" },
+    });
+    state = send(state, T0 + 3 * SEC, {
+      hook_event_name: "PostToolUse", session_id: "sess-d2", parent_tool_use_id: "k9",
+      tool_use_id: "dup-2", tool_response: { matches: 0 },
+    });
+    state = send(state, T0 + 4 * SEC, {
+      hook_event_name: "SubagentStop", session_id: "sess-d2", parent_tool_use_id: "k9",
+    });
+    // The re-delivery, unattributed, landing on the root — which is still going.
+    state = send(state, T0 + 5 * SEC, {
+      hook_event_name: "PreToolUse", session_id: "sess-d2",
+      tool_name: "Grep", tool_use_id: "dup-2", tool_input: { pattern: "first" },
+    });
+    return state;
+  }
+
+  const SUB2 = "sess-d2::k9";
+
+  it("leaves the live root entry alone when the subagent holding the settled copy is pruned", () => {
+    const state = reRegisteredOnRoot();
+    const root = state.agents.get("sess-d2")!;
+    const sub = state.agents.get(SUB2)!;
+    // One id, two ToolCall objects, on two different agents — the premise.
+    expect(root.tools.map(t => t.id)).toEqual(["dup-2"]);
+    expect(sub.tools.map(t => t.id)).toEqual(["dup-2"]);
+    const live: ToolCall = root.tools[0];
+    expect(live.endedAt).toBeUndefined();
+    expect(sub.tools[0].endedAt).toBe(T0 + 3 * SEC);
 
     const at = T0 + 5 * MIN;
     expect(pruneOldAgents(state, at, /*cap*/ 1, /*graceMs*/ 0)).toBe(true);
-    expect(state.agents.has("sess-d")).toBe(false);
-    expect(state.agents.has(SUB)).toBe(true);
+    expect(state.agents.has(SUB2)).toBe(false);
+    expect(state.agents.has("sess-d2")).toBe(true);
 
-    // Releasing by id alone would have taken this with the root, because the
-    // root's own list still held a settled `dup-1`.
+    // Releasing by id alone would have taken this with the subagent, because the
+    // subagent's own list still held a settled `dup-2`.
+    expect(state.toolIndex.get("dup-2")).toBe(live);
+    expect(state.toolOwner.get("dup-2")).toBe("sess-d2");
+    expectNoOrphans(state);
+  });
+
+  it("does not evict the root out from under the subagent that is still working (#445)", () => {
+    // The scenario above used to be built the other way round, with the ROOT
+    // evicted while its live subagent stayed — which is an agent left pointing at
+    // a parent that no longer exists: no edge on the canvas, no row in the
+    // sidebar, no cost roll-up. The tree leaves together or it does not leave.
+    const state = reRegistered();
+    const live: ToolCall = state.agents.get(SUB)!.tools[0];
+
+    const at = T0 + 5 * MIN;
+    expect(pruneOldAgents(state, at, /*cap*/ 1, /*graceMs*/ 0)).toBe(false);
+    expect(state.agents.has("sess-d")).toBe(true);
+    expect(state.agents.has(SUB)).toBe(true);
+    for (const a of state.agents.values()) {
+      if (a.parentId != null) expect(state.agents.has(a.parentId)).toBe(true);
+    }
+
+    // And nothing departed, so nothing was released.
     expect(state.toolIndex.get("dup-1")).toBe(live);
     expect(state.toolOwner.get("dup-1")).toBe(SUB);
     expectNoOrphans(state);
