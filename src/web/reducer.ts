@@ -402,6 +402,64 @@ function promptAlreadyRecorded(a: AgentNodeData, at: number, text: string): bool
   return false;
 }
 
+/** Drop an agent's tool ids out of the two id-keyed maps, for an agent that is
+ *  about to be removed from `state.agents`. Both pruners below call this
+ *  immediately before their `agents.delete`, which is the symmetry `trimTools`
+ *  already keeps when it evicts a call out of the per-agent window.
+ *
+ *  Until #443 neither pruner touched either map, so a call still in flight when
+ *  its agent was evicted left an entry nothing could ever reach again: not
+ *  `PostToolUse`, whose fallback resurrects from `state.agents` and so needs the
+ *  agent to still be there; not either sweep, which both iterate `state.agents`;
+ *  not `trimTools`, which only ever runs from its own agent's `PreToolUse`; and
+ *  not the garbage collector, because the map held the last strong reference to
+ *  a `ToolCall` that still carried its whole `tool_input`. `sweepStaleTools`
+ *  rests part of its safety argument on this ("the bubble goes with the agent
+ *  when the session is pruned") and the bubble did go — the index entry did not.
+ *
+ *  Worth doing, but this is tidiness rather than a leak anyone is feeling. To
+ *  orphan anything, a pruner has to delete an agent that is `done` while it
+ *  still holds an unsettled call, and on Claude the ordinary killed-mid-call
+ *  session does not qualify: no `Stop` arrives for it, so it stays `active` and
+ *  unprunable until `sweepStaleSessions` reaps it — and `sweepStaleTools` runs
+ *  first on the same tick against the same window (#436), so it has already
+ *  settled and released those calls by the time the root turns `done`. Replaying
+ *  this machine's entire 21-hour events.jsonl with both pruners live evicted 16
+ *  agents and orphaned exactly nothing. What is left over is Codex, where the
+ *  sweep deliberately abstains (#397) and pruning is therefore the only bound on
+ *  a call nobody ever answered the approval prompt for, and the Claude case where
+ *  a `PostToolUse` went missing but the `Stop` that ends the agent still landed.
+ *  One entry per such call: 244 bytes at this log's median `tool_input`, 8.5 KB
+ *  at its p99.
+ *
+ *  WHY EACH DELETE IS CONDITIONAL RATHER THAN BY ID. A tool id does not belong
+ *  to one `ToolCall` object for good. `findTool` consults `toolIndex` first and
+ *  the owner's own list only after, so a re-delivered `PreToolUse` for an id that
+ *  has already settled finds neither — the index entry went with the settle —
+ *  and `resolveOwner` then hands it to whoever the attribution stack names NOW,
+ *  which is a different agent whenever a subagent started in between. That pushes
+ *  a second `ToolCall` under the same id and re-points both maps at the new
+ *  owner, while the first object stays in the old agent's `tools` array. Deleting
+ *  by id alone would let the pruning of a long-finished agent quietly evict a
+ *  live call belonging to one that is still running, and `toolIndex` is read for
+ *  precisely the calls that have NOT settled: `blockedSubagentId` walks it to
+ *  decide which subagent a permission prompt is about, so the next prompt would
+ *  lose the agent it belongs to (#361). Requiring the map to still point at THIS
+ *  call, and at THIS agent, keeps the release to entries the departing agent
+ *  actually still owns.
+ *
+ *  The late `PostToolUse` this file protects everywhere else is unaffected. For
+ *  an agent that survives, nothing here runs at all; for one that does not, the
+ *  event was already a no-op, since the resurrection scan looks through
+ *  `state.agents` and the agent is gone from it — the call is off the board, and
+ *  settling a bubble nothing draws is not a thing worth keeping a map for. */
+function releaseToolIds(state: GraphState, a: AgentNodeData): void {
+  for (const t of a.tools) {
+    if (state.toolIndex.get(t.id) === t) state.toolIndex.delete(t.id);
+    if (state.toolOwner.get(t.id) === a.id) state.toolOwner.delete(t.id);
+  }
+}
+
 /** Evict the oldest "done" agents when the agents map exceeds `cap`. Only
  *  considers agents whose endedAt is older than `graceMs` so freshly-done
  *  agents (still in fade-out) aren't yanked from under the user. Mutates
@@ -419,6 +477,9 @@ export function pruneOldAgents(state: GraphState, now: number, cap: number, grac
   let removed = 0;
   for (const c of stale) {
     if (state.agents.size <= cap) break;
+    // #443: the agent's in-flight ids go with it. See `releaseToolIds`.
+    const a = state.agents.get(c.id);
+    if (a) releaseToolIds(state, a);
     state.agents.delete(c.id);
     removed++;
   }
@@ -460,7 +521,13 @@ export function pruneDoneSessions(state: GraphState, now: number, cap: number, g
   let removed = false;
   for (const s of finished) {
     if (over <= 0) break;
-    for (const id of s.ids) state.agents.delete(id);
+    for (const id of s.ids) {
+      // #443: the session is evicted whole, so every agent in it releases the
+      // tool ids it still holds open. See `releaseToolIds`.
+      const a = state.agents.get(id);
+      if (a) releaseToolIds(state, a);
+      state.agents.delete(id);
+    }
     over--;
     removed = true;
   }
@@ -505,7 +572,11 @@ export function sweepStaleTools(state: GraphState, now: number, maxMs: number): 
     //
     // Nothing runs away as a result. `trimTools` evicts an in-flight call from
     // `toolIndex` once it falls out of the 200-per-agent window, and the bubble
-    // goes with the agent when the session is pruned. Only an explicit "codex"
+    // goes with the agent when the session is pruned — as, since #443, do that
+    // agent's entries in `toolIndex` and `toolOwner`, which is what this
+    // sentence had been claiming for two releases while both pruners deleted the
+    // agent and left the maps alone. Codex is where that mattered: this `continue`
+    // is what makes pruning the only bound left here. Only an explicit "codex"
     // is exempt — an event recorded before `provider` existed replays without
     // one and must keep the Claude behaviour it was swept with.
     if (a.provider === "codex") continue;
