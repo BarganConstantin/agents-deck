@@ -627,6 +627,105 @@ async function runCcusage(args) {
   }
 }
 
+// ── the per-agent split ─────────────────────────────────────────────────────
+
+/**
+ * The flag that stops ccusage merging every CLI it read into one row.
+ *
+ * ccusage groups by day and, by default, adds Claude Code's spend to Codex's —
+ * and to OpenCode's, Amp's, Gemini CLI's and the dozen other sources it now
+ * reads — before it prints anything. The deck then drew that single number under
+ * a subtitle naming two CLIs, so "how much of this is Codex?" had no answer
+ * anywhere on the panel (#431).
+ *
+ * Measured against ccusage 20.0.20 rather than read off its README, because the
+ * whole reason to send this is what comes back. Two runs over the same range,
+ * with and without it, differ in exactly one way: each day gains an `agents`
+ * array, one entry per CLI, carrying that CLI's own `totalCost`, token counts
+ * and `modelBreakdowns`. Every key the parser below already reads survives byte
+ * for byte, the day's `totalCost` is unchanged and still equals the sum of its
+ * agents, the day count is the same and `totals` is untouched. The flag is
+ * purely additive, which is what makes it safe to send unconditionally: the
+ * merged view the deck has always drawn stays available for free, and a browser
+ * that ignores `agents` sees the reply it has always seen.
+ */
+const BY_AGENT = "--by-agent";
+
+/**
+ * A ccusage on this machine that does not know `--by-agent`, remembered.
+ *
+ * The npx fallback resolves `ccusage@latest` and so is never the stale case,
+ * but a managed install that has not had its once-a-day update yet can be, and
+ * a copy the user put on PATH themselves can be any age at all. Process-scoped,
+ * like `_checkedThisRun` and `_repairedThisRun`: a deck restarted after
+ * upgrading ccusage asks again.
+ */
+let _byAgentUnsupported = false;
+
+/**
+ * A failure that is about this flag rather than about this machine.
+ *
+ * Every argument parser that rejects an unknown option quotes the option back —
+ * "Unknown option '--by-agent'", "unrecognized option --by-agent", "unexpected
+ * argument '--by-agent' found", "Unknown argument: by-agent" — so the flag's own
+ * name is the one token they all agree on, and matching it needs no table of
+ * parsers or versions. The dashes are deliberately not part of the match, since
+ * one of those spellings drops them.
+ *
+ * This decides only whether to REMEMBER, never whether to retry: a run that
+ * failed for its own reasons and then happened to succeed on the second attempt
+ * must not leave the deck convinced, for the rest of the process, that this
+ * ccusage cannot report a split it can report perfectly well.
+ */
+const blamesByAgent = (text) => /by-agent/i.test(String(text ?? ""));
+
+/**
+ * Run `daily` for a range, asking for the per-agent split, and give up the
+ * split rather than the whole answer when this ccusage will not produce one.
+ *
+ * Retrying is chosen over gating on `resolveEntry().version`, which the module
+ * already has in hand, for one reason: a version table only knows about the
+ * ccusage versions that existed when it was written, and two of the three
+ * runners here are copies the deck did not install and cannot date — an
+ * AGENTS_DECK_CCUSAGE override and whatever is on PATH. Retrying degrades
+ * correctly for ANY unknown ccusage rather than only for old ones.
+ *
+ * The retry is narrow, because a second attempt is a second process and on a
+ * genuinely broken machine that is a second wait. It fires only when the CLI
+ * itself failed — an untagged error, which is this module's word for "the child
+ * exited non-zero, or never started" — and never for the four failures that are
+ * already understood: `timeout` (where a retry would cost another 90 seconds
+ * for nothing), `no_install` and `bad_override` (thrown before any process
+ * runs), and `bad_output` (thrown after a run that ccusage considered a
+ * success, so the flag was accepted). An old ccusage lands squarely in the
+ * untagged case: measured, it exits 2 with an empty stdout and
+ * `Unknown option '--by-agent'` on stderr, which is unambiguous — it cannot be
+ * confused with a successful run that happened to have no data.
+ *
+ * When the retry ALSO fails, its failure is the one that travels, not the first
+ * one. Both runs failed, and the one without the deck's flag on it is the
+ * honest account of this machine: reporting the first would blame a flag that
+ * has just been shown to make no difference. Nothing is remembered in that case
+ * either, so the split is asked for again on the next attempt.
+ *
+ * The retry is therefore broad and the MEMORY of it is narrow — see
+ * blamesByAgent. Those are different questions with different costs: guessing
+ * wrong about whether to retry costs one process on a machine that is already
+ * failing, and guessing wrong about whether to remember costs the split for the
+ * life of the deck.
+ */
+async function runDaily(args) {
+  if (_byAgentUnsupported) return runCcusage(args);
+  try {
+    return await runCcusage([...args, BY_AGENT]);
+  } catch (err) {
+    if (err?.reason !== undefined) throw err;
+    const plain = await runCcusage(args);
+    if (blamesByAgent(err?.message)) _byAgentUnsupported = true;
+    return plain;
+  }
+}
+
 // ccusage prints the JSON object somewhere in stdout; slice first { to last }.
 function extractJson(out) {
   const start = out.indexOf("{");
@@ -666,8 +765,15 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
   try {
     const args = ["daily", "--json", "--since", sinceArg];
     if (until) args.push("--until", until);
-    ran = await runCcusage(args);
+    ran = await runDaily(args);
     const raw = extractJson(ran.out);
+    // Passed through whole, `agents` array and all. Every day ccusage returns
+    // under `--by-agent` is a superset of the day it returns without one, so
+    // there is nothing here to reshape: the browser reads the merged totals it
+    // always read, and reads the split when it is there. A run that fell back
+    // to the flagless form simply carries days with no `agents`, which the
+    // usage-history modal treats the same way it treats a range with one CLI in
+    // it — no split, and no new chrome.
     const days = Array.isArray(raw.daily) ? raw.daily : [];
     result = {
       ok: true,

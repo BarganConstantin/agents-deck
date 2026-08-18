@@ -113,8 +113,15 @@ const CLAUDE_USE_MARKERS = [
  * PATH walk is done by hand, with PATHEXT applied on Windows exactly as cmd.exe
  * would — a `claude.cmd` shim from npm and a bare `claude.exe` from the native
  * installer both have to count, and neither is spelled `claude`.
+ *
+ * Not exported (#383). It is the first half of `hasClaudeInstalled` below, and
+ * that function takes the same four injected dependencies — platform, env, home
+ * and `exists` — so every branch of this walk is already driven from a test with
+ * no host state reaching it, including the Windows PATHEXT branch exercised from
+ * a Mac. Exporting it would offer a second, narrower answer to "is Claude Code
+ * here", and the point of #402 was that there is one.
  */
-export function claudeCliOnDisk({
+function claudeCliOnDisk({
   platform = process.platform,
   env = process.env,
   home = homedir(),

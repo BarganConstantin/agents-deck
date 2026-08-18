@@ -132,8 +132,15 @@ export function isNpxInstall(pkgRoot) {
 
 /** A git checkout is the maintainer's own tree. Its version routinely sits
  *  ahead of npm, and telling someone to `npm i -g` over their working copy is
- *  actively wrong, so the registry side of the check is skipped there. */
-export function isGitCheckout(pkgRoot) {
+ *  actively wrong, so the registry side of the check is skipped there.
+ *
+ *  Not exported (#383). It gates three answers and each of the three is already
+ *  asserted against a directory with a real `.git` in it — `upgradeCommand`
+ *  returning "git pull && npm run build", `upgradeName` refusing to move a
+ *  checkout onto a published alias, and `startUpgrade` refusing with
+ *  `git_checkout`. A test importing the predicate would restate what those three
+ *  already prove, one level further from the behaviour a user can see. */
+function isGitCheckout(pkgRoot) {
   try { return existsSync(join(pkgRoot, ".git")); } catch { return false; }
 }
 

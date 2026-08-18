@@ -4071,6 +4071,27 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-stat-val.accent { color: var(--ok); }
 .uh-stat-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 
+/* Cost by CLI, between the range totals and the daily chart (#431). Only drawn
+   when ccusage reported two or more agents, so a machine running one CLI has
+   this row absent rather than empty.
+   Nothing here can overflow the modal: the bar is a block at the content
+   width, its segments are percentages of that, and the key wraps like
+   .uh-legend does — which matters because ccusage reads sixteen sources and
+   nothing bounds the entry count at two. */
+.uh-agents { margin-bottom: 12px; }
+.uh-agent-bar {
+  display: flex; height: 6px; border-radius: 3px;
+  background: var(--line); overflow: hidden; margin-bottom: 7px;
+}
+.uh-agent-seg { height: 100%; }
+.uh-agent-keys { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); }
+.uh-agent-key { display: inline-flex; align-items: center; gap: 5px; }
+.uh-agent-cost { color: var(--text); font-variant-numeric: tabular-nums; }
+/* Dimmer than the cost beside it: the money is the answer and the share is the
+   scale for it, and they sit close enough together to be read as one figure if
+   they carried the same weight. */
+.uh-agent-share { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
 .uh-chart {
   display: flex; align-items: flex-end; gap: 1px;
   height: 168px; margin-bottom: 10px;
@@ -4121,7 +4142,15 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-detail-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .uh-detail-date { font-size: 12px; font-weight: 600; }
 .uh-detail-cost { font-size: 12px; color: var(--ok); font-variant-numeric: tabular-nums; }
-.uh-detail-agents { margin-left: auto; font-size: 10px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* `min-width: 0` and the ellipsis are #462's lesson applied before it bites:
+   this cell prints named CLIs and their cost since #431, so it is no longer a
+   two-word list, and an unbounded flex item in a baseline row pushes the date
+   and the cost out rather than truncating. The whole text is on a `title`. */
+.uh-detail-agents {
+  margin-left: auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .uh-detail-mini { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
 .uh-ministat { display: flex; flex-direction: column; gap: 1px; }
 .uh-ministat-val { font-size: 12px; font-variant-numeric: tabular-nums; }

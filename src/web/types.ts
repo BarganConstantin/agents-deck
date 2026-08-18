@@ -239,6 +239,45 @@ export interface AgentNodeData {
    *  it there is no way to tell a reaped root from a genuinely finished one, and
    *  a transcript scan landing after a real `Stop` would un-finish the session. */
   reaped?: boolean;
+  /** When the SESSION ended, as opposed to when its last TURN did. Only the
+   *  root carries it, and only a real ending writes it: `SessionEnd`, or
+   *  `sweepStaleSessions` giving up on a session nothing has been heard from
+   *  for `STALE_SESSION_MS`.
+   *
+   *  It exists because `endedAt` cannot answer that question and was being
+   *  asked to (#445). Both providers end a TURN with `Stop` — Claude's Stop hook
+   *  fires when the main agent finishes responding, and the Codex watcher maps
+   *  `task_complete` / `turn_aborted` onto the same name, deliberately and per
+   *  turn (#395) — so `endedAt` on a root means "the last turn finished", which
+   *  is true of an idle terminal the user is still sitting in front of and about
+   *  to type into. `pruneDoneSessions` read it as "this session is over" and
+   *  evicted the terminal two minutes into thinking time; the next prompt then
+   *  rebuilt it as a brand-new node with no prompt history, no tool history, no
+   *  `firstPrompt`, no model, and `startedAt` reset to now. On this machine's
+   *  logs (20,864 envelopes, 22 sessions), 223 of 250 `Stop`s were followed by
+   *  another turn on the same session and only 89 of those came back inside the
+   *  two-minute grace — so for 60% of turn boundaries the deck was holding a
+   *  still-open terminal in the eviction queue.
+   *
+   *  `reaped` is the neighbouring flag and answers a different question: it says
+   *  the ENDING was a guess, so a late event can undo it. This one says the
+   *  ending was of the session rather than of a turn, so the pruner can prefer a
+   *  session that is genuinely over to one that is merely between turns. A
+   *  reaped session sets both — the sweep's whole judgement is that the session
+   *  is gone — and the un-reap clears both, because an ending that has been
+   *  withdrawn was not an ending.
+   *
+   *  Absence means "not known to be closed", never "still open": a killed CLI
+   *  sends no `SessionEnd` and Codex has no such record at all, which is the
+   *  same reason the server refuses to use it as a cache-eviction signal. That
+   *  is why it only ever ranks the eviction order and never gates it — the cap
+   *  still holds exactly, so a board of nothing but idle sessions still settles
+   *  at `cap` with the oldest going first.
+   *
+   *  Nothing on screen reads it. `state`, `endedAt` and `waiting` are untouched
+   *  by it, so the card, the session list, `runningSessionCount` and the favicon
+   *  show exactly what they showed before. */
+  closedAt?: number;
   /** Server-derived breakdown of what's in the context window. Only the root
    *  agent carries this — subagent context isn't separately observable.
    *

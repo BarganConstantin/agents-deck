@@ -530,7 +530,13 @@ export function keepDiscovery({ port, workspace, token, persist = null, codex = 
   return { file: discoveryPath(), check, stop: () => clearInterval(timer) };
 }
 
-export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR, CLAUDE_EVENTS };
+// CLAUDE_EVENTS used to ride along here (#383). It is the events list of the
+// `claude` entry in PROVIDERS and has never had a reader outside this file; it
+// was easy to miss because the three directories beside it ARE imported and
+// because the long justification below belongs to the SECOND export, not this
+// one. Which events the deck asks Claude Code for is answered by installHooks
+// writing settings.json, which is what the tests read.
+export { AGENT_DAG_DIR, CLAUDE_DIR, CODEX_DIR };
 // Exported for the other modules that rewrite settings.json — the sound toggle
 // today. Every one of them needs the same two guarantees: a file we cannot
 // parse is never treated as an empty one, and the replacement is a single

@@ -86,8 +86,13 @@ import type { AgentNodeData } from "./types";
  * being silently promoted into the asking group. An unrecognised value is a
  * Codex that changed under us, and the safe reading of that is the one that adds
  * no claim — see `codexApprovalTell`, where unknown and absent land together.
+ *
+ * Not exported: the set is the implementation of `canAskForApproval` below and
+ * nothing else, and a caller holding the set instead of calling the function
+ * would be a caller that has to remember the `never` case and the unknown case
+ * on its own — which is the whole distinction this module exists to keep.
  */
-export const ASKING_APPROVAL_POLICIES: ReadonlySet<string> = new Set([
+const ASKING_APPROVAL_POLICIES: ReadonlySet<string> = new Set([
   "untrusted",
   "on-request",
   "on-failure",
