@@ -2485,7 +2485,7 @@ function Inner() {
                 that is not about agents. Renders nothing until the server holds
                 two CPU samples, so it never occupies the row with a number it
                 has not measured. */}
-            <SystemMeter />
+            <SystemMeter usageOpen={usagePanelOpen} />
             {totalTokens.sum > 0 && (
               <span className="stat" title={`in:${totalTokens.inT.toLocaleString()}  out:${totalTokens.outT.toLocaleString()}  cache-r:${totalTokens.cacheR.toLocaleString()}  cache-c:${totalTokens.cacheC.toLocaleString()}`}>
                 <span className="count">{fmtTokens(totalTokens.sum)}</span><span className="lbl">tokens</span>

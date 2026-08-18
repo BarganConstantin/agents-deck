@@ -22,7 +22,6 @@
 // is the question you open a panel to ask. Everything below the fold is in bytes
 // and cores, not ratios.
 import React, { useEffect, useRef, useState } from "react";
-import { useModalDismiss } from "./use-modal-dismiss";
 
 /** Matches the server's CPU cadence, so the meter advances one bucket per poll
  *  rather than redrawing the same frame or skipping one. */
@@ -143,7 +142,7 @@ function useProcesses(on: boolean): Proc[] | null {
   return on ? procs : null;
 }
 
-export default function SystemMeter() {
+export default function SystemMeter({ usageOpen = false }: { usageOpen?: boolean }) {
   const sys = useSystem();
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -191,9 +190,9 @@ export default function SystemMeter() {
         ref={btnRef}
         className="sysmeter"
         title={tip}
-        aria-label="Machine CPU and memory — open detail"
+        aria-label="Toggle machine detail"
         aria-expanded={open}
-        aria-haspopup="dialog"
+        aria-controls={open ? "system-panel" : undefined}
         onClick={() => setOpen(o => !o)}
       >
         <span className="sm-box" aria-hidden>
@@ -244,23 +243,26 @@ export default function SystemMeter() {
           CPU {cpu.toFixed(0)} percent, memory {memory.usedPct.toFixed(0)} percent used
         </span>
       </button>
-      {open && <SystemPanel sys={sys} onClose={() => { setOpen(false); btnRef.current?.focus(); }} />}
+      {open && <SystemPanel sys={sys} usageOpen={usageOpen} onClose={() => { setOpen(false); btnRef.current?.focus(); }} />}
     </span>
   );
 }
 
 /**
- * The detail, anchored under the meter.
+ * The detail, docked in the right rail beside the usage panel.
  *
- * Deliberately not a modal: there is no scrim and the canvas keeps working
- * behind it, because nothing here needs protecting or interrupting. It still
- * borrows the app's one dismiss hook so Escape, the overlay stack and focus
- * restoration behave exactly as they do everywhere else rather than becoming a
- * second idiom.
+ * NOT a dialog and not a popover, and the distinction is behavioural rather
+ * than cosmetic. This is the same kind of thing the usage panel is: a region
+ * you open, read alongside the canvas, and leave open while you work. So it
+ * follows that idiom exactly — disclosure semantics on the button, no scrim, no
+ * focus trap, and no dismissal when you click somewhere else, because clicking
+ * the canvas while watching a build is not a request to close your instruments.
+ *
+ * It also means the two panels queue rather than overlap: with usage open this
+ * sits to its left, and with usage closed it takes the slot usage would have
+ * had. One rail, read right to left, nothing stacked on top of anything.
  */
-function SystemPanel({ sys, onClose }: { sys: Snapshot; onClose: () => void }) {
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const ref = useModalDismiss<HTMLDivElement>(onClose, { focusRef: closeRef });
+function SystemPanel({ sys, usageOpen, onClose }: { sys: Snapshot; usageOpen: boolean; onClose: () => void }) {
   const procs = useProcesses(true);
 
   const { memory, swap, perCore, loadavg, cores, uptimeSec, platform } = sys;
@@ -271,11 +273,11 @@ function SystemPanel({ sys, onClose }: { sys: Snapshot; onClose: () => void }) {
   const swapPct = swap && swap.total > 0 ? (swap.used / swap.total) * 100 : 0;
 
   return (
-    <div className="sysdetail" ref={ref} role="dialog" aria-label="Machine detail">
+    <aside className={`sysdetail${usageOpen ? " shifted" : ""}`} id="system-panel" aria-label="Machine detail">
       <div className="sd-head">
         <span className="sd-title">This machine</span>
         <span className="sd-sub">up {uptime(uptimeSec)} · {cores} cores</span>
-        <button type="button" ref={closeRef} className="sd-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
+        <button type="button" className="sd-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
       </div>
 
       {perCore && perCore.length > 0 && (
@@ -361,7 +363,7 @@ function SystemPanel({ sys, onClose }: { sys: Snapshot; onClose: () => void }) {
           </table>
         )}
       </div>
-    </div>
+    </aside>
   );
 }
 
