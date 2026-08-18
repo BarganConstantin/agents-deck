@@ -318,10 +318,17 @@ async function printed<T>(work: () => Promise<T> | T): Promise<{ value: T; lines
   }
 }
 
+// Every failing run below is planned TWICE, because a failed run has been two
+// attempts since #431: the deck asks for the per-agent split with `--by-agent`
+// and, when the CLI refuses, drops the flag and asks again in case that was the
+// whole objection. A machine whose npx is broken refuses both, so two identical
+// replies is what it actually produces — and planning one would let the mock's
+// default success stand in for the second attempt and quietly turn each of
+// these failures into a pass.
 describe("what the deck prints when ccusage cannot run", () => {
   it("writes one line per failure, never the child's stack", async () => {
     rmSync(join(FAKE_HOME, ".agents-deck"), { recursive: true, force: true });
-    plan.push({ stderr: NPX_STACK, code: 1 });
+    plan.push({ stderr: NPX_STACK, code: 1 }, { stderr: NPX_STACK, code: 1 });
 
     const { lines } = await printed(() => fetchCcusageDaily({ since: "20260301" }));
 
@@ -338,7 +345,7 @@ describe("what the deck prints when ccusage cannot run", () => {
 
   it("keeps the whole stack for the modal's title, where the evidence belongs", async () => {
     rmSync(join(FAKE_HOME, ".agents-deck"), { recursive: true, force: true });
-    plan.push({ stderr: NPX_STACK, code: 1 });
+    plan.push({ stderr: NPX_STACK, code: 1 }, { stderr: NPX_STACK, code: 1 });
 
     const { value: res } = await printed(() => fetchCcusageDaily({ since: "20260302" }));
 
@@ -411,13 +418,20 @@ describe("a managed install that resolves but cannot run", () => {
     // this one must report the failure rather than reinstalling a second time.
     damagedInstall();
 
-    plan.push({ stderr: "Error [ERR_MODULE_NOT_FOUND]: Cannot find module './chunk.js'", code: 1 });
+    plan.push(
+      { stderr: "Error [ERR_MODULE_NOT_FOUND]: Cannot find module './chunk.js'", code: 1 },
+      { stderr: "Error [ERR_MODULE_NOT_FOUND]: Cannot find module './chunk.js'", code: 1 },
+    );
 
     const { value: res } = await printed(() => fetchCcusageDaily({ since: "20260304" }));
 
     expect(res.ok).toBe(false);
     expect(existsSync(join(PKG_DIR, "package.json"))).toBe(true);
-    // One spawn: the managed entry. No second attempt, no `npm install`.
-    expect(calls).toHaveLength(1);
+    // Two spawns, both of them the managed entry: the flag retry above and
+    // nothing else. What this test is about is the REPAIR — an `npm install`
+    // and a rebuilt entry point — and neither is here, because the guard that
+    // allows one of those per process was spent by the case before this one.
+    expect(calls).toHaveLength(2);
+    for (const c of calls) expect(c.args.some(a => a.endsWith("cli.js"))).toBe(true);
   });
 });
