@@ -182,16 +182,36 @@ describe("what may be written while the deck is painting its own rows", () => {
 
 // ── the server, with every spawn faked ──────────────────────────────────────
 //
-// Nothing real is executed and nothing is installed: spawn is recorded and
-// answered from a plan, and spawnSync — the `npm install` — always fails, which
-// is the precondition for both cases below.
+// Nothing real is executed and nothing is installed: every child is recorded,
+// the ccusage runs are answered from a plan, and the `npm install` always fails
+// the way this machine's npm fails, which is the precondition for both cases
+// below.
 
-const { calls, plan, fakeChild } = vi.hoisted(() => {
+const { calls, plan, brokenNpm, isInstall, fakeChild } = vi.hoisted(() => {
   type Sub = (v?: unknown) => void;
   type Reply = { stdout?: string; stderr?: string; code: number };
   return {
     calls: [] as { file: string; args: string[] }[],
     plan: [] as Reply[],
+    // A broken npm on this machine, which is what sends every case through the
+    // fallback — and what leaves a half-written managed install behind in the
+    // first place. Its stderr is the reported machine's, a stack trace and not
+    // a line, because that is the whole point: this is what used to be printed.
+    brokenNpm: {
+      code: 1,
+      stderr: [
+        "node:internal/modules/cjs/loader:1573",
+        "  throw err;",
+        "Error: Cannot find module 'C:\\Users\\vceban\\node_modules\\npm\\bin\\npm-prefix.js'",
+        "    at Module._resolveFilename (node:internal/modules/cjs/loader:1569:15)",
+        "  code: 'MODULE_NOT_FOUND'",
+      ].join("\n"),
+    } as Reply,
+    // Which child is the install, on either kind of machine: POSIX gets the
+    // argument vector, Windows gets one cmd.exe command line with the same
+    // words quoted into it (#456), so the test is "an argument that says
+    // install" rather than "the argument `install`".
+    isInstall: (args: string[]) => args.some(a => a.includes("install")),
     fakeChild: (reply: Reply) => {
       const out: Sub[] = [], err: Sub[] = [], self: Record<string, Sub[]> = {};
       setTimeout(() => {
@@ -214,28 +234,21 @@ const { calls, plan, fakeChild } = vi.hoisted(() => {
 vi.mock("node:child_process", () => ({
   spawn: (file: string, args: string[] = []) => {
     calls.push({ file, args });
+    // The `npm install` is answered by the machine this file is about, never
+    // from `plan`. Since #476 the install is a `spawn` like every other child
+    // here — there is no spawnSync in ccusage.mjs any more — and routing it by
+    // its vector rather than by its turn in the queue is what keeps `plan`
+    // meaning exactly what it always meant: the CCUSAGE RUNS. Every case below
+    // therefore still plans the same replies it planned when the install had a
+    // door of its own.
+    if (isInstall(args)) return fakeChild(brokenNpm);
     return fakeChild(plan.shift() ?? { stdout: `{"daily":[],"totals":null}`, code: 0 });
-  },
-  // A broken npm on this machine, which is what sends every case through the
-  // fallback — and what leaves a half-written managed install behind in the
-  // first place. Its stderr is the reported machine's, a stack trace and not a
-  // line, because that is the whole point: this is what used to be printed.
-  spawnSync: (file: string, args: string[] = []) => {
-    calls.push({ file, args });
-    return {
-      status: 1,
-      stdout: "",
-      stderr: [
-        "node:internal/modules/cjs/loader:1573",
-        "  throw err;",
-        "Error: Cannot find module 'C:\\Users\\vceban\\node_modules\\npm\\bin\\npm-prefix.js'",
-        "    at Module._resolveFilename (node:internal/modules/cjs/loader:1569:15)",
-        "  code: 'MODULE_NOT_FOUND'",
-      ].join("\n"),
-    };
   },
   // exec.mjs is reached through ccusage.mjs and imports this by name.
   execFile: () => { throw new Error("test: execFile blocked"); },
+  // No spawnSync: nothing in the module graph imports it, and if a change ever
+  // brings the synchronous install back, this file stops loading rather than
+  // quietly passing.
 }));
 
 // ccusage.mjs resolves ~/.agents-deck/ccusage at import time out of os.homedir(),
