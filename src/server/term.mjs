@@ -282,6 +282,55 @@ export function fit(s, max, ellipsis = "…") {
   return /\s/.test(text) ? text.slice(0, room) + ellipsis : ellipsis + text.slice(text.length - room);
 }
 
+/**
+ * A failure, reduced to the one line it is safe to print while the deck is
+ * painting.
+ *
+ * Everything bin/deck.js writes after the banner is a `\r`-rewritten row — the
+ * spinner in `step`, the pulse line, which repaints every 800ms — so a write
+ * that arrives from an async callback lands in the middle of one of them. A
+ * single short line is survivable: it ends in a newline, the next repaint
+ * starts on a fresh row, and the report above it is still on screen. A
+ * subprocess's stack trace is not: fifteen lines scroll the entire startup
+ * report away and leave the pulse mid-frame. Reported from Windows (#432),
+ * where a broken npm shim put two Node stack traces over the boot output.
+ *
+ * Three things happen here, and the order matters.
+ *
+ * The most informative line is chosen rather than the first one, because the
+ * first line of a Node stack trace is `node:internal/modules/cjs/loader:1573`
+ * and the line that names the actual failure — `Error: Cannot find module …` —
+ * is five lines below it.
+ *
+ * Every control character is replaced, not just the newlines. A lone `\r` is a
+ * cursor jump to column 0, so a CRLF stack trace that only had its `\n`
+ * removed would still overwrite whatever the deck had drawn on that row — and
+ * CRLF is what a Windows child writes, which is the platform this exists for.
+ * An ESC would open an escape sequence out of a string the deck did not write.
+ *
+ * And the result is fitted to the room the caller has left, so the one line
+ * stays one line: a message that wraps is two rows, and the `\r` that follows
+ * only ever reaches the second of them. The ellipsis defaults to the ASCII one
+ * rather than `…`, because callers of this are error paths in modules that
+ * know nothing about the terminal's glyph tier — and a `…` on a cmd.exe code
+ * page is a question mark in the middle of the only clue the user got.
+ *
+ * @param room how many columns are free after whatever prefix the caller prints.
+ */
+export function oneLine(text, room = 80, ellipsis = "...") {
+  const lines = stripAnsi(String(text ?? ""))
+    .split("\n")
+    // eslint-disable-next-line no-control-regex
+    .map((l) => l.replace(/[\x00-\x1f\x7f]/g, " ").trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+  // "Error:", "TypeError:", "Error [ERR_MODULE_NOT_FOUND]:" — the line a reader
+  // would have picked out of the dump themselves. The optional prefix is what
+  // makes a bare "Error:" match as well as a named subclass.
+  const named = lines.find((l) => /^[\w$]*Error\b/.test(l));
+  return fit(named ?? lines[0], Math.max(8, room), ellipsis);
+}
+
 const same = (s) => s;
 
 /**
