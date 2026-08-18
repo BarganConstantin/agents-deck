@@ -50,6 +50,7 @@ import { ASSUMED, readProviders, type Providers } from "./providers";
 import { captureHints, eventsCountTitle, sessionsCountTitle } from "./provider-copy";
 import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
+import { matchesQuery, SEARCH_PLACEHOLDER } from "./search-match";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
@@ -410,18 +411,6 @@ const DETAIL_CAT_LABEL: Record<DetailCategory, string> = {
  *  purely so the call sites below read the way they always have. */
 const detailCategoryFor = categoryFor;
 
-function matchesQuery(a: AgentNodeData, q: string): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  if (a.label.toLowerCase().includes(needle)) return true;
-  if (a.cwd?.toLowerCase().includes(needle)) return true;
-  if (a.cwdBasename?.toLowerCase().includes(needle)) return true;
-  if (a.sessionId.toLowerCase().includes(needle)) return true;
-  if (a.firstPrompt?.toLowerCase().includes(needle)) return true;
-  for (const t of a.tools) if (t.name.toLowerCase().includes(needle)) return true;
-  return false;
-}
-
 /** Compute the spotlight lineage for an agent — itself plus every ancestor
  *  (chain of parentIds) and every descendant (transitive). When no agent
  *  is selected this returns null (no spotlight). */
@@ -556,7 +545,16 @@ function snapshotToFlow(
         animated: (a.state === "active" || isSelectedEdge) && !edgeDim && !fading,
         type: "smoothstep",
         // No edge label — the target node already displays the agent name.
-        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "opacity 500ms ease, stroke-width 200ms ease" } as React.CSSProperties,
+        // The transition is named here and valued in the stylesheet. An inline
+        // style outranks every selector, so the literal string this used to
+        // carry could not be answered by a `prefers-reduced-motion` rule at
+        // all (#357) — a reader who asked for less motion still got 200ms of
+        // stroke-width travel on every edge that gained or lost a selection.
+        // `--edge-transition` moves that decision into styles.css, where the
+        // media query drops the stroke-width half and keeps the opacity fade,
+        // and it costs this component nothing: no hook, no listener, and no
+        // re-render of the canvas when the preference changes.
+        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "var(--edge-transition)" } as React.CSSProperties,
         className: cls,
       });
     }
@@ -2349,7 +2347,7 @@ function Inner() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Search agents, cwd, tools…"
+              placeholder={SEARCH_PLACEHOLDER}
               value={query}
               onChange={e => setQuery(e.target.value)}
               spellCheck={false}
