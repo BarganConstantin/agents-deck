@@ -303,6 +303,14 @@ async function quietly<T>(work: () => Promise<T>): Promise<{ value: T; lines: st
   }
 }
 
+// Every failing run below is planned TWICE, because a failed run has been two
+// attempts since #431: the deck asks ccusage for the per-agent split with
+// `--by-agent` and, when the CLI refuses, drops the flag and asks again in case
+// that was the whole objection. The machines in this file refuse both — a
+// broken shim does not care which flags it was handed — so two identical
+// replies is what they actually produce. Planning one would let the mock's
+// default success answer the second attempt and turn each of these failures
+// into a pass, which is the quiet way a diagnosis test stops testing anything.
 describe("what an install failure is allowed to lose", () => {
   it("reports the spawn error rather than the word null", async () => {
     // spawnSync puts a failure to LAUNCH in `error` and leaves `status` null.
@@ -312,7 +320,7 @@ describe("what an install failure is allowed to lose", () => {
       error: Object.assign(new Error("spawn cmd.exe ENOENT"), { code: "ENOENT" }),
       status: null, stdout: "", stderr: "",
     };
-    runPlan.push({ stderr: "npx also failed", code: 1 });
+    runPlan.push({ stderr: "npx also failed", code: 1 }, { stderr: "npx also failed", code: 1 });
 
     const { value: res, lines } = await quietly(() => fetchCcusageDaily({ since: "20260401" }));
 
@@ -324,7 +332,7 @@ describe("what an install failure is allowed to lose", () => {
 
   it("keeps what npm wrote to stdout, which is not always the empty half", async () => {
     installReply.current = { status: 1, stdout: "npm ERR! code E404", stderr: "" };
-    runPlan.push({ stderr: "npx also failed", code: 1 });
+    runPlan.push({ stderr: "npx also failed", code: 1 }, { stderr: "npx also failed", code: 1 });
 
     const { value: res } = await quietly(() => fetchCcusageDaily({ since: "20260402" }));
     expect(res.install).toContain("E404");
@@ -336,7 +344,7 @@ describe("what an install failure is allowed to lose", () => {
     // falls through to npx, and nothing anywhere records that an install
     // happened. An exit code is npm's opinion, not a fact about the disk.
     installReply.current = { status: 0, stdout: "added 2 packages", stderr: "" };
-    runPlan.push({ stderr: "npx also failed", code: 1 });
+    runPlan.push({ stderr: "npx also failed", code: 1 }, { stderr: "npx also failed", code: 1 });
 
     const { value: res } = await quietly(() => fetchCcusageDaily({ since: "20260403" }));
 
@@ -350,7 +358,7 @@ describe("what an install failure is allowed to lose", () => {
 
   it("names the level that IS there when only the package is unusable", async () => {
     installReply.current = { status: 0, stdout: "", stderr: "" };
-    runPlan.push({ stderr: "npx also failed", code: 1 });
+    runPlan.push({ stderr: "npx also failed", code: 1 }, { stderr: "npx also failed", code: 1 });
     mkdirSync(PKG_DIR, { recursive: true });
     writeFileSync(join(PKG_DIR, "package.json"), "{ not json");
 
@@ -362,7 +370,7 @@ describe("what an install failure is allowed to lose", () => {
 describe("which of ccusage's two paths failed", () => {
   it("says so in the reply, not only in whatever the last child printed", async () => {
     installReply.current = { status: 1, stdout: "", stderr: "npm went wrong" };
-    runPlan.push({ stderr: "npx went wrong too", code: 1 });
+    runPlan.push({ stderr: "npx went wrong too", code: 1 }, { stderr: "npx went wrong too", code: 1 });
 
     const { value: res } = await quietly(() => fetchCcusageDaily({ since: "20260405" }));
 
@@ -376,7 +384,7 @@ describe("which of ccusage's two paths failed", () => {
     writeFileSync(join(PKG_DIR, "package.json"), JSON.stringify({ version: "1.0.0", bin: "./src/cli.js" }));
     writeFileSync(join(PKG_DIR, "src", "cli.js"), "");
     writeFileSync(join(CCUSAGE_DIR, ".last-update-check"), String(Date.now()));
-    runPlan.push({ stderr: "ccusage exited 3", code: 1 });
+    runPlan.push({ stderr: "ccusage exited 3", code: 1 }, { stderr: "ccusage exited 3", code: 1 });
 
     const { value: res } = await quietly(() => fetchCcusageDaily({ since: "20260406" }));
 
@@ -386,7 +394,7 @@ describe("which of ccusage's two paths failed", () => {
 
   it("says which path it was in the terminal too, where the operator is reading", async () => {
     installReply.current = { status: 1, stdout: "", stderr: "npm went wrong" };
-    runPlan.push({ stderr: "npx went wrong too", code: 1 });
+    runPlan.push({ stderr: "npx went wrong too", code: 1 }, { stderr: "npx went wrong too", code: 1 });
 
     const { lines } = await quietly(() => fetchCcusageDaily({ since: "20260407" }));
     expect(lines.some(l => /fetch failed \(npx fallback\)/.test(l))).toBe(true);

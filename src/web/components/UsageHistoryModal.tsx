@@ -13,6 +13,9 @@ import { presetSince } from "../usage-range";
 import { usageView } from "../usage-view";
 import { fmtTokens } from "../token-format";
 import { shortModel } from "../model-label";
+import { agentLabel, usageSubtitle } from "../provider-copy";
+import { agentColor, agentTotals, dayAgentSummary, sharePct } from "../usage-agents";
+import type { Providers } from "../providers";
 import { useModalDismiss } from "./use-modal-dismiss";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
@@ -24,6 +27,19 @@ interface ModelBreakdown {
   cacheCreationTokens: number;
   cacheReadTokens: number;
 }
+/**
+ * One CLI's share of a day, out of ccusage's `--by-agent` (#431).
+ *
+ * Optional on the day below, and every reader here treats its absence as "this
+ * range has no split to show" rather than as an error: a ccusage too old to
+ * know the flag makes the server fall back to the flagless run (see
+ * ccusage.mjs), and those days arrive exactly as they always did.
+ */
+interface AgentEntry {
+  agent: string;             // ccusage's lowercase id — "claude", "codex", …
+  totalCost: number;
+  totalTokens: number;
+}
 interface DayEntry {
   period: string;            // YYYY-MM-DD
   totalCost: number;
@@ -34,6 +50,7 @@ interface DayEntry {
   cacheReadTokens: number;
   modelsUsed: string[];
   modelBreakdowns: ModelBreakdown[];
+  agents?: AgentEntry[];
   metadata?: { agents?: string[] };
 }
 interface CcusageResp {
@@ -100,9 +117,15 @@ function useCcusage(rangeDays: number) {
 }
 
 // ── component ─────────────────────────────────────────────────────────────
-interface Props { onClose: () => void; }
+interface Props {
+  onClose: () => void;
+  /** Which CLIs this deck watches, from /api/health (#402). Used for the
+   *  subtitle, and only until a run has landed — see usageSubtitle, which
+   *  prefers what ccusage actually read over what the deck was started for. */
+  providers: Providers;
+}
 
-export default function UsageHistoryModal({ onClose }: Props) {
+export default function UsageHistoryModal({ onClose, providers }: Props) {
   const [rangeDays, setRangeDays] = useState(30);
   const [selected, setSelected] = useState<string | null>(null);
   const { landed, loading, reload } = useCcusage(rangeDays);
@@ -145,6 +168,13 @@ export default function UsageHistoryModal({ onClose }: Props) {
     [modelCosts],
   );
 
+  // Who spent it, across the whole range. Empty on a ccusage too old to answer
+  // `--by-agent`, and one entry long on a machine that only runs one CLI —
+  // which is why the strip below is drawn only for two or more. See
+  // usage-agents.ts for the roll-up and why it lives outside this file.
+  const agents = useMemo(() => agentTotals(days), [days]);
+  const split = agents.length > 1;
+
   const selectedDay = selected ? days.find(d => d.period === selected) ?? null : null;
 
   return (
@@ -153,7 +183,14 @@ export default function UsageHistoryModal({ onClose }: Props) {
         <header className="uh-head">
           <div className="uh-titlewrap">
             <div className="uh-title">Usage history</div>
-            <div className="uh-sub">via ccusage · local Claude / Codex logs</div>
+            {/* This line used to be the constant "via ccusage · local Claude /
+                Codex logs", which is the sentence #431 opens with: it named two
+                CLIs and the chart below then added them together. It is derived
+                now — from the agents the run came back with when there are any,
+                and from `providers` until then. Both halves matter: the deck
+                must not tell a Claude-only machine about Codex before any data
+                exists, and it must not deny a CLI whose spend is on screen. */}
+            <div className="uh-sub">{usageSubtitle(providers, agents.map(a => a.id))}</div>
           </div>
           {/* Not a tablist (#381). role="tab" is a promise about keyboard
               behaviour — one tab stop for the whole strip, arrow keys between
@@ -219,6 +256,76 @@ export default function UsageHistoryModal({ onClose }: Props) {
               <Stat label="input+output" val={fmtTokens(inOut)} />
               <Stat label="cache reads"  val={fmtTokens(cacheRead)} />
             </div>
+
+            {/* The split, and the reason this issue exists (#431). It sits
+                directly under the total it decomposes so the merged number and
+                its parts are readable at once, without a mode switch and
+                without a second chart — the panel is already dense, and the
+                issue rules both of those out for that reason.
+
+                Drawn ONLY for two or more CLIs. A machine that has only ever
+                run Claude Code gets no bar and no key, which is the same panel
+                it has today; so does a range answered by a ccusage too old to
+                know `--by-agent`, because agentTotals comes back empty for it.
+
+                WIDTH, since #369 pinned this modal's geometry and #462 had to
+                retrofit an ellipsis onto the one column here that had no
+                overflow protection. Neither shape below has a column to
+                overflow: the bar is `width: 100%` of the content box and its
+                segments are percentages of that, and the key is a wrapping flex
+                row modelled on `.uh-legend`. The content box is 724px — the
+                modal is `min(760px, 100%)` less 18px of padding a side — and a
+                key entry is about 165px (an 8px dot, a name, a cost and a
+                share, at 11px), so the two entries this normally has occupy
+                under half a line and even six CLIs simply wrap. That matters
+                more than it looks: ccusage reads sixteen sources, so the count
+                here is not bounded at two by anything, and a fixed grid would
+                have been a geometry bug waiting for the first reader who runs
+                OpenCode. */}
+            {split && (
+              // group, and the name on the group rather than on the bar. The
+              // bar is the one thing here with nothing of its own to say: every
+              // figure it draws is printed as text in the key directly below
+              // it, so labelling it would have a screen reader read the same
+              // two numbers twice, and leaving it unlabelled but unhidden would
+              // put an unnamed generic element between the totals and the
+              // chart. Hidden, it is what it looks like — a picture of the key.
+              // Not role="img" for it, which is what CostBar uses for a bar
+              // that IS the only statement of its figures; the difference is
+              // whether anything else on screen says the same thing.
+              <div className="uh-agents" role="group" aria-label="Cost by CLI">
+                <div className="uh-agent-bar" aria-hidden="true">
+                  {agents.map(a => (
+                    <span
+                      key={a.id}
+                      className="uh-agent-seg"
+                      style={{ width: `${totalCost > 0 ? (a.cost / totalCost) * 100 : 0}%`, background: agentColor(a.id) }}
+                    />
+                  ))}
+                </div>
+                <div className="uh-agent-keys">
+                  {agents.map(a => (
+                    // The raw ccusage id in the `title`, the way the model
+                    // legend below carries the raw model id: the printed name
+                    // is this deck's word for the CLI and the id is what the
+                    // reader would type at `ccusage <agent> daily` to check it.
+                    <span key={a.id} className="uh-agent-key" title={`${a.id} · ${fmtTokens(a.tokens)} tokens`}>
+                      <span className="uh-legend-dot" style={{ background: agentColor(a.id) }} />
+                      {agentLabel(a.id)}
+                      <span className="uh-agent-cost">{fmtCost(a.cost)}</span>
+                      {/* The percentage is not redundant with the bar, it is
+                          what the bar cannot say. A measured range from a
+                          machine running both was $662.05 against $0.01, where
+                          the Codex segment is a fraction of a pixel; sharePct
+                          prints "<0.1%" for it rather than "0.0%", so a CLI
+                          that spent a little is never shown as one that spent
+                          nothing. */}
+                      <span className="uh-agent-share">{sharePct(a.cost, totalCost)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* role="group", not role="img" (#381). role="img" declares that
                 the subtree is one graphic, so every descendant is pruned from
@@ -297,9 +404,26 @@ export default function UsageHistoryModal({ onClose }: Props) {
                 <div className="uh-detail-head">
                   <span className="uh-detail-date">{selectedDay.period}</span>
                   <span className="uh-detail-cost">{fmtCost(selectedDay.totalCost)}</span>
-                  {selectedDay.metadata?.agents?.length ? (
-                    <span className="uh-detail-agents">{selectedDay.metadata.agents.join(" · ")}</span>
-                  ) : null}
+                  {/* Priced when this day ran more than one CLI, and the bare
+                      id list it has always shown otherwise. The fallback is not
+                      dead weight: `metadata.agents` arrives with or without
+                      `--by-agent`, so it is the only thing a ccusage too old
+                      for the flag can put here, and it is what a single-CLI day
+                      keeps — see dayAgentSummary for why one CLI gets no
+                      figure. The `title` carries the same text because this
+                      cell now ellipsises; the column is whatever the date and
+                      the cost leave of the row, which is roughly 88 monospace
+                      characters, and two named CLIs spend about thirty of them.
+                      #462 is the precedent — the model label overflowed a hard
+                      column here for exactly one build before anyone noticed,
+                      because nothing failed, it just wrapped. */}
+                  {(() => {
+                    const priced = dayAgentSummary(selectedDay.agents);
+                    const text = priced ?? (selectedDay.metadata?.agents?.length
+                      ? selectedDay.metadata.agents.join(" · ")
+                      : null);
+                    return text ? <span className="uh-detail-agents" title={text}>{text}</span> : null;
+                  })()}
                 </div>
                 <div className="uh-detail-mini">
                   <MiniStat label="input"       val={fmtTokens(selectedDay.inputTokens)} />
