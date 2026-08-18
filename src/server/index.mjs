@@ -3102,7 +3102,14 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
 // variable is the CLI's, deliberately: this block spent two renames reading a
 // name from the project's first identity that no README ever documented, so
 // the one variable people know worked everywhere except here.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+//
+// argv[1] is a string only when node was handed a script path. `node -e`,
+// `--input-type=module` on stdin and a worker started from eval source all
+// leave it undefined, and pathToFileURL(undefined) throws instead of answering
+// false — which fails the whole import, in the one file whose job is to export
+// startServer. Guard the argument, not the comparison (#481).
+const entryPath = process.argv[1];
+if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
   const port = Number(process.env.AGENT_DAG_PORT ?? 4317);
   startServer({ port }).then(s => {
     const addr = s.address();
