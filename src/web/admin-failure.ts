@@ -42,6 +42,21 @@ export type AdminFailure = {
   state?: string | null;
 } | null;
 
+/**
+ * One of the three maps below, read by a reason code — and undefined when this
+ * build has no sentence for that code.
+ *
+ * `Object.hasOwn` rather than `MAP[reason]` (#474). A reason is a string off an
+ * HTTP reply, and every member of `Object.prototype` answers a plain bracket
+ * read with an inherited value that is neither nullish nor falsy: a reply
+ * saying `"toString"` would pass the `&&` guard and put a FUNCTION on screen
+ * where a sentence belongs. Asking whether the map has a ROW is the question
+ * all three callers were already trying to ask, so no known code moves.
+ */
+function sentenceFor(map: Record<string, string>, reason: string | undefined): string | undefined {
+  return reason && Object.hasOwn(map, reason) ? map[reason] : undefined;
+}
+
 // Each is a decision the server made on purpose, so each gets a sentence rather
 // than a code.
 export const REASONS: Record<string, string> = {
@@ -126,7 +141,8 @@ export function explainCommandFailure(out: CommandFailure, fallback: string): st
   // A tool that never started printed nothing of its own — anything in the
   // output there came from the shell that could not find it.
   if (out?.reason !== "no_cswap" && /keychain/i.test(commandOutput(out))) return KEYCHAIN;
-  if (out?.reason && COMMAND_REASONS[out.reason]) return COMMAND_REASONS[out.reason];
+  const mapped = sentenceFor(COMMAND_REASONS, out?.reason);
+  if (mapped) return mapped;
   // A reason this build has no sentence for still names the thing that
   // happened, which is more than the subprocess's last line ever did.
   return out?.reason || fallback;
@@ -410,7 +426,8 @@ function rankCcusageFailure(out: CcusageFailure, fallback: string): string {
     // triggers the repair.
   }
   if (npxMissing(text)) return NO_NPX;
-  if (out?.reason && CCUSAGE_REASONS[out.reason]) return CCUSAGE_REASONS[out.reason];
+  const mapped = sentenceFor(CCUSAGE_REASONS, out?.reason);
+  if (mapped) return mapped;
   // A build talking to a newer server still names the thing that happened,
   // which is more than the CLI's last line ever did.
   return out?.reason || fallback;
@@ -423,7 +440,8 @@ export function explainFailure(out: AdminFailure, fallback: string): string {
   // The ending's own words, and the server knows the machine — which keychain,
   // which missing binary — in a way this map never can.
   if (out?.error && isLoginOver(out.state)) return out.error;
-  if (out?.reason && REASONS[out.reason]) return REASONS[out.reason];
+  const mapped = sentenceFor(REASONS, out?.reason);
+  if (mapped) return mapped;
   // A crash in the handler sends `error` with no reason at all. Without this it
   // reached the user as the generic fallback, indistinguishable from a refusal,
   // and that is how a broken import spent a release looking like a rejected one.

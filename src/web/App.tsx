@@ -2837,7 +2837,12 @@ function Inner() {
                 </span>
               ) : version?.upgradeBlocked ? (
                 <span className="ver-sub">
-                  {UPGRADE_BLOCK_TEXT[version.upgradeBlocked] ?? "cannot install from here"}
+                  {/* hasOwn, not `??` — see categoryFor (#474). The reason is a
+                      string off /api/version, so a build that sends one naming
+                      an Object.prototype member would put a function here. */}
+                  {Object.hasOwn(UPGRADE_BLOCK_TEXT, version.upgradeBlocked)
+                    ? UPGRADE_BLOCK_TEXT[version.upgradeBlocked]
+                    : "cannot install from here"}
                 </span>
               ) : null}
               <button type="button" className="ver-cmd" onClick={copyCommand} title="Copy to clipboard">

@@ -164,11 +164,29 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   ...CODEX_TOOL_CATEGORY,
 };
 
-/** The bucket a tool belongs to. Every MCP call is its own family regardless of
- *  what the server named the method. */
+/**
+ * The bucket a tool belongs to. Every MCP call is its own family regardless of
+ * what the server named the method.
+ *
+ * `Object.hasOwn` rather than `?? "other"` (#474). A tool name is OUTSIDE data —
+ * it is `tool_name` off a hook payload, or a `tools.*` method name dug out of a
+ * Codex script — so it can be any string at all, including one that names a
+ * member of `Object.prototype`. Plain bracket access answers those from the
+ * prototype: `TOOL_CATEGORY["toString"]` is a function, `["__proto__"]` is an
+ * object, and neither is nullish, so `??` never fires and the default is never
+ * reached. What comes back is then written into `class="tool-burst cat-…"` — a
+ * stringified function carries spaces, so it becomes several junk class tokens
+ * and no `cat-*` accent — and is the same value the filter chips test with
+ * `hiddenCategories.has()`, which no chip can ever match. The guard asks the
+ * question the table is actually being asked: is there a ROW for this name.
+ *
+ * Every name with a row answers exactly what it answered before — `hasOwn` is
+ * true for all of them and the value read is the same one — so this changes no
+ * answer the deck was already giving.
+ */
 export function categoryFor(name: string): ToolCategory {
   if (name.startsWith("mcp__")) return "mcp";
-  return TOOL_CATEGORY[name] ?? "other";
+  return Object.hasOwn(TOOL_CATEGORY, name) ? TOOL_CATEGORY[name] : "other";
 }
 
 /**
