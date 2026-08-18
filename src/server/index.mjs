@@ -1,7 +1,7 @@
 // agent-dag server: HTTP ingest + SSE broadcast + static file serving.
 // Single-file pure Node HTTP server, zero deps.
 import { createServer } from "node:http";
-import { readFile, stat, mkdir, appendFile, open, truncate, readdir, unlink } from "node:fs/promises";
+import { readFile, stat, mkdir, open, truncate, readdir, unlink } from "node:fs/promises";
 import { createReadStream, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, dirname as pdirname } from "node:path";
@@ -13,7 +13,7 @@ import { claudeConfigDir } from "./claude-dir.mjs";
 import { CODEX_HOME, CODEX_SESSIONS_DIR, STOP, walkRolloutDays } from "./codex-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
 import { invokedName, renameNotice } from "./invoked-as.mjs";
-import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
+import { appendLogLine, codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
@@ -1804,8 +1804,16 @@ function pushEvent(raw, source, opts = {}) {
   }
 
   if (persisting) {
-    // Fire-and-forget append. JSONL = newline-delimited JSON.
-    appendFile(persistPath, json + "\n", "utf8").catch(() => {});
+    // Fire-and-forget append. JSONL = newline-delimited JSON, so the whole line
+    // has to reach the file as one write — this used to be `appendFile`, which
+    // splits anything over 512 KiB into separate appends and let another
+    // event land in the middle of a large tool response. See appendLogLine.
+    //
+    // Note this runs AFTER redactDeckToken above, as every path to the log
+    // does: the string being written is the one serialization of the event the
+    // SSE frame also used, and the token was taken out of the payload before
+    // either existed.
+    appendLogLine(persistPath, json + "\n");
     // Cheap throttled check (every 30s) — only rotates if file > 50MB.
     maybeRotatePersistFile();
   }
@@ -1837,9 +1845,35 @@ function pushEvent(raw, source, opts = {}) {
   return evt;
 }
 
+/**
+ * Read the log back into the ring buffer at boot.
+ *
+ * A line that will not parse is skipped rather than thrown on, and that is
+ * deliberate — it is what lets a log damaged by the pre-#446 writer still
+ * replay. Every line before the damage and every line after it is whole, so
+ * stopping at the first bad one would throw away the rest of the session for a
+ * fault that costs one event. Newline framing is what makes the recovery
+ * possible: a torn write leaves the reader resynchronised at the very next
+ * `\n`, with no length prefix to have been lost along with the bytes.
+ *
+ * What changed is that the skip is no longer silent. Before, a deck whose log
+ * had been shredded replayed "mostly" and said nothing anywhere: the largest
+ * tool responses and whatever ordinary event was spliced into them were gone,
+ * with no counter and no line on the terminal. The count below is the only
+ * signal that a log carries damage from a writer that has since been fixed, and
+ * the byte total is what tells the user whether it was one truncated tail from
+ * a kill -9 or a megabyte of shredded tool output.
+ *
+ * Deliberately one line, and deliberately without the path in it: this prints
+ * onto a terminal the deck is about to paint over (see oneLine in term.mjs for
+ * what a multi-line message does there), and the path was already printed at
+ * boot by the caller.
+ */
 async function replayLog(filePath) {
   if (!existsSync(filePath)) return 0;
   let count = 0;
+  let skipped = 0;
+  let skippedBytes = 0;
   const rl = createInterface({ input: createReadStream(filePath, { encoding: "utf8" }) });
   for await (const line of rl) {
     if (!line) continue;
@@ -1849,7 +1883,14 @@ async function replayLog(filePath) {
         pushEvent(evt.payload, evt.source ?? "replay", { receivedAt: evt.receivedAt, replay: true });
         count++;
       }
-    } catch { /* skip corrupt line */ }
+    } catch {
+      skipped++;
+      skippedBytes += Buffer.byteLength(line, "utf8");
+    }
+  }
+  if (skipped > 0) {
+    const kb = (skippedBytes / 1024).toFixed(0);
+    console.warn(`${PRODUCT}: skipped ${skipped} unreadable line(s) (${kb}KB) while replaying the event log`);
   }
   return count;
 }
