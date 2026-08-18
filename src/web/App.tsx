@@ -430,6 +430,26 @@ const DETAIL_CAT_EMOJI: Record<DetailCategory, string> = {
   file: "📁", shell: "⚡", web: "🌐", agent: "🤖",
   task: "📋", plan: "🧭", mcp: "🔌", other: "✨",
 };
+/* An identity map on purpose — kept, not overlooked (#383).
+ *
+ * Every value below spells its own key, which is exactly what the eight
+ * TOOL_CATEGORY rows deleted in the same sweep looked like. They are not the
+ * same thing. Those rows sat behind a lookup whose default already returned
+ * what they returned, so their presence could not change a rendered pixel;
+ * this table is the only place a category's visible TEXT is decided — the
+ * chip's `cat-name` span, plus the tooltips on the filter button and on the
+ * activity strip. And being a `Record<DetailCategory, string>` it is how the
+ * compiler asks for a label the day a ninth ToolCategory member arrives.
+ *
+ * Inlining `{c}` at those three call sites is what deleting it would mean, and
+ * that promotes the union's member identifiers to user-facing prose: renaming
+ * one would silently rewrite the UI, and the day `mcp` should read "MCP
+ * servers" the map has to come back. One line changes here instead.
+ *
+ * Read with plain bracket access on purpose: unlike the tables #474 fixed, the
+ * key is never an outside string — it is a DetailCategory that
+ * `detailCategoryFor` produced, and none of the eight names an
+ * Object.prototype member. */
 const DETAIL_CAT_LABEL: Record<DetailCategory, string> = {
   file: "file", shell: "shell", web: "web", agent: "agent",
   task: "task", plan: "plan", mcp: "mcp", other: "other",

@@ -3255,6 +3255,13 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .cat-chip.cat-task  { border-color: rgba(134,239,172,0.40); }
 .cat-chip.cat-plan  { border-color: rgba(196,181,253,0.40); }
 .cat-chip.cat-mcp   { border-color: rgba(94,234,212,0.40); }
+/* "other" is a category like the seven above it, not the absence of one, so it
+   is tinted like them — the same #94a3b8 its bubble paints in
+   `.tool-burst.cat-other`, at the 40% every chip border carries. Without this
+   rule the one bucket every unknown tool lands in was the one bucket whose chip
+   fell back to the plain `--line` border, so the same category read as two
+   different things depending on which surface you were looking at. */
+.cat-chip.cat-other { border-color: rgba(148,163,184,0.40); }
 
 /* ---------------- prompt history ---------------- */
 

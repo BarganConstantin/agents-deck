@@ -218,4 +218,22 @@ describe("the identity map App.tsx keeps on purpose", () => {
       ["agent", "file", "mcp", "other", "plan", "shell", "task", "web"],
     );
   });
+
+  it("says why at the declaration, not only here", () => {
+    // The decision above was pinned in this file and nowhere else, so a reader
+    // of App.tsx still met eight rows that spell their own keys with nothing
+    // saying they are deliberate — and #383 was raised a second time on exactly
+    // that. The rationale lives at the site now; this keeps it there. Matched on
+    // the issue number and the shape (a block comment ending immediately above
+    // the declaration) rather than on any sentence, so the prose stays free to
+    // be rewritten.
+    const app = src(WEB, "App.tsx");
+    const at = app.indexOf("const DETAIL_CAT_LABEL");
+    expect(at, "DETAIL_CAT_LABEL is gone — see the test above").toBeGreaterThan(-1);
+    // \s covers the \r of a CRLF checkout.
+    const preceding = app.slice(0, at);
+    expect(preceding, "no block comment sits on DETAIL_CAT_LABEL").toMatch(/\*\/\s*$/);
+    const comment = /\/\*(?:(?!\*\/)[\s\S])*\*\/\s*$/.exec(preceding)![0];
+    expect(comment).toContain("#383");
+  });
 });
