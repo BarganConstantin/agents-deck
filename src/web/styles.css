@@ -668,12 +668,24 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
    pointer that was only passing through, and this strip has no room to give:
    it already carries five stats, the MCP dots and the blocked-session button
    with no responsive collapse anywhere in the sheet. */
+.topbar .status .sysmeter-wrap { position: relative; display: inline-flex; align-items: center; }
 .topbar .status .sysmeter {
   display: inline-flex;
   align-items: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  /* The press eases back rather than snapping — the convention every other
+     pressable control in this sheet follows (#355). */
+  transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 /* Same separator the stats draw between themselves — this sits in that run and
    should not look bolted onto the end of it. */
+.topbar .status .stat + .sysmeter-wrap::before,
 .topbar .status .stat + .sysmeter::before {
   content: "";
   display: inline-block;
@@ -774,6 +786,160 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   .sysmeter .sm-ram-fill {
     transition: none;
   }
+}
+
+/* ---------------- machine detail ----------------
+   Anchored under the meter, no scrim: the canvas keeps working behind it
+   because nothing in here needs protecting or interrupting. Everything is in
+   bytes and cores rather than ratios — the percentage is what the topbar
+   already answered, and "how much of how much" is what you opened this for. */
+.sysdetail {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: -8px;
+  z-index: 60;
+  width: 288px;
+  padding: 12px 14px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34), 0 2px 6px rgba(0, 0, 0, 0.2);
+  font-size: 11px;
+  color: var(--text);
+  text-align: left;
+  cursor: default;
+  animation: sdIn 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes sdIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+.sysdetail::before {
+  /* The tick that ties the panel to the control it came from. */
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 18px;
+  width: 8px;
+  height: 8px;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  transform: rotate(45deg);
+}
+
+.sd-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.sd-title { font-size: 12px; font-weight: 600; }
+.sd-sub { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sd-close {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.sd-close:hover { color: var(--text); }
+.sd-close:active { transform: scale(0.97); }
+.topbar .status .sysmeter:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .sd-close:active,
+  .topbar .status .sysmeter:active { transform: none; }
+}
+
+.sd-section + .sd-section { margin-top: 13px; }
+.sd-h {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* One column per core, so the shape of the load is visible — a saturated
+   machine and one hot single-threaded job read identically in the aggregate. */
+.sd-cores {
+  display: grid;
+  grid-template-columns: repeat(var(--n), 1fr);
+  gap: 2px;
+  height: 26px;
+}
+.sd-core {
+  display: flex;
+  align-items: flex-end;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.sysdetail .sd-core-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: height 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sd-row + .sd-row { margin-top: 9px; }
+.sd-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.sd-row-label { color: var(--muted); }
+.sd-row-val { font-variant-numeric: tabular-nums; color: var(--muted); }
+.sd-row-val b { color: var(--text); font-weight: 600; }
+.sd-track {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.sysdetail .sd-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms ease;
+}
+.sd-fill.warn { background: var(--warn); }
+
+.sd-load { display: flex; gap: 14px; }
+.sd-load-item { display: flex; flex-direction: column; gap: 1px; font-variant-numeric: tabular-nums; }
+.sd-load-item b { font-size: 13px; font-weight: 600; }
+.sd-load-item span { color: var(--muted); font-size: 10px; }
+.sd-load-item.over b { color: var(--warn); }
+
+.sd-note { margin-top: 5px; color: var(--muted); font-size: 10px; }
+
+.sysdetail .sd-procs { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.sysdetail .sd-procs th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--muted);
+  padding-bottom: 3px;
+}
+.sysdetail .sd-procs th:first-child, .sd-procs th:nth-child(2) { text-align: right; width: 34px; }
+.sysdetail .sd-procs td { padding: 2px 0; }
+.sd-num { text-align: right; padding-right: 8px !important; font-weight: 600; }
+.sd-dim { color: var(--muted); font-weight: 400; }
+.sysdetail .sd-proc-name {
+  padding-left: 2px;
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sysdetail { animation: none; }
+  .sysdetail .sd-core-fill,
+  .sysdetail .sd-fill { transition: none; }
 }
 .topbar .status .pill {
   display: inline-flex;
