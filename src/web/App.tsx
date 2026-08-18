@@ -49,6 +49,7 @@ import { emptyScope } from "./scope";
 import { ASSUMED, readProviders, type Providers } from "./providers";
 import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
+import { matchesQuery, SEARCH_PLACEHOLDER } from "./search-match";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
@@ -408,18 +409,6 @@ const DETAIL_CAT_LABEL: Record<DetailCategory, string> = {
 /** The detail panel's name for the shared bucket lookup. Kept as a local alias
  *  purely so the call sites below read the way they always have. */
 const detailCategoryFor = categoryFor;
-
-function matchesQuery(a: AgentNodeData, q: string): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  if (a.label.toLowerCase().includes(needle)) return true;
-  if (a.cwd?.toLowerCase().includes(needle)) return true;
-  if (a.cwdBasename?.toLowerCase().includes(needle)) return true;
-  if (a.sessionId.toLowerCase().includes(needle)) return true;
-  if (a.firstPrompt?.toLowerCase().includes(needle)) return true;
-  for (const t of a.tools) if (t.name.toLowerCase().includes(needle)) return true;
-  return false;
-}
 
 /** Compute the spotlight lineage for an agent — itself plus every ancestor
  *  (chain of parentIds) and every descendant (transitive). When no agent
@@ -2348,7 +2337,7 @@ function Inner() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Search agents, cwd, tools…"
+              placeholder={SEARCH_PLACEHOLDER}
               value={query}
               onChange={e => setQuery(e.target.value)}
               spellCheck={false}
