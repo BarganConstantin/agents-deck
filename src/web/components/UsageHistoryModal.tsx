@@ -12,7 +12,7 @@ import { createLatestGuard } from "../latest";
 import { presetSince } from "../usage-range";
 import { usageView } from "../usage-view";
 import { fmtTokens } from "../token-format";
-import { shortModel } from "./AgentNode";
+import { shortModel } from "../model-label";
 import { useModalDismiss } from "./use-modal-dismiss";
 
 // ── ccusage data shapes (subset we use) ────────────────────────────────────
@@ -275,9 +275,17 @@ export default function UsageHistoryModal({ onClose }: Props) {
               })}
             </div>
 
+            {/* The raw id in a `title`, on both surfaces here, matching what
+                UsagePanel and AgentNode already do. #462 found these two were
+                the only places printing a model label with no way back to the
+                id — and they are the two whose whole job is comparing spend
+                across models, so a reader who wants to know exactly which
+                `gpt-5.4-*` a row is has to be able to ask. The label is
+                unambiguous again as of that fix; the tooltip is what makes the
+                exact id, dates and namespace included, recoverable without it. */}
             <div className="uh-legend">
               {legend.map(([m, c]) => (
-                <span key={m} className="uh-legend-item">
+                <span key={m} className="uh-legend-item" title={m}>
                   <span className="uh-legend-dot" style={{ background: modelColor(m) }} />
                   {shortModel(m)} <span className="uh-legend-cost">{fmtCost(c)}</span>
                 </span>
@@ -306,10 +314,20 @@ export default function UsageHistoryModal({ onClose }: Props) {
                     .map(mb => {
                       const pct = selectedDay.totalCost > 0 ? (mb.cost / selectedDay.totalCost) * 100 : 0;
                       return (
-                        <div key={mb.modelName} className="uh-model-row">
+                        <div key={mb.modelName} className="uh-model-row" title={mb.modelName}>
                           <span className="uh-model-name">
                             <span className="uh-legend-dot" style={{ background: modelColor(mb.modelName) }} />
-                            {shortModel(mb.modelName)}
+                            {/* The label is in a span of its own so it can
+                                ellipsise: this column is a hard 130px and the
+                                text used to be an anonymous flex item, which
+                                `text-overflow` cannot reach — a label wider than
+                                the column wrapped onto a second line and pushed
+                                the bar out of the row. Nothing in the known
+                                corpus is that wide (see model-label.ts), and the
+                                point is that the next qualifier to arrive
+                                degrades to an ellipsis over a `title` rather
+                                than to a broken row. */}
+                            <span className="uh-model-label">{shortModel(mb.modelName)}</span>
                           </span>
                           <span className="uh-model-bar">
                             <span className="uh-model-bar-fill" style={{ width: `${pct}%`, background: modelColor(mb.modelName) }} />

@@ -3,6 +3,11 @@ import { Handle, Position, type NodeProps } from "reactflow";
 import { sessionHue } from "../reducer";
 import { billedInputTokens, cacheWriteBreakdown, costForUsage, fmtCost, fmtCostRate, ratesForModel, UNPRICED_LABEL } from "../pricing";
 import { codexApprovalTell } from "../codex-approval";
+// The chip's labeller, which used to be declared in this file and moved out in
+// #462 so that a pure matcher and a bare-node suite could reach it without a
+// React component behind it. See model-label.ts for why the move happened with
+// that fix rather than with #374's wider consolidation.
+import { shortModel } from "../model-label";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
@@ -243,8 +248,9 @@ function StatePill({ state }: { state: AgentNodeData["state"] }) {
  *  block, and paraphrasing it would only add a claim we cannot back. The
  *  fallback is what stops a re-wording upstream, or an older log line with no
  *  message at all, from rendering a coloured row that says nothing. One
- *  function so the three surfaces cannot drift apart, the way shortModel below
- *  is one for the same reason. */
+ *  function so the three surfaces cannot drift apart, the way shortModel — now
+ *  in model-label.ts, imported at the top of this file — is one for the same
+ *  reason. */
 export function waitingSentence(waiting: WaitingBlock): string {
   if (waiting.message) return waiting.message;
   return waiting.kind === "permission" ? "Needs your permission" : "Waiting for your input";
@@ -344,37 +350,4 @@ function ToolRateSpark({ tools, now }: { tools: ToolCall[]; now: number }) {
       <span className="tool-spark-label">60s</span>
     </div>
   );
-}
-
-/** Render model ids into compact display labels:
- *    "claude-opus-4-7-20250101"            → "Opus 4.7"
- *    "claude-haiku-4-5"                    → "Haiku 4.5"
- *    "anthropic.claude-sonnet-4-5-…-v1:0"  → "Sonnet 4.5"
- *    "gpt-5.3-codex"                       → "GPT-5.3 Codex"
- *    "gpt-5"                               → "GPT-5"
- *    "o3-mini"                             → "o3-mini"
- *  Falls back to the raw id if the shape is unfamiliar so we never hide info.
- *
- *  Two things are dropped before matching, because an id carries them and a
- *  chip has no room for them: Bedrock's `anthropic.` namespace, and the release
- *  date Anthropic stamps on every Claude id. The date was being read as a third
- *  version component ever since this was written — "Opus 4.7.20250101", against
- *  the "Opus 4.7" promised right above — because eight digits satisfy the same
- *  `\d+` as the one or two a version number has. Length is what tells them
- *  apart. The usage-history modal used to carry a second labeller purely to
- *  strip both; one function now, so a family added here reaches every panel
- *  rather than four out of five. */
-export function shortModel(id: string): string {
-  const bare = id.replace(/^anthropic\./, "").replace(/[-_]\d{8}(?!\d)/, "");
-  const claude = bare.match(/^claude[-_](opus|sonnet|haiku|fable|mythos)[-_](\d+(?:[-_.]\d+)*)/i);
-  if (claude) {
-    const family = claude[1][0].toUpperCase() + claude[1].slice(1).toLowerCase();
-    const version = claude[2].replace(/[-_]/g, ".");
-    return `${family} ${version}`;
-  }
-  const gptCodex = bare.match(/^gpt[-_](\d+(?:[-_.]\d+)*)[-_]codex\b/i);
-  if (gptCodex) return `GPT-${gptCodex[1].replace(/[-_]/g, ".")} Codex`;
-  const gpt = bare.match(/^gpt[-_](\d+(?:[-_.]\d+)*)/i);
-  if (gpt) return `GPT-${gpt[1].replace(/[-_]/g, ".")}`;
-  return id;
 }

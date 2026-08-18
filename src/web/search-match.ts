@@ -27,7 +27,13 @@
 // than a second abbreviator — a private copy here would drift from the card the
 // first time a model family is added, and then the search would be unable to
 // find a chip that renders perfectly (this is the failure ambient-counts.ts was
-// written to stop, one surface further out).
+// written to stop, one surface further out). Sharing the labeller is also what
+// makes the label side of the index a real filter: until #462 it abbreviated
+// `gpt-5.4-nano` and `gpt-5.4-pro` to the same "GPT-5.4", so a user who typed
+// the words off one card got back both models and neither card explained the
+// other. The helper moved to ./model-label in that fix, which is what the note
+// left here asked for — a pure rule should not be importing a React component
+// to reach one string function.
 //
 // THE PROVIDER IS MATCHED BY PREFIX, and it is the only field here that is not a
 // substring match. Two reasons, both consequences of it being invisible:
@@ -74,7 +80,7 @@
 // rule buried in a 3,000-line component can only ever be tested by regex over
 // its own source text — which passes on any comment containing the right words
 // and fails on any rephrasing of the right code.
-import { shortModel } from "./components/AgentNode";
+import { shortModel } from "./model-label";
 import type { AgentNodeData } from "./types";
 
 /**

@@ -16,7 +16,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { shortModel } from "../components/AgentNode";
+import { shortModel } from "../model-label";
 
 const modal = readFileSync(
   fileURLToPath(new URL("../components/UsageHistoryModal.tsx", import.meta.url)),
@@ -51,7 +51,11 @@ describe("the shared model label", () => {
 
 describe("the usage-history modal", () => {
   it("takes its labels from the shared helper", () => {
-    expect(modal).toMatch(/import \{ shortModel \} from "\.\/AgentNode";/);
+    // The helper left AgentNode.tsx for ../model-label in #462 — the point of
+    // this assertion is that the modal imports it from wherever it lives rather
+    // than growing a private copy again, so the path moved and the check did
+    // not weaken.
+    expect(modal).toMatch(/import \{ shortModel \} from "\.\.\/model-label";/);
   });
 
   it("declares no second labeller of its own", () => {

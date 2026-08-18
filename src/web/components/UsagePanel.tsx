@@ -8,7 +8,8 @@ import type { GraphState } from "../reducer";
 import type { AgentState } from "../types";
 import { fmtTokens } from "../token-format";
 import type { Providers } from "../providers";
-import { shortModel, stateLabel } from "./AgentNode";
+import { shortModel } from "../model-label";
+import { stateLabel } from "./AgentNode";
 
 // ── Quota types ────────────────────────────────────────────────────────────
 interface QuotaData {
