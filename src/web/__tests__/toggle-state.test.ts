@@ -353,7 +353,9 @@ describe("what each of the five toggles announces", () => {
   it("keeps aria-pressed for the sound button, the only one of the five that is a setting", () => {
     // It installs or removes a Stop hook on disk. Nothing appears when it goes
     // on, so there is no region for aria-expanded to be about.
-    const sound = button("Toggle finish sound");
+    // The label names the CLI since #394 — the button is drawn only where
+    // Claude Code is, and it is the only turn the sound covers.
+    const sound = button("Toggle Claude Code finish sound");
     expect(sound).toMatch(/aria-pressed=\{soundOn\}/);
     expect(sound).not.toMatch(/aria-expanded/);
   });
