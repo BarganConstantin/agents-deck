@@ -479,8 +479,10 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 130ms, border-color 130ms, color 130ms;
+  transition: background 130ms, border-color 130ms, color 130ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
+.topbar .brand button.v:active { transform: scale(0.97); }
 /* The same chip when nothing is stale: still a button — clicking it asks npm
    now — but it must not draw attention to itself for saying "up to date".
    Quiet is not the same as invisible, though: with a fully transparent border
@@ -556,9 +558,19 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   cursor: pointer;
   max-width: 380px;
   min-width: 0;
-  transition: border-color 120ms, background 120ms;
+  transition: border-color 120ms, background 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .selected-ribbon:hover { border-color: var(--accent); background: var(--bg); }
+/* The ribbon itself is a button — it fits the view to the agent it names — and
+   it was the only part of this chip that did not answer a press while its own ×
+   did, so the small target moved and the large one holding it did not.
+   The guard is not decoration. `:active` is set on every ancestor of the
+   pressed element, and the × is a span INSIDE this button (it has to be —
+   nesting a button is invalid, see App.tsx), so without it a press on the ×
+   would shrink the whole ribbon as well as the ×, saying "fit view" while
+   doing "deselect". The two verbs are different, so only one of them moves. */
+.selected-ribbon:active:not(:has(.selected-close:active)) { transform: scale(0.97); }
 .selected-ribbon:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .selected-ribbon .selected-label {
   font-weight: 600;
@@ -937,8 +949,12 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   font-size: 16px;
   padding: 0 6px;
   line-height: 1;
+  /* No transition at all before the press was added, so the hover colour
+     snapped too — the same pairing .ctx-modal-close and .uh-close got. */
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .search-clear:hover { color: var(--text); }
+.search-clear:active { transform: scale(0.94); }
 .search-kbd {
   position: absolute;
   right: 6px;
@@ -1116,12 +1132,17 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 130ms, border-color 130ms;
+  transition: background 130ms, border-color 130ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ver-banner .ver-act:hover:not(:disabled) {
   background: color-mix(in srgb, var(--warn) 26%, transparent);
   border-color: var(--warn);
 }
+/* The most consequential control in the deck — it restarts the process — sat in
+   a banner where .ver-cmd, .ver-auto and .ver-close all answered a press and it
+   alone did not. */
+.ver-banner .ver-act:active:not(:disabled) { transform: scale(0.97); }
 .ver-banner .ver-act:disabled { opacity: var(--dim-off); cursor: default; }
 /* A failed install is not a warning, it is a failure, and the command beside it
    is now the only way forward — so it reads in the error colour. */
@@ -1382,9 +1403,11 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   cursor: pointer;
   z-index: 10;
   box-shadow: -2px 2px 8px rgba(0,0,0,0.2);
-  transition: color 120ms ease, background 120ms ease;
+  transition: color 120ms ease, background 120ms ease,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .detail-reopen:hover { color: var(--text); }
+.detail-reopen:active { transform: scale(0.94); }
 /* The panel's captions, at both of the levels they now sit at (#381): the
    empty state's own title became this panel's h2 when the document gained an
    h1, and the sections under a selected agent stay h3. The child combinator is
@@ -1641,6 +1664,11 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   transition: filter 120ms ease, transform 120ms ease;
 }
 .ctx-donut:hover { filter: brightness(1.2); transform: scale(1.08); }
+/* After the hover, not before it: the two tie on specificity and a press is
+   always a hover as well, so source order is the whole of what decides which
+   scale the pointer sees. 26px of donut, so 0.94 like the other icon targets —
+   0.97 of 26px is under a pixel. */
+.ctx-donut:active { transform: scale(0.94); }
 .ctx-donut:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -2501,13 +2529,22 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   /* The dim pair is restated, not inherited: .tool-burst.dim ties this rule on
      specificity and loses on source order, so a search-dimmed bubble would
      snap its fade the moment this transition existed. */
-  transition: translate 120ms ease, box-shadow 120ms ease,
-              opacity 180ms ease, filter 180ms ease;
+  transition: translate 120ms ease, scale 140ms cubic-bezier(0.23, 1, 0.32, 1),
+              box-shadow 120ms ease, opacity 180ms ease, filter 180ms ease;
 }
 .tool-burst.clickable:hover {
   translate: 0 -1px;
   box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px var(--cat-accent, rgba(255,255,255,0.15));
 }
+/* The press is `scale`, for the reason the lift above is `translate`: transform
+   is bubble-spawn's for the bubble's whole life. Same convention as every other
+   control, spelled with the independent property so it composes into the same
+   matrix instead of losing to the filling animation.
+   One overlap is real and left alone: bubble-done-flash also writes `scale`,
+   and while it runs — 520ms, once, when the tool completes — it outranks this
+   rule and the press does not show. A bubble that just finished is already
+   announcing itself; a competing press would be the second thing to say. */
+.tool-burst.clickable:active { scale: 0.97; }
 /* A bubble has no :focus-visible rule because a bubble cannot be focused: the
    layer is aria-hidden decoration and the tools it draws are reached from the
    detail panel's list, which is real buttons. See ToolBursts.tsx. */
@@ -2784,7 +2821,8 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   text-align: left;
   color: var(--text);
   font: inherit;
-  transition: background 120ms, border-color 120ms;
+  transition: background 120ms, border-color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
   min-width: 0;
 }
 /* Both states were carried by a --bg-soft wash, which on white is --panel — so
@@ -2796,6 +2834,10 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    exactly this. Selection takes the accent outright; --accent-dim, which it
    had, measured 1.39:1 on white. */
 .session-list .sl-row:hover { background: var(--bg-soft); border-color: var(--ctl-edge); }
+/* The most-clicked control in the app, and the one that answered a press with
+   nothing. Nothing interactive nests inside the row, so the scale is the row's
+   alone — the state dot, the label and the meta line are all spans. */
+.session-list .sl-row:active { transform: scale(0.97); }
 .session-list .sl-row.selected {
   background: var(--bg-soft);
   border-color: var(--accent);
@@ -3113,10 +3155,11 @@ button.tool.clickable {
   gap: 8px;
   justify-content: space-between;
   border-radius: 4px;
-  transition: background 120ms;
+  transition: background 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 button.tool.clickable { padding-left: 6px; padding-right: 6px; }
 button.tool.clickable:hover { background: var(--ctl-fill); }
+button.tool.clickable:active { transform: scale(0.97); }
 button.tool.clickable:last-child { border-bottom: none; }
 
 /* ---------------- shortcuts grid ---------------- */
@@ -4103,8 +4146,12 @@ button.tool.clickable:last-child { border-bottom: none; }
   height: 100%; position: relative;
   background: none; border: none; padding: 0; cursor: pointer;
   min-width: 0;
+  transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .uh-bar-col:hover .uh-bar { filter: brightness(1.15); }
+/* The column is the target, not the bar drawn inside it — a press on the empty
+   space above a short day still selects that day, so the whole column moves. */
+.uh-bar-col:active { transform: scale(0.97); }
 .uh-bar-col.sel .uh-bar { outline: 1px solid var(--accent); outline-offset: 1px; }
 .uh-bar {
   width: 78%; min-height: 1px;
@@ -4395,8 +4442,10 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 12px;
   line-height: 1.2;
   cursor: pointer;
+  transition: opacity 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ap-failure-x:hover { opacity: 1; }
+.ap-failure-x:active { transform: scale(0.94); }
 /* ── auto-switch controls ── */
 .ap-auto {
   padding: 12px var(--panel-inset) 11px;
@@ -4450,8 +4499,9 @@ button.tool.clickable:last-child { border-bottom: none; }
   opacity: 0.55;
   flex-shrink: 0;
 }
-button.ap-auto-state { cursor: pointer; transition: border-color 120ms, color 120ms; }
+button.ap-auto-state { cursor: pointer; transition: border-color 120ms, color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
 button.ap-auto-state:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button.ap-auto-state:active:not(:disabled) { transform: scale(0.97); }
 button.ap-auto-state:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
 .ap-auto-state.live {
@@ -4571,13 +4621,20 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
   line-height: 1.5;
   text-align: right;
   cursor: pointer;
-  transition: border-color 120ms, color 120ms;
+  transition: border-color 120ms, color 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 /* --accent, not --accent-dim: #325 already had to override the dim edge inside
    the manage block, where it dropped the slot select from 3.98:1 to 1.58:1 on
    hover. The auto-switch select rests on the same edge now, so the override is
    the rule and the local copy is gone. */
 .ap-field select:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* The only native control in the convention. It is styled like everything else
+   here — appearance:none, the sheet's own fill, edge and chevron — so a press
+   that did nothing read as the one dead control in the panel. 0.97 rather than
+   0.94 because the popup that opens on the same press is anchored to this box
+   and the smaller step keeps the offset under a pixel. */
+.ap-field select:active:not(:disabled) { transform: scale(0.97); }
 /* Left, where the shared rule says right. Right-aligning a select sizes it
    to its widest option and then pins the SELECTED one to the chevron: correct
    for the auto-switch threshold, which is a number and reads against its own
@@ -4616,8 +4673,10 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
   cursor: pointer;
   text-decoration: underline dotted;
   text-underline-offset: 2px;
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .ap-rotate:hover:not(:disabled) { color: var(--accent); }
+.ap-rotate:active:not(:disabled) { transform: scale(0.97); }
 .ap-rotate:disabled { cursor: default; opacity: var(--dim-off); }
 
 .ap-footnote {
@@ -4967,9 +5026,11 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: color 120ms, border-color 120ms, background 120ms;
+  transition: color 120ms, border-color 120ms, background 120ms,
+              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .aa-tab:hover { color: var(--text); }
+.aa-tab:active { transform: scale(0.97); }
 .aa-tab.on {
   color: var(--text);
   border-color: var(--accent);
@@ -5239,7 +5300,26 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
   .uh-close:active, .uh-range-btn:active,
   .selected-ribbon .selected-close:active,
   .ver-banner .ver-cmd:active, .ver-banner .ver-auto:active,
-  .ver-banner .ver-close:active { transform: none; }
+  .ver-banner .ver-close:active,
+  .topbar .brand button.v:active,
+  .search-clear:active,
+  .ver-banner .ver-act:active:not(:disabled),
+  .detail-reopen:active, .ctx-donut:active,
+  .session-list .sl-row:active, button.tool.clickable:active,
+  .uh-bar-col:active, .ap-failure-x:active,
+  button.ap-auto-state:active:not(:disabled),
+  .ap-field select:active:not(:disabled),
+  .ap-rotate:active:not(:disabled),
+  .aa-tab:active { transform: none; }
+  /* Two that cannot join the list above, for two different reasons.
+     The ribbon's selector carries `:has()`, and one selector a browser cannot
+     parse invalidates the whole list it sits in — put it there and an engine
+     without `:has()` would lose reduced motion for every press in the app, not
+     just this one. On its own it fails exactly as far as the rule it answers.
+     The bubble's press is the independent `scale` property, so `transform:
+     none` never reaches it. */
+  .selected-ribbon:active:not(:has(.selected-close:active)) { transform: none; }
+  .tool-burst.clickable:active { scale: none; }
 }
 
 /* The one failure in this panel that waiting cannot fix. Sized like the other

@@ -29,6 +29,14 @@
 // #267: the press convention this codebase invented — scale(0.97), neutralised
 // under reduced motion — was on four controls and missing from nine more.
 //
+// #355: fifteen further controls declared `cursor: pointer` and had no `:active`
+// rule of any kind, so a press on the session row, a tool bubble, the context
+// donut or the Restart button was indistinguishable from a hover. The
+// enumeration below is no longer a snapshot of what happened to exist when it
+// was written: the sweep at the end holds it against every `cursor: pointer`
+// rule in the sheet, so the next pressable control either joins the convention
+// or is written down as an exception.
+//
 // Deliberately outside the canvas sweep: the topbar, banners and sidebar, whose
 // single status dots pulse opacity in a fixed strip rather than across the
 // surface the deck is watched on, and .cat-filter-bar, chrome that floats over
@@ -223,38 +231,87 @@ describe("the hover lift on a clickable bubble", () => {
   });
 });
 
+/** A press: the `:active` selector, the scale it shrinks to, and the property
+ *  that carries it. `transform` for all but one — the tool bubble's transform is
+ *  owned for the element's whole life by the filling bubble-spawn keyframe, the
+ *  same conflict that put its hover lift on `translate`, so its press is the
+ *  independent `scale` property and composes instead of losing. */
+type Press = [selector: string, scale: string, prop: "transform" | "scale"];
+
 /** Every custom-styled control that answers a press, with the scale it uses:
- *  0.94 where the target is 18–28px and three percent would be sub-pixel. */
-const PRESSES: [string, string][] = [
-  ["button.btn:active:not(:disabled)", "0.97"],
-  [".topbar .waiting-stat:active", "0.97"],
-  [".ap-manage-btn:active:not(:disabled)", "0.97"],
-  [".ap-more:active", "0.94"],
-  [".ap-fix:active", "0.97"],
-  [".cat-filter:active", "0.97"],
-  [".detail-close:active", "0.94"],
-  [".ctx-modal-close:active", "0.94"],
-  [".uh-close:active", "0.94"],
-  [".uh-range-btn:active", "0.97"],
-  [".selected-ribbon .selected-close:active", "0.94"],
-  [".ver-banner .ver-cmd:active", "0.97"],
-  [".ver-banner .ver-auto:active", "0.97"],
-  [".ver-banner .ver-close:active", "0.94"],
+ *  0.94 where the target is an 18–28px icon and three percent would be
+ *  sub-pixel, 0.97 where a label makes three percent visible. The sweep at the
+ *  bottom holds this list against every `cursor: pointer` rule in the sheet, so
+ *  it is the spec for what a pressable control does rather than a record of
+ *  which ones had been got to. */
+const PRESSES: Press[] = [
+  ["button.btn:active:not(:disabled)", "0.97", "transform"],
+  [".topbar .waiting-stat:active", "0.97", "transform"],
+  [".topbar .brand button.v:active", "0.97", "transform"],
+  [".ap-manage-btn:active:not(:disabled)", "0.97", "transform"],
+  [".ap-more:active", "0.94", "transform"],
+  [".ap-fix:active", "0.97", "transform"],
+  [".ap-failure-x:active", "0.94", "transform"],
+  ["button.ap-auto-state:active:not(:disabled)", "0.97", "transform"],
+  [".ap-field select:active:not(:disabled)", "0.97", "transform"],
+  [".ap-rotate:active:not(:disabled)", "0.97", "transform"],
+  [".aa-tab:active", "0.97", "transform"],
+  [".cat-filter:active", "0.97", "transform"],
+  [".detail-close:active", "0.94", "transform"],
+  [".detail-reopen:active", "0.94", "transform"],
+  [".ctx-modal-close:active", "0.94", "transform"],
+  [".ctx-donut:active", "0.94", "transform"],
+  [".uh-close:active", "0.94", "transform"],
+  [".uh-range-btn:active", "0.97", "transform"],
+  [".uh-bar-col:active", "0.97", "transform"],
+  [".search-clear:active", "0.94", "transform"],
+  [".session-list .sl-row:active", "0.97", "transform"],
+  ["button.tool.clickable:active", "0.97", "transform"],
+  [".selected-ribbon .selected-close:active", "0.94", "transform"],
+  // The × is a span inside the ribbon's own button, and `:active` is set on
+  // every ancestor of what was pressed — without the guard, clearing the
+  // selection would shrink the whole ribbon as if the view were being fitted.
+  [".selected-ribbon:active:not(:has(.selected-close:active))", "0.97", "transform"],
+  [".ver-banner .ver-cmd:active", "0.97", "transform"],
+  [".ver-banner .ver-auto:active", "0.97", "transform"],
+  [".ver-banner .ver-act:active:not(:disabled)", "0.97", "transform"],
+  [".ver-banner .ver-close:active", "0.94", "transform"],
+  [".tool-burst.clickable:active", "0.97", "scale"],
 ];
+
+/** What the press declaration has to read, given the property carrying it. */
+const pressed = ([, scale, prop]: Press) => (prop === "transform" ? `scale(${scale})` : scale);
+
+/** The control a press belongs to — the selector without its `:active…` tail. */
+const owner = (sel: string) => sel.replace(/:active.*$/, "");
+
+/** Controls that say `cursor: pointer` and deliberately stay out of the
+ *  convention. Empty on purpose: an exception has to be written down here, with
+ *  a reason, rather than being the silent default it was until #355. */
+const EXEMPT: string[] = [];
 
 describe("press feedback is one convention, applied everywhere", () => {
   it("gives every one of these controls something to give back on press", () => {
-    const missing = PRESSES.filter(([sel, scale]) =>
-      !all.some(r => !r.reduced && selectors(r).includes(sel) && decl(r.body, "transform") === `scale(${scale})`));
+    const missing = PRESSES.filter(p =>
+      !all.some(r => !r.reduced && selectors(r).includes(p[0]) && decl(r.body, p[2]) === pressed(p)));
     expect(missing.map(([sel]) => sel)).toEqual([]);
   });
 
   it("eases the press on the control itself, so it grows back rather than jumps", () => {
-    const unEased = PRESSES.filter(([sel]) => {
-      const owner = sel.replace(/:active.*$/, "");
-      return !all.some(r => !r.reduced && selectors(r).includes(owner) && transitioned(r.body).includes("transform"));
-    });
+    const unEased = PRESSES.filter(([sel, , prop]) =>
+      !all.some(r => !r.reduced && selectors(r).includes(owner(sel)) && transitioned(r.body).includes(prop)));
     expect(unEased.map(([sel]) => sel)).toEqual([]);
+  });
+
+  it("puts the press after the hover wherever the two tie on specificity", () => {
+    // `.ctx-donut:hover` scales to 1.08 and a press is always a hover as well,
+    // so nothing but source order decides which of the two the pointer sees.
+    const at = (sel: string) => all.find(r => !r.reduced && selectors(r).includes(sel))?.at ?? -1;
+    for (const sel of [".ctx-donut", ".tool-burst.clickable"]) {
+      const hover = at(`${sel}:hover`);
+      expect(hover, `${sel}:hover`).toBeGreaterThan(-1);
+      expect(at(`${sel}:active`), sel).toBeGreaterThan(hover);
+    }
   });
 
   it("hands both close buttons a transition, so their hover stops snapping too", () => {
@@ -267,8 +324,23 @@ describe("press feedback is one convention, applied everywhere", () => {
   });
 
   it("neutralises every press under reduced motion", () => {
-    const loud = PRESSES.filter(([sel]) =>
-      !(answers.get(sel) ?? []).some(r => decl(r.body, "transform") === "none"));
+    const loud = PRESSES.filter(([sel, , prop]) =>
+      !(answers.get(sel) ?? []).some(r => decl(r.body, prop) === "none"));
     expect(loud.map(([sel]) => sel)).toEqual([]);
+  });
+
+  it("holds the list to every control the sheet itself calls pressable", () => {
+    const pressable = new Set<string>();
+    for (const rule of all) {
+      if (decl(rule.body, "cursor") !== "pointer") continue;
+      for (const sel of selectors(rule)) pressable.add(sel);
+    }
+    // If a rename ever slips the controls out of this sweep, this collapses
+    // before the two comparisons below can pass by finding nothing.
+    expect(pressable.size).toBeGreaterThan(25);
+    const owners = new Set(PRESSES.map(([sel]) => owner(sel)));
+    expect([...pressable].filter(s => !owners.has(s) && !EXEMPT.includes(s)).sort()).toEqual([]);
+    // And the other way: nothing enumerated has quietly stopped being a control.
+    expect([...owners].filter(s => !pressable.has(s)).sort()).toEqual([]);
   });
 });
