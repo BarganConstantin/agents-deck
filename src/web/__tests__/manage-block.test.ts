@@ -385,12 +385,21 @@ describe("the buttons stopped sharing the labels' colour (#325's first finding)"
     // The button's own resting state is the one the block opens in. The dimming
     // stays for the moment a request is out, at the 0.6 the ↻ and the selects
     // already use.
+    //
+    // #379 moved that 0.6 to `--dim-off` at :root, because this rule's own
+    // comment was the only place the deck stated the idiom and six other rules
+    // were quietly not keeping to it. So the assertion resolves the token rather
+    // than matching the literal — the number this test cares about is what
+    // actually composites, and reading it through :root is what keeps this file
+    // honest if the token ever moves.
     expect(panel).not.toMatch(/aliasDraft\.trim\(\)\s*===/);
     expect(panel).toMatch(/className="ap-manage-btn" disabled=\{busy != null\}/);
-    expect(decl(".ap-manage-btn:disabled", "opacity")).toBe("0.6");
+    expect(decl(".ap-manage-btn:disabled", "opacity")).toBe("var(--dim-off)");
+    const dimOff = parseFloat(/--dim-off:\s*([\d.]+)/.exec(css)![1]);
+    expect(dimOff).toBe(0.6);
     for (const theme of themes) {
       const bed = parseColor(TOK[theme]["--panel"]);
-      const dimmed = over([...resolve(decl(".ap-manage-btn", "color")!, theme).slice(0, 3), 0.6] as Rgba, bed);
+      const dimmed = over([...resolve(decl(".ap-manage-btn", "color")!, theme).slice(0, 3), dimOff] as Rgba, bed);
       expect(contrastRatio(dimmed, bed), `${theme} busy save`).toBeGreaterThanOrEqual(NON_TEXT);
     }
   });
