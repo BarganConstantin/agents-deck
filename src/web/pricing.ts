@@ -234,9 +234,16 @@ const RATES: Array<{ match: RegExp; rates: ModelRates | ((now: number) => ModelR
     rates: { input: 2.00, output: 8, cacheRead: 0.50, cacheWrite: 0 } },
 ];
 
-/** Recognise Codex / OpenAI model ids so the UI can tag the model display
- *  without inventing a price. Returns true for gpt-*, codex-*, o-series. */
-export function isCodexModel(modelId: string | undefined): boolean {
+/** Recognise Codex / OpenAI model ids — gpt-*, codex-*, o-series.
+ *
+ *  Not exported (#383). The doc here used to say this was "so the UI can tag the
+ *  model display", and that has not been true for some time: the display name is
+ *  `shortModel` in model-label.ts, which reads the id's own shape and never asks
+ *  this question. The one thing this decides is which arithmetic
+ *  `billedInputTokens` does below — Codex bills cache reads and writes on their
+ *  own lines, Claude folds them into input — so it is a detail of the pricing
+ *  model and is exercised through `billedInputTokens` on both providers. */
+function isCodexModel(modelId: string | undefined): boolean {
   if (!modelId) return false;
   return /^(?:gpt[-_]|codex[-_]|o\d)/i.test(modelId);
 }

@@ -103,7 +103,12 @@ export function npxLaunch(args, {
 // Long enough for a cold tarball on a slow line; short enough that a connection
 // hanging on a dead proxy does not hold the deck's Update button for the three
 // minutes the tab waits before giving up on its own.
-export const PREFETCH_TIMEOUT_MS = 120_000;
+//
+// Not exported (#383): it is the default of `prefetch`'s `timeoutMs` parameter
+// and nothing else. A caller that wants a different budget passes one, and a
+// caller that wants this one passes nothing — there is no third caller for the
+// number to be worth naming across the module boundary.
+const PREFETCH_TIMEOUT_MS = 120_000;
 
 /**
  * What to hand npx to DOWNLOAD a spec without running it.
