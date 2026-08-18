@@ -712,8 +712,13 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   position: relative;
   width: 36px;
   height: 14px;
-  cursor: default;
 }
+/* Only the idle skeleton is inert. Once the meter has a reading it is a button,
+   and `cursor: default` here — left over from when this was a <span> — was
+   overriding the pointer across the whole 36x14 graphic, leaving it on the
+   padding ring alone. Aiming at the number, the one part you want to press, got
+   an arrow. */
+.sysmeter.idle .sm-box { cursor: default; }
 .sysmeter .sm-graphic,
 .sysmeter .sm-read {
   position: absolute;
