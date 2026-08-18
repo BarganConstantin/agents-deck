@@ -3867,7 +3867,12 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-ministat-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .uh-detail-models { display: flex; flex-direction: column; gap: 5px; }
 .uh-model-row { display: grid; grid-template-columns: 130px 1fr auto; align-items: center; gap: 8px; }
-.uh-model-name { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.uh-model-name { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; min-width: 0; }
+/* The 130px column above is the narrowest place a model label is printed, and
+   since #462 a label carries the variant that tells two rows of one family
+   apart. `min-width: 0` lets the flex item shrink below its content and the
+   ellipsis lands on the text rather than on the dot. */
+.uh-model-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uh-model-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .uh-model-bar-fill { display: block; height: 100%; border-radius: 3px; }
 .uh-model-cost { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }

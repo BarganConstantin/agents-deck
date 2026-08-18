@@ -39,7 +39,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { matchesQuery, SEARCH_PLACEHOLDER } from "../search-match";
-import { shortModel } from "../components/AgentNode";
+import { shortModel } from "../model-label";
 import { applyEvent, initialState } from "../reducer";
 import type { AgentNodeData, HookEnvelope, HookPayload, Provider, ToolCall } from "../types";
 
@@ -303,7 +303,13 @@ describe("the component runs this rule and no other", () => {
   });
 
   it("borrows the chip's own labeller instead of abbreviating a second time", () => {
-    expect(matchSrc).toMatch(/import \{ shortModel \} from "\.\/components\/AgentNode";/);
+    // The note this file left behind — "if #374 ever extracts `shortModel` into
+    // its own module, this import should follow it" — was taken up by #462,
+    // which had to edit the helper and moved it to ./model-label on the way. A
+    // pure matcher no longer pulls React, reactflow and ContextModal in behind
+    // one string function. What is being asserted is unchanged: the matcher
+    // borrows the chip's labeller and does not abbreviate a second time.
+    expect(matchSrc).toMatch(/import \{ shortModel \} from "\.\/model-label";/);
     expect(matchSrc).not.toMatch(/function shortModel\b/);
   });
 });

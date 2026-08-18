@@ -7,7 +7,8 @@ import { isAlarming } from "../ambient-counts";
 import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { WaitingBlock } from "../types";
-import { shortModel, stateLabel, waitingSentence } from "./AgentNode";
+import { shortModel } from "../model-label";
+import { stateLabel, waitingSentence } from "./AgentNode";
 
 export interface Row {
   sessionId: string;

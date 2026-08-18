@@ -6,7 +6,7 @@ import React, { useMemo, useRef } from "react";
 import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { AgentNodeData } from "../types";
-import { shortModel } from "./AgentNode";
+import { shortModel } from "../model-label";
 import { useModalDismiss } from "./use-modal-dismiss";
 
 interface Props {

@@ -11,7 +11,8 @@ import ReactFlow, {
   useStore,
   type ReactFlowState,
 } from "reactflow";
-import AgentNode, { shortModel, waitingSentence } from "./components/AgentNode";
+import AgentNode, { waitingSentence } from "./components/AgentNode";
+import { shortModel } from "./model-label";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import SessionGroupNode from "./components/SessionGroupNode";
