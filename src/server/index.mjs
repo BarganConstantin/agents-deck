@@ -66,6 +66,16 @@ let persistPath = null;             // absolute path to events.jsonl, or null
 // same way. A session is recorded unless we have been told someone else owns
 // it, so a lone deck — and a deck the hook is too old to flag — still writes
 // everything.
+//
+// THIS COVERS THE CLAUDE SIDE ONLY, and that is worth stating because reading it
+// as the general answer is what produced #447. The only thing that ever fills
+// the set is noteLogWriter, called from handleEventIngest — a hook POST. Codex
+// events are read off the rollout files inside this process and never reach an
+// HTTP handler, and Codex hooks are not installed any more, so a Codex session
+// id cannot get in here and writesLogFor answers "mine" for every one of them on
+// every deck. The Codex half is decided by writesCodexLog in the watcher's scan
+// loop instead, and every event derived from a rollout — including the memory
+// scan's ContextObserved — has to carry that verdict explicitly.
 const foreignSessions = new Set();  // session ids another deck is logging
 const MAX_FOREIGN_SESSIONS = 512;   // bound: insertion order = oldest first
 
@@ -738,8 +748,27 @@ const pendingCodexMemoryReads = new Set();
  * session happened first, on a panel whose whole purpose is to say what is in
  * the window. ContextModal says so in the slot those counts would have used;
  * see codex-approval.ts for the same move on a different unanswerable question.
+ *
+ * WHY `persist` IS A PARAMETER (#447). Every other event the rollout watcher
+ * produces goes out through emitCodexEvent, which carries the per-batch verdict
+ * of writesCodexLog: several decks tailing one rollout all DRAW it, and exactly
+ * one of them appends it to the events.jsonl they share. This function pushed
+ * with no opts at all, so pushEvent fell back to writesLogFor — and that answers
+ * from `foreignSessions`, a set only ever filled by noteLogWriter off an
+ * incoming hook POST marked `?persist=0`. A Codex rollout never touches an HTTP
+ * handler and Codex hooks are not installed any more (installer.mjs keeps the
+ * provider for uninstall only), so a Codex session id can never appear in that
+ * set and every deck answered "yes, mine" for this one event. The caller already
+ * holds the verdict for the whole batch, so it is threaded in rather than
+ * re-derived: recomputing it here would cost a second directory listing and
+ * could disagree with the roots and tool calls the same batch just emitted.
+ *
+ * Omitting the argument keeps the old behaviour — write. That is the same
+ * fail-safe writesCodexLog itself takes when a deck cannot find its own
+ * discovery record: a line written twice is recoverable, a deck that quietly
+ * records nothing is not.
  */
-function maybeResolveCodexMemory(sid, cwd) {
+function maybeResolveCodexMemory(sid, cwd, persist) {
   if (!sid || !cwd) return;
   if (pendingCodexMemoryReads.has(sid)) return;
   const now = Date.now();
@@ -754,12 +783,16 @@ function maybeResolveCodexMemory(sid, cwd) {
       // would only ever overwrite a real one with nothing. A repo that grows its
       // first AGENTS.md mid-session is picked up by the next throttled pass.
       if (!memoryFiles.length) return;
+      // `persist` false means another deck tailing this same rollout was elected
+      // to record it. The event is still buffered and broadcast from here, so
+      // every deck's context modal lists the AGENTS.md files — it is only the
+      // second copy on disk that is dropped, exactly as emitCodexEvent does it.
       pushEvent({
         hook_event_name: "ContextObserved",
         session_id: sid,
         provider: "codex",
         context: { memoryFiles },
-      }, "internal");
+      }, "internal", { persist });
     })
     .catch(() => {})
     .finally(() => pendingCodexMemoryReads.delete(sid));
@@ -1452,7 +1485,13 @@ async function codexScanOnce(firstRun) {
       // existing so a session the deck has decided not to draw does not cost a
       // directory walk, and repeated rather than done once at root creation so
       // an AGENTS.md written after the session started is still found (#399).
-      if (state.rootEmitted) maybeResolveCodexMemory(state.sid, state.cwd);
+      //
+      // Carries the same `persist` verdict as every emit in the loop above, and
+      // for the same reason: this is one more event about this batch of appended
+      // lines, and a batch whose roots and tool calls went to one deck's log
+      // while its memory list went to every deck's is the split the election
+      // exists to prevent (#447).
+      if (state.rootEmitted) maybeResolveCodexMemory(state.sid, state.cwd, persist);
     }
 
     // Rollout files fall out of the newest-2-days listing and never come back,
