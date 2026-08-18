@@ -248,7 +248,13 @@ export function ContextDonut({ currentContextTokens, modelId, contextWindow, siz
           strokeDasharray={`${dash} ${circ - dash}`}
           strokeDashoffset={circ / 4}
           strokeLinecap="round"
-          style={{ transition: "stroke-dasharray 400ms ease" }}
+          // Named here, valued in styles.css. The literal `stroke-dasharray
+          // 400ms ease` this used to hold was an inline style, which outranks
+          // every selector, so no `prefers-reduced-motion` rule could reach it
+          // (#357) and the arc swept around the circle on every turn however
+          // the reader had set their OS. `--ctx-arc-transition` becomes `none`
+          // under that preference, and the arc simply is its new length.
+          style={{ transition: "var(--ctx-arc-transition)" }}
         />
         <text x={c} y={c + 3} textAnchor="middle" fontSize="8" fill="var(--text)" fontWeight="600">
           {Math.round(pct * 100)}

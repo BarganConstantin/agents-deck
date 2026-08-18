@@ -10,7 +10,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dieOfSignal } from "../src/server/supervisor.mjs";
 import {
   CURSOR_HIDE, CURSOR_SHOW, colorProfile, fit, glyphs, labelColumn, link, motionOK, palette,
-  pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK, wordmark,
+  pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK,
+  unregisteredDetail, wordmark,
 } from "../src/server/term.mjs";
 import { PRODUCT } from "../src/server/brand.mjs";
 import { invokedName, renameNotice } from "../src/server/invoked-as.mjs";
@@ -600,9 +601,13 @@ if (openBrowser && !RESPAWN) {
 if (MOTION) {
   let pi = 0;
   setInterval(() => {
-    const text = pulseText({ registered, columns: cols(), unicode: UNICODE });
-    const dot = pi++ % 2 === 0 ? (registered ? P.ok : P.warn) : P.muted;
-    const tone = registered ? P.muted : P.warn;
+    // The colour follows the words. A Codex-only deck keeps saying "listening"
+    // when it is unregistered — see pulseText — and painting that sentence in
+    // the warning tone would restore the alarm the sentence just retired.
+    const alarm = !registered && wantClaude;
+    const text = pulseText({ registered, claude: wantClaude, columns: cols(), unicode: UNICODE });
+    const dot = pi++ % 2 === 0 ? (alarm ? P.warn : P.ok) : P.muted;
+    const tone = alarm ? P.warn : P.muted;
     write(`\r  ${dot}${G.pulse}${P.reset}  ${tone}${text}${P.reset}`);
   }, 800).unref();
 }
@@ -637,14 +642,17 @@ process.on("beforeExit", () => { discovery.stop(); removeDiscovery(discoveryFile
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// The deck is up and the hooks cannot see it. Said in full — the path, the
-// reason — because the alternative is what this replaced: an ordinary-looking
-// deck that simply never shows a session.
+// The deck is up and the discovery file could not be written. Said in full —
+// the path, the reason — because the alternative is what this replaced: an
+// ordinary-looking deck that simply never shows a session.
+//
+// What that costs depends on which CLI this deck watches, so the sentence comes
+// from term.mjs, where both answers are written down and tested.
 function reportUnregistered({ file, error }) {
   const why = error?.message ? ` ${G.dash} ${error.message}` : "";
   write(
     `\n  ${P.warn}${G.warn}${P.reset}  ${P.bold}not registered${P.reset}${P.muted}${why}${P.reset}\n` +
-    `     ${P.muted}hooks find this deck through ${file}, so until that file exists no events arrive.${P.reset}\n`,
+    `     ${P.muted}${unregisteredDetail({ file, claude: wantClaude })}${P.reset}\n`,
   );
 }
 

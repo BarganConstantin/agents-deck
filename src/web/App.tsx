@@ -47,8 +47,10 @@ import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import { versionChipLabel, versionChipTitle, versionNoticeLabel } from "./version-chip";
 import { emptyScope } from "./scope";
 import { ASSUMED, readProviders, type Providers } from "./providers";
+import { captureHints, eventsCountTitle, sessionsCountTitle } from "./provider-copy";
 import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
+import { matchesQuery, SEARCH_PLACEHOLDER } from "./search-match";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
@@ -409,18 +411,6 @@ const DETAIL_CAT_LABEL: Record<DetailCategory, string> = {
  *  purely so the call sites below read the way they always have. */
 const detailCategoryFor = categoryFor;
 
-function matchesQuery(a: AgentNodeData, q: string): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  if (a.label.toLowerCase().includes(needle)) return true;
-  if (a.cwd?.toLowerCase().includes(needle)) return true;
-  if (a.cwdBasename?.toLowerCase().includes(needle)) return true;
-  if (a.sessionId.toLowerCase().includes(needle)) return true;
-  if (a.firstPrompt?.toLowerCase().includes(needle)) return true;
-  for (const t of a.tools) if (t.name.toLowerCase().includes(needle)) return true;
-  return false;
-}
-
 /** Compute the spotlight lineage for an agent — itself plus every ancestor
  *  (chain of parentIds) and every descendant (transitive). When no agent
  *  is selected this returns null (no spotlight). */
@@ -555,7 +545,16 @@ function snapshotToFlow(
         animated: (a.state === "active" || isSelectedEdge) && !edgeDim && !fading,
         type: "smoothstep",
         // No edge label — the target node already displays the agent name.
-        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "opacity 500ms ease, stroke-width 200ms ease" } as React.CSSProperties,
+        // The transition is named here and valued in the stylesheet. An inline
+        // style outranks every selector, so the literal string this used to
+        // carry could not be answered by a `prefers-reduced-motion` rule at
+        // all (#357) — a reader who asked for less motion still got 200ms of
+        // stroke-width travel on every edge that gained or lost a selection.
+        // `--edge-transition` moves that decision into styles.css, where the
+        // media query drops the stroke-width half and keeps the opacity fade,
+        // and it costs this component nothing: no hook, no listener, and no
+        // re-render of the canvas when the preference changes.
+        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "var(--edge-transition)" } as React.CSSProperties,
         className: cls,
       });
     }
@@ -2348,7 +2347,7 @@ function Inner() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Search agents, cwd, tools…"
+              placeholder={SEARCH_PLACEHOLDER}
               value={query}
               onChange={e => setQuery(e.target.value)}
               spellCheck={false}
@@ -2391,9 +2390,16 @@ function Inner() {
                 <span className={`pill ${pill.tone}`} title={pill.title}>{pill.label}</span>
               );
             })()}
-            <span className="stat" title="Distinct CC sessions"><span className="count">{sessionCount}</span><span className="lbl">sessions</span></span>
+            {/* Both counters have always counted both providers; only their
+                tooltips said otherwise. "Distinct CC sessions" and "Total hook
+                events received" were written when the deck watched Claude Code
+                alone, and a Codex user reading them sees a correct number
+                labelled as a count of a product they are not running (#404).
+                Named from `providers` rather than trimmed to "sessions" and
+                "events" — see provider-copy.ts. */}
+            <span className="stat" title={sessionsCountTitle(providers)}><span className="count">{sessionCount}</span><span className="lbl">sessions</span></span>
             <span className="stat" title="Total agents (root + subagents)"><span className="count">{agentCount}</span><span className="lbl">agents</span></span>
-            <span className="stat" title="Total hook events received"><span className="count">{stateRef.current.totalEvents}</span><span className="lbl">events</span></span>
+            <span className="stat" title={eventsCountTitle(providers)}><span className="count">{stateRef.current.totalEvents}</span><span className="lbl">events</span></span>
             {totalTokens.sum > 0 && (
               <span className="stat" title={`in:${totalTokens.inT.toLocaleString()}  out:${totalTokens.outT.toLocaleString()}  cache-r:${totalTokens.cacheR.toLocaleString()}  cache-c:${totalTokens.cacheC.toLocaleString()}`}>
                 <span className="count">{fmtTokens(totalTokens.sum)}</span><span className="lbl">tokens</span>
@@ -2835,7 +2841,7 @@ function Inner() {
         className={`canvas-wrap${bubbling ? " bubbling" : ""}${dragging ? " dragging-any" : ""}`}
         ref={canvasRef}
       >
-        {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} />}
+        {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} providers={providers} />}
         {/* Said out loud rather than implied by a grey canvas: a query that
             matches nothing is indistinguishable from every session having aged
             out, and the dimming that was carrying the message on its own is
@@ -3132,7 +3138,7 @@ function Inner() {
   );
 }
 
-function EmptyHero({ live, everConnected }: { live: boolean; everConnected: boolean }) {
+function EmptyHero({ live, everConnected, providers }: { live: boolean; everConnected: boolean; providers: Providers }) {
   const offline = !live;
   return (
     <div className="empty-hero">
@@ -3151,12 +3157,12 @@ function EmptyHero({ live, everConnected }: { live: boolean; everConnected: bool
             page will resume automatically.
           </p>
         </>
-      ) : agentNoneCopy()}
+      ) : agentNoneCopy(providers)}
     </div>
   );
 }
 
-function agentNoneCopy() {
+function agentNoneCopy(providers: Providers) {
   return (
     <>
       <h2>Waiting for Claude Code or Codex</h2>
@@ -3165,13 +3171,25 @@ function agentNoneCopy() {
         a session sends an event, a node appears here and grows as subagents
         fork and tools are called.
       </p>
+      {/* This used to be one sentence for both CLIs, and it sent Codex users to
+          install `~/.codex/hooks.json` and grant it `/hooks` trust — work the
+          deck stopped doing before it ever shipped, on a file it opens only to
+          uninstall (#404). One line per capture path now, each naming what that
+          path really depends on, and each able to say the deck is not watching
+          that CLI at all. The words live in provider-copy.ts so the branches can
+          be tested without a DOM. */}
       <p className="hint-row">
-        Not seeing anything? Make sure <code>{PRODUCT}</code> is running and that
-        hooks are installed in your Claude settings (<code>$CLAUDE_CONFIG_DIR</code>{" "}
-        if you set it, otherwise <code>~/.claude/settings.json</code>) and{" "}
-        <code>~/.codex/hooks.json</code>. (Codex requires{" "}
-        <code>/hooks</code> trust on first run.)
+        Not seeing anything? Make sure <code>{PRODUCT}</code> is running.
       </p>
+      {captureHints(providers).map(hint => (
+        <p className="hint-row" key={hint.provider}>
+          {hint.spans.map((span, i) =>
+            span.code
+              ? <code key={i}>{span.text}</code>
+              : <span key={i}>{span.text}</span>,
+          )}
+        </p>
+      ))}
     </>
   );
 }

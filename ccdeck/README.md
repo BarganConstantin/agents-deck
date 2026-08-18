@@ -1,6 +1,6 @@
 # ccdeck
 
-**A live canvas for your AI agents.** Watch Claude Code and OpenAI Codex fork subagents, call tools, and finish — all on one calm graph, in real time.
+**A live canvas for your AI agents.** Watch Claude Code and OpenAI Codex call tools and finish — every Claude Code subagent on a node of its own — all on one calm graph, in real time.
 
 ```bash
 npx ccdeck

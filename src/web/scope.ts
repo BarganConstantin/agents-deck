@@ -38,7 +38,13 @@ export function emptyScope(workspace: string | null | undefined): EmptyScope {
   if (workspace == null) {
     return {
       kind: "unknown",
-      lead: "No data yet. Start a Claude Code or Codex session — it appears here as soon as its first hook fires.",
+      // "as soon as its first hook fires" was true of the only CLI the deck
+      // watched when this branch was written. Codex fires no hooks at all — the
+      // server tails its rollout files — so the sentence promised a Codex user a
+      // signal that can never arrive, in the one file whose whole purpose is to
+      // stop the empty state asserting things that are not true (#404). What
+      // both paths share is the event, so that is what it waits for now.
+      lead: "No data yet. Start a Claude Code or Codex session — it appears here as soon as the deck sees its first event.",
       workspace: null,
       tail: "",
     };
