@@ -803,7 +803,15 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   border-radius: 6px;
   font: inherit;
   font-size: 12px;
-  min-width: 220px;
+  /* 220px until #418 gave the placeholder a fourth word. A placeholder that
+     overruns its field is CLIPPED, not ellipsised, so the sentence promising
+     what the search can find would have been cut mid-word — and the deck runs
+     on three different system UI fonts, which is where the last few pixels go:
+     the same string sets ~163px in SF (macOS) and ~170px in Segoe UI (Windows),
+     against the 168px of content box 220px left after the icon and the count.
+     240px clears the widest of the three with room, and costs the topbar 20px
+     it has. */
+  min-width: 240px;
   outline: none;
   transition: border-color 120ms, box-shadow 120ms;
 }
