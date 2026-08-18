@@ -330,6 +330,10 @@ describe("what the browser believes when the server does not say", () => {
 // checkable is the same thing the bug was: whether the work is reached at all on
 // a machine with no Claude Code.
 const deckSrc = readFileSync(fileURLToPath(new URL("../../../bin/deck.js", import.meta.url)), "utf8");
+// The argument parser moved out of bin/deck.js in #480, so that importing it
+// stopped meaning starting a deck. The two flags this file cares about are
+// recognised there now; everything else it asks about is still boot sequence.
+const argsSrc = readFileSync(fileURLToPath(new URL("../../server/args.mjs", import.meta.url)), "utf8");
 
 describe("what a Codex-only boot does on the user's behalf", () => {
   /** The body of startupWork, which is where all three jobs are created. */
@@ -346,8 +350,8 @@ describe("what a Codex-only boot does on the user's behalf", () => {
     // The escape hatches, which the Claude side did not have at all: --claude is
     // the recovery for a presence test that guessed wrong, and --no-claude is
     // the mirror of --no-codex.
-    expect(deckSrc).toContain('a === "--claude"');
-    expect(deckSrc).toContain('a === "--no-claude"');
+    expect(argsSrc).toContain('a === "--claude"');
+    expect(argsSrc).toContain('a === "--no-claude"');
     expect(deckSrc).toContain("--no-claude          Skip Claude");
   });
 

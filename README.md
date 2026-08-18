@@ -120,7 +120,12 @@ ccdeck [options]
                            no Accounts panel (Codex only)
       --uninstall          Remove ccdeck's hooks from settings files
   -h, --help               Show this help
+  -v, --version            Print the version and exit
 ```
+
+Anything else on the command line is reported as an unknown option and then
+ignored — the deck still starts, so a typo costs you a warning rather than a
+dashboard.
 
 ccdeck looks for each CLI before it does anything on that CLI's behalf. Claude
 Code counts as present when its binary is on `PATH` (or in one of the places its
