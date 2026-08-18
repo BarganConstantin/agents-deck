@@ -9,10 +9,16 @@
 //   SET "NPM_PREFIX_JS=%~dp0\node_modules\npm\bin\npm-prefix.js"
 //
 // Reported from a Windows machine on Node 24 where `%~dp0` was the user's home
-// directory and no `node_modules\npm` existed under it — the usual cause is an
-// npm global prefix pointed somewhere the shim did not follow. Clicking
+// directory and no `node_modules\npm` existed under it. Clicking
 // "Update & restart" printed a raw MODULE_NOT_FOUND stack trace and came back
 // on the same version.
+//
+// The cause was guessed at here as "an npm global prefix pointed somewhere the
+// shim did not follow", and #456 established it was not: `%~dp0` was the DECK'S
+// WORKING DIRECTORY, because a shim asked for by bare name has no directory in
+// its `%0` to be the drive-and-path of. Nothing about that machine's npm was
+// wrong. The correction lives in shimPath in exec.mjs, and the shim fallback
+// below now asks for the full path.
 //
 // Node ships npm, so npx's real entry point can be reached from
 // `process.execPath` with no PATH lookup, no batch file, and no shim-relative
@@ -27,7 +33,7 @@
 // deck its listener.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { killTree, spawnSpec } from "./exec.mjs";
+import { killTree, shimPath, spawnSpec } from "./exec.mjs";
 
 /**
  * Where npm's own `npx-cli.js` sits relative to the running Node binary, most
@@ -74,6 +80,7 @@ export function npxLaunch(args, {
   platform = process.platform,
   execPath = process.execPath,
   exists = existsSync,
+  pathEnv,
 } = {}) {
   for (const cli of npxCliCandidates(execPath, platform)) {
     let found = false;
@@ -82,7 +89,14 @@ export function npxLaunch(args, {
     // nothing resolves a path relative to a shim's own directory.
     if (found) return { file: execPath, args: [cli, ...args], opts: {}, via: "node", cli };
   }
-  const shim = platform === "win32" ? "npx.cmd" : "npx";
+  // The shim, and on Windows by its FULL path. A bare `npx.cmd` is what made
+  // the shim compute `%~dp0` — where it looks for npx-cli.js — from the deck's
+  // working directory rather than from its own, which is #456; shimPath in
+  // exec.mjs carries the account. The bare name stays as the last resort, so a
+  // layout the lookup cannot see is exactly as well off as it was before.
+  const shim = platform === "win32"
+    ? (shimPath("npx.cmd", { execPath, exists, ...(pathEnv === undefined ? {} : { pathEnv }) }) ?? "npx.cmd")
+    : "npx";
   return { ...spawnSpec(shim, args, platform), via: "shim", cli: null };
 }
 

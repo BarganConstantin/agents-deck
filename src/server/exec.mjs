@@ -19,6 +19,7 @@
 // the throw escaped the retry path and took the whole process down on Windows
 // before the server ever started.
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 
 // Extensions Windows will execute, most specific first. `.com` is omitted —
 // nothing ships one, and every extra candidate costs a failed spawn.
@@ -92,6 +93,76 @@ export function shellQuoteArg(arg, platform = process.platform) {
   const s = String(arg ?? "");
   if (platform === "win32") return `"${s.replace(/"/g, '""')}"`;
   return `'${s.split("'").join("'\\''")}'`;
+}
+
+/**
+ * The absolute path of a Windows command shim, or null when nothing answers to
+ * that name.
+ *
+ * Why a bare name is not good enough, which is the whole of #456. npm's `.cmd`
+ * shims locate every file they need relative to THEMSELVES:
+ *
+ *     SET "NPM_PREFIX_JS=%~dp0\node_modules\npm\bin\npm-prefix.js"
+ *     SET "NPX_CLI_JS=%~dp0\node_modules\npm\bin\npx-cli.js"
+ *
+ * `%~dp0` is the drive and path of `%0`, and `%0` is the command token cmd.exe
+ * was given. Handed `cmd.exe /d /s /c ""npm.cmd" "install" …`, that token
+ * carries no directory of its own, so `%~dp0` came out as the deck's WORKING
+ * DIRECTORY instead of the shim's. Reported from Windows 10 with the deck
+ * started from `C:\Users\vceban`:
+ *
+ *     Error: Cannot find module 'C:\Users\vceban\node_modules\npm\bin\npm-prefix.js'
+ *     Error: Cannot find module 'C:\Users\vceban\node_modules\npm\bin\npx-cli.js'
+ *
+ * — two stacks, one defect, and `C:\Users\vceban` is the cwd rather than
+ * anything to do with npm: `where npx` on that machine printed
+ * `C:\Program Files\nodejs\npx.cmd` and `npx ccdeck` ran perfectly from a
+ * prompt. It is ours, introduced when #362 replaced `shell: true` with viaCmd:
+ * the quoting was the fix and the bare name was the cost, and it broke the
+ * managed install and the npx fallback in the same stroke, which is why every
+ * diagnosis of one half kept half-fitting.
+ *
+ * Node's own directory is tried before PATH because node and npm ship together
+ * and that is where the shims are — the same preference npxCliCandidates in
+ * npx.mjs states for npm's CLI scripts, so the repo has one rule rather than
+ * two. PATH is then walked in its own order, which is what cmd.exe would have
+ * done, minus the current directory it searches first: a deck that resolves its
+ * npm out of whatever folder it happens to be sitting in is the bug above
+ * wearing a hat.
+ *
+ * The path arithmetic is spelled out rather than done through `node:path` for
+ * the reason npxCliCandidates gives: `path` is the platform running the SUITE,
+ * so a Windows layout checked from macOS would come back with forward slashes.
+ * `execPath`, `pathEnv` and `exists` are injected for the same reason — the
+ * Windows answer has to be checkable from an OS that cannot run it.
+ */
+export function shimPath(name, {
+  execPath = process.execPath,
+  pathEnv = process.env.PATH ?? process.env.Path ?? "",
+  exists = existsSync,
+} = {}) {
+  // A name that already carries a directory needs no lookup, and re-rooting it
+  // would be a way to run something else entirely.
+  if (typeof name !== "string" || !name || /[\\/]/.test(name)) return null;
+  const dirs = [];
+  const beside = String(execPath ?? "").split(/[\\/]/).slice(0, -1).join("\\");
+  if (beside) dirs.push(beside);
+  for (const raw of String(pathEnv ?? "").split(";")) {
+    // A PATH entry may be quoted, and may end in a separator; neither is part
+    // of the directory, and both would produce a path nothing exists at.
+    const dir = raw.trim().replace(/^"|"$/g, "").replace(/[\\/]+$/, "");
+    if (dir) dirs.push(dir);
+  }
+  for (const dir of dirs) {
+    const full = `${dir}\\${name}`;
+    try {
+      if (exists(full)) return full;
+    } catch {
+      // An entry that cannot even be stat'ed — a disconnected network drive is
+      // the usual one — is a miss, not a reason to stop looking.
+    }
+  }
+  return null;
 }
 
 /**

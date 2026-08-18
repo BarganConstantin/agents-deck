@@ -15,7 +15,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { killTree, spawnSpec } from "./exec.mjs";
+import { killTree, shimPath, spawnSpec } from "./exec.mjs";
 import { oneLine, termColumns } from "./term.mjs";
 import { PRODUCT } from "./brand.mjs";
 
@@ -30,6 +30,26 @@ const MARKER = path.join(CACHE_DIR, ".last-update-check");
 
 const _cache = new Map(); // key `${since}|${until}` → { result, at }
 
+/**
+ * The name to hand cmd.exe for one of npm's Windows shims: its full path when
+ * one can be found, and the bare name only when none can.
+ *
+ * The full path is not a tidiness preference, it is the fix for #456. A shim
+ * launched by bare name computes `%~dp0` — which is where it looks for
+ * npm-prefix.js, npm-cli.js and npx-cli.js — from the deck's WORKING DIRECTORY
+ * rather than from its own, so on a deck started from `C:\Users\vceban` both
+ * shims died with `Cannot find module 'C:\Users\vceban\node_modules\npm\bin\…'`
+ * on a machine whose npm was perfectly healthy. shimPath in exec.mjs carries
+ * the whole account; what matters here is that BOTH the managed install and the
+ * npx fallback are launched this way, so both failed, and diagnosing either
+ * half alone could never have explained the other.
+ *
+ * Falling back to the bare name is deliberate: it is exactly what this did
+ * before, so a layout shimPath cannot see is no worse off than it was, and on
+ * such a machine cmd.exe's own PATH search still gets its turn.
+ */
+const winShim = (name, deps) => shimPath(name, deps) ?? name;
+
 // npm is a .cmd shim on Windows, which spawn can only launch through cmd.exe.
 // `shell: true` is the tempting way to get there and the wrong one: Node then
 // joins file and args with single spaces and no quoting, so on a profile like
@@ -38,18 +58,23 @@ const _cache = new Map(); // key `${since}|${until}` → { result, at }
 // npm exited non-zero, and the managed install never materialised. spawnSpec
 // routes the .cmd through cmd.exe with every argument quoted, and hands back
 // the argument vector untouched everywhere else.
-function npmSpec(args, platform = process.platform) {
-  return spawnSpec(platform === "win32" ? "npm.cmd" : "npm", args, platform);
+//
+// POSIX is untouched by any of this: `npm` there is a real executable on PATH,
+// not a batch file, so isBatch is false, viaCmd never runs, and the vector goes
+// to spawn exactly as it always has.
+function npmSpec(args, platform = process.platform, deps) {
+  return spawnSpec(platform === "win32" ? winShim("npm.cmd", deps) : "npm", args, platform);
 }
 
 /**
  * What `spawn` gets for `npm install ccusage@<spec>`.
  * Exported for tests: the platform is a parameter so the Windows command line
- * can be checked from any OS.
+ * can be checked from any OS, and `deps` stands in for the Windows filesystem
+ * the shim lookup asks about.
  */
-export const installSpec = (spec = "latest", platform = process.platform) =>
+export const installSpec = (spec = "latest", platform = process.platform, deps) =>
   npmSpec(["install", `ccusage@${spec}`, "--prefix", CACHE_DIR,
-    "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"], platform);
+    "--no-save", "--no-audit", "--no-fund", "--loglevel", "error"], platform, deps);
 
 // npx is the same kind of shim as npm, and the fallback run needs the same
 // treatment for a second, sharper reason: its argument vector carries a
@@ -62,21 +87,59 @@ export const installSpec = (spec = "latest", platform = process.platform) =>
 // syntax. Naming the file `npx.cmd` on Windows is what makes that work: only a
 // .cmd/.bat file routes through cmd.exe, and a bare `npx` there is not a file
 // spawn can launch at all (PATHEXT is a shell's job), so asking for the
-// extensionless name would trade a shell injection for an ENOENT.
-function npxSpec(args, platform = process.platform) {
-  return spawnSpec(platform === "win32" ? "npx.cmd" : "npx", args, platform);
+// extensionless name would trade a shell injection for an ENOENT. What it must
+// NOT be is the bare `npx.cmd` this said until #456 — see winShim.
+function npxSpec(args, platform = process.platform, deps) {
+  return spawnSpec(platform === "win32" ? winShim("npx.cmd", deps) : "npx", args, platform);
 }
 
 /**
  * What `spawn` gets for the portable `npx -y ccusage@latest <args>` fallback.
  * Exported for tests: the platform is a parameter so the Windows command line
- * can be checked from any OS.
+ * can be checked from any OS, and `deps` stands in for the Windows filesystem
+ * the shim lookup asks about.
  */
-export const fallbackSpec = (args = [], platform = process.platform) =>
-  npxSpec(["-y", "ccusage@latest", ...args], platform);
+export const fallbackSpec = (args = [], platform = process.platform, deps) =>
+  npxSpec(["-y", "ccusage@latest", ...args], platform, deps);
 
 let _installing = null;   // Promise guard so concurrent calls share one install
 let _checkedThisRun = false; // only kick the daily check once per process boot
+
+// The last `npm install` that failed, in one line of its own words.
+//
+// Module scope rather than a value thrown out of installSync, because the two
+// callers that matter never see that throw. primeCcusage runs the install at
+// boot and only logs the rejection; a second modal open that arrives while an
+// install is in flight awaits the SHARED promise, whose rejection has already
+// been handled by the first. Both then land on the npx fallback with nothing to
+// say about why they were there — which is precisely how three rounds of
+// debugging went to the fallback's stderr while the install's own account
+// stayed on a terminal row the deck had already painted over.
+//
+// One line, not the whole dump: this is written into a sentence in a 46ch box.
+// The full text still goes to the terminal through note() below.
+let _lastInstallError = null;
+const INSTALL_ERROR_ROOM = 240;
+
+/**
+ * Start the one shared install, remembering how it ended.
+ *
+ * Deduped through `_installing` the way it always was, so concurrent callers
+ * cost one `npm install` between them; the only new thing is that the outcome
+ * survives the promise.
+ */
+function startInstall(spec = "latest") {
+  if (!_installing) {
+    _installing = (async () => { installSync(spec); })()
+      .then(() => { _lastInstallError = null; })
+      .catch(e => {
+        _lastInstallError = oneLine(e?.message ?? e, INSTALL_ERROR_ROOM);
+        note("install failed", e);
+      })
+      .finally(() => { _installing = null; });
+  }
+  return _installing;
+}
 
 // AGENTS_DECK_NO_INSTALL=1 is documented as "never install or update
 // claude-swap / ccusage, and never ask npm about releases", so it has to hold
@@ -174,6 +237,59 @@ export function resolveEntry() {
   }
 }
 
+/**
+ * Everything spawnSync knows about a failed install, in the order the answer is
+ * usually in.
+ *
+ * The old line read `(r.stderr || "").trim() || r.status`, which threw away the
+ * two things most likely to be the whole story. `r.error` is where spawnSync
+ * reports a failure to LAUNCH — ENOENT for a comspec that is not there, EINVAL
+ * for a .cmd Node refuses to spawn directly, ETIMEDOUT when the deadline above
+ * fired — and it comes with `status: null`, so what reached the terminal in
+ * every one of those cases was the word "null". And npm has never confined
+ * itself to stderr: a shim that dies before npm starts writes wherever Node
+ * chose, and `npm ERR!` blocks have landed on stdout across majors.
+ */
+function installFailureText(r) {
+  const parts = [];
+  if (r?.error?.message) parts.push(String(r.error.message));
+  const stderr = String(r?.stderr ?? "").trim();
+  const stdout = String(r?.stdout ?? "").trim();
+  if (stderr) parts.push(stderr);
+  if (stdout) parts.push(stdout);
+  if (!parts.length) parts.push(r?.status === null || r?.status === undefined
+    ? "npm exited without a status and said nothing"
+    : `npm exited ${r.status} and said nothing`);
+  return parts.join(" — ");
+}
+
+/**
+ * Which level of the managed install `npm install --prefix` actually produced.
+ *
+ * This is the honest answer to the question nobody could answer from a
+ * screenshot: an install that exits 0 and leaves a tree resolveEntry cannot use
+ * is reported as SUCCESS by an exit code alone, and #432 found that exact shape
+ * once already. Naming the first level that is not there turns "ccusage could
+ * not report usage" into a sentence about this machine's disk — whether npm
+ * wrote nothing, wrote a node_modules with no ccusage in it, or wrote a package
+ * whose entry point this deck refuses.
+ */
+function installTreeReport() {
+  const levels = [
+    [CACHE_DIR, "the prefix directory"],
+    [path.join(CACHE_DIR, "node_modules"), "node_modules under it"],
+    [PKG_DIR, "node_modules/ccusage"],
+    [path.join(PKG_DIR, "package.json"), "node_modules/ccusage/package.json"],
+  ];
+  for (const [where, name] of levels) {
+    if (!existsSync(where)) return `${name} is not there`;
+  }
+  // Every level exists, so resolveEntry refused for one of its own reasons: an
+  // unreadable or bin-less package.json, or a `bin` pointing outside the
+  // package. All three are about the package rather than about npm.
+  return "the package is there but its bin entry could not be read or does not point inside it";
+}
+
 // Run `npm install ccusage@<spec> --prefix CACHE_DIR`. Synchronous variant for
 // the first-run cold path (we must have a binary before we can answer).
 function installSync(spec = "latest") {
@@ -185,7 +301,19 @@ function installSync(spec = "latest") {
     { windowsHide: true, timeout: INSTALL_TIMEOUT_MS, encoding: "utf8", ...opts },
   );
   if (r.status !== 0) {
-    throw new Error(`npm install ccusage failed: ${(r.stderr || "").trim() || r.status}`);
+    throw new Error(`npm install ccusage failed: ${installFailureText(r)}`);
+  }
+  // A zero exit is npm's opinion, not a fact about the disk, and the caller
+  // treats "installSync returned" as "there is something to run". Checking here
+  // is what stops a silent success: getRunner used to call resolveEntry(), get
+  // null, and fall through to the npx fallback with NOTHING recorded anywhere
+  // about why — so the modal explained the fallback's stderr and the install's
+  // half of the story was never written down at all.
+  if (!resolveEntry()) {
+    throw new Error(
+      `npm install ccusage exited 0 but left nothing runnable under ${CACHE_DIR}: `
+      + `${installTreeReport()}`,
+    );
   }
 }
 
@@ -256,15 +384,31 @@ async function getRunner() {
     throw tagged("no_install", "ccusage is not installed, and installs are off (AGENTS_DECK_NO_INSTALL=1)");
   }
   // Cold: install once (deduped across concurrent callers).
-  if (!_installing) {
-    _installing = (async () => { installSync("latest"); })()
-      .catch(e => { note("install failed", e); })
-      .finally(() => { _installing = null; });
-  }
-  await _installing;
+  await startInstall("latest");
   resolved = resolveEntry();
   if (resolved) { touchMarker(); return { kind: "node", entry: resolved.entry }; }
-  return { kind: "npx" }; // npm unavailable / offline → fall back to npx
+  // npm unavailable / offline → fall back to npx, carrying WHY the managed
+  // install is not here. Without that the modal can only describe the fallback,
+  // and the fallback is the second thing that failed.
+  return { kind: "npx", installError: _lastInstallError };
+}
+
+/** Which of ccusage's two paths a failure came from, in the deck's own words.
+ *  `stage` travels to the browser; the modal leads with it rather than making
+ *  the reader guess from a stack trace which half of this module they are
+ *  looking at. */
+const STAGE = { node: "managed", npx: "npx" };
+
+/** Mark a failure with the path that produced it, and with the managed
+ *  install's own account when that is why this path was taken at all. Set once:
+ *  the retry below re-stamps with the runner that actually failed, and an error
+ *  that already knows where it came from is not overwritten. */
+function stamp(err, runner) {
+  if (err && typeof err === "object") {
+    if (!err.stage) err.stage = STAGE[runner?.kind] ?? "npx";
+    if (runner?.installError && err.install === undefined) err.install = runner.installError;
+  }
+  return err;
 }
 
 // ── invocation ──────────────────────────────────────────────────────────────
@@ -339,18 +483,28 @@ function runOnce(runner, args) {
   });
 }
 
-// Run ccusage with the given args, resolve raw stdout. One retry, and only for
-// the one failure that is otherwise permanent — see discardDamagedInstall. The
-// second getRunner() is what rebuilds the install, or falls through to npx when
-// npm cannot.
+// Run ccusage with the given args, resolve raw stdout AND the runner that
+// produced it. One retry, and only for the one failure that is otherwise
+// permanent — see discardDamagedInstall. The second getRunner() is what rebuilds
+// the install, or falls through to npx when npm cannot.
+//
+// The runner comes back with the output because the caller has to say which
+// path answered: `extractJson` below can fail on a run that started perfectly
+// well, and "ccusage ran but printed no usage data" reads differently depending
+// on which ccusage that was.
 async function runCcusage(args) {
   const runner = await getRunner();
   try {
-    return await runOnce(runner, args);
+    return { out: await runOnce(runner, args), runner };
   } catch (err) {
-    if (!discardDamagedInstall(runner, err)) throw err;
+    if (!discardDamagedInstall(runner, err)) throw stamp(err, runner);
     note("managed install was unusable, rebuilding it", err);
-    return runOnce(await getRunner(), args);
+    const rebuilt = await getRunner();
+    try {
+      return { out: await runOnce(rebuilt, args), runner: rebuilt };
+    } catch (again) {
+      throw stamp(again, rebuilt);
+    }
   }
 }
 
@@ -389,10 +543,12 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
   if (!force && cached && now - cached.at < CACHE_MS) return cached.result;
 
   let result;
+  let ran = null; // the runner that answered, for stamping a bad_output failure
   try {
     const args = ["daily", "--json", "--since", sinceArg];
     if (until) args.push("--until", until);
-    const raw = extractJson(await runCcusage(args));
+    ran = await runCcusage(args);
+    const raw = extractJson(ran.out);
     const days = Array.isArray(raw.daily) ? raw.daily : [];
     result = {
       ok: true,
@@ -403,15 +559,31 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
       fetchedAt: now,
     };
   } catch (err) {
-    note("fetch failed", err);
+    // `extractJson` throws about a run that started fine, so it arrives here
+    // knowing nothing about which ccusage it read. The runner does.
+    if (ran) stamp(err, ran.runner);
+    // Naming the path in the terminal too. "fetch failed" alone was true of
+    // both, and an operator reading a boot report has the same question the
+    // modal's reader has: which of the two.
+    note(err?.stage === "managed" ? "fetch failed (managed install)"
+      : err?.stage === "npx" ? "fetch failed (npx fallback)"
+        : "fetch failed", err);
     // Anything untagged got here from the child itself — a non-zero exit, or a
     // spawn that never started one — which is exactly what run_failed means.
     // `error` keeps the child's WHOLE output, stack trace and all: it is the
     // modal's hover title, which is where the raw bytes are meant to live, and
     // it is what somebody pastes into an issue. Only the terminal gets a line.
+    //
+    // `stage` and `install` are the halves that used to be lost. They are what
+    // let the modal say WHICH path failed and why, on screen, instead of
+    // guessing it from the shape of a stack trace — the guess that shipped two
+    // wrong diagnoses in a row (#432, #450). Undefined when nothing ran, and
+    // JSON.stringify drops them, so an older browser sees the reply it expects.
     result = {
       ok: false,
       reason: err?.reason ?? "run_failed",
+      stage: err?.stage,
+      install: err?.install,
       error: String(err?.message ?? err),
       fetchedAt: now,
     };
@@ -448,10 +620,6 @@ export function primeCcusage() {
     maybeBackgroundUpdate(resolved.version);
     return { state: due ? "updating" : "present", version: resolved.version };
   }
-  if (!_installing) {
-    _installing = (async () => { installSync("latest"); })()
-      .catch(e => { note("install failed", e); })
-      .finally(() => { _installing = null; });
-  }
+  startInstall("latest");
   return { state: "installing" };
 }

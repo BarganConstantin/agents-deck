@@ -80,9 +80,12 @@ describe("npx launched and Node could not load the script it points at", () => {
     expect(out).toMatch(/npm|npx/);
     expect(out).toMatch(/could not load/i);
     expect(out).not.toMatch(/reinstall/i);
-    // A check the user can run in thirty seconds, which is what tells the two
-    // causes apart.
-    expect(out).toMatch(/where npx|npm config get prefix/);
+    // This used to require `where npx` / `npm config get prefix`, #450's
+    // diagnostic. The reported user ran both and both were healthy; #456 found
+    // the deck's own bare-`npx.cmd` spawn behind it, so the remedy is a newer
+    // deck rather than another look at a machine that is fine.
+    expect(out).not.toMatch(/where npx/);
+    expect(out).toMatch(/update the deck/i);
   });
 
   it("does not claim npx is missing from PATH, because it is on PATH and ran", () => {

@@ -137,9 +137,28 @@ export function commandOutput(out: CommandFailure): string {
   return (out?.output || out?.detail || out?.error || "").trim();
 }
 
-/** A failed ccusage run, as /api/ccusage answers it: the reason the run ended,
- *  and under `error` whatever the thing that failed wrote down. */
-export type CcusageFailure = CommandFailure;
+/**
+ * A failed ccusage run, as /api/ccusage answers it: the reason the run ended,
+ * and under `error` whatever the thing that failed wrote down.
+ *
+ * `stage` and `install` are the two the route used to keep to itself. ccusage
+ * has two paths — the managed install under ~/.agents-deck/ccusage, and the
+ * `npx -y ccusage@latest` fallback taken when that install is missing AND could
+ * not be created — and `error` is only ever the LAST one's output. Which path
+ * that was, and what the install said on its way out, were nowhere in the
+ * response at all: they were guessed at from the shape of the stack trace, and
+ * that guess is what shipped two wrong diagnoses in a row (#432, #450) while
+ * the install's own words sat on a terminal row the deck had already repainted.
+ *
+ * Both are optional because an older deck does not send them, and because
+ * nothing has a stage until something has run.
+ */
+export type CcusageFailure = (CommandFailure & {
+  /** Which path produced `error`: "managed" or "npx". */
+  stage?: string;
+  /** The managed install's own account of why it is not there, one line. */
+  install?: string;
+}) | null;
 
 // ccusage is not claude-swap and none of the codes above fit it. It is a package
 // the deck installs into ~/.agents-deck and then runs, so its refusals are about
@@ -202,25 +221,34 @@ function npxMissing(text: string): boolean {
 // deck's PATH" to someone who can see it on their PATH is the kind of wrong
 // that makes a reader stop believing the rest.
 //
-// What this sentence must NOT do is name a cause it cannot see, which is what
-// #450 was: it read this shape as "the machine's npm is damaged" and told a
-// Windows user to reinstall Node. Their npm demonstrably worked — they had
-// started the deck with `npx ccdeck` moments earlier, and `npm i -g ccdeck`
-// installed twelve packages cleanly on the same machine. The same stack is
-// produced by the deck reaching the WRONG npx: `npx ccdeck` prepends a
-// `node_modules\.bin` for every ancestor of the cwd onto the deck's PATH
-// (measured: 19 entries from a plain shell, 29 under npx), and fallbackSpec
-// asks cmd.exe for a bare `npx.cmd`, so a project-local shim earlier on that
-// PATH computes `%~dp0\node_modules\npm\bin\npx-cli.js` against its own `.bin`
-// folder and dies exactly like a damaged install would. Node's stderr cannot
-// tell the two apart, so this says what was run and what came back, and hands
-// over the check that does tell them apart.
+// This sentence has now been wrong twice, and both times for naming a cause on
+// the user's machine that was never there.
 //
-// The diagnostic names both spellings because this modal is the same build on
-// every platform: `where` is cmd.exe's, `which` is the shell's, and a reader on
-// the wrong one would otherwise be handed a command that does not exist.
+// #432 read the shape as "the machine's npm is damaged" and told a Windows user
+// to reinstall Node. Their npm demonstrably worked: they had started the deck
+// with `npx ccdeck` moments earlier, and `npm i -g ccdeck` installed twelve
+// packages cleanly on the same machine.
+//
+// #450 then removed the verdict but kept a diagnostic — run `where npx` and
+// `npm config get prefix`, and if npx works there, start from a global install
+// — built on the theory that the deck had reached the WRONG npx off an
+// npx-extended PATH. The same user ran it: `where npx` printed
+// `C:\Program Files\nodejs\npx.cmd` and the prefix was the stock
+// `%APPDATA%\npm`. Nothing was wrong with either.
+//
+// #456 is what it actually was, and it is ours. The deck asked cmd.exe for a
+// BARE `npx.cmd`, so the shim's `%~dp0` — where it looks for npx-cli.js — came
+// out as the deck's working directory instead of its own:
+//
+//     Error: Cannot find module 'C:\Users\vceban\node_modules\npm\bin\npx-cli.js'
+//
+// `C:\Users\vceban` is where the deck was started from. The deck now hands
+// cmd.exe the shim's full path (see shimPath in exec.mjs), so this sentence has
+// nothing left to ask the user to check — the remedy is a newer deck. It is
+// kept, rather than deleted, because a browser can be newer than the deck it is
+// talking to, and that is exactly the deck this shape now means.
 const NPX_UNLOADABLE =
-  "ccusage could not be started — the deck launched npx and Node could not load the npm script it points at. The deck may have reached the wrong npx rather than a damaged one: run `where npx` (`which npx` off Windows) and `npm config get prefix` in a plain terminal, and if npx works there, start the deck from a global install instead of `npx ccdeck`";
+  "ccusage could not be started — the deck launched npx and Node could not load the npm script it points at. An older deck asked cmd.exe for a bare npx.cmd, which made the shim look for that script under the deck's working directory instead of beside itself; update the deck and reopen this modal";
 
 // A copy of ccusage that npx itself fetched, and that will not load. This is the
 // deck's own doing twice over — the deck asked npx for the package, and npx put
@@ -268,12 +296,68 @@ const NPM_OWN_PROGRAM =
  *  subdirectory on every platform, and nothing else in a path is spelled it. */
 const NPX_CACHE = /[\\/]_npx[\\/]/i;
 
+/** The managed install, named without a path. The directory is the server's to
+ *  spell — it is already in the `install` line below, resolved against the real
+ *  home rather than a `~` nobody can paste — and display-name.test.ts holds the
+ *  client to naming no on-disk product directory of its own. */
+const MANAGED = `the copy of ccusage ${PRODUCT} installed for itself`;
+
+/** The install's own line, made safe for a sentence: one line, and short enough
+ *  that the remedy after it is still on screen. The whole of it is in the
+ *  deck's terminal output, which is where a dump belongs. */
+function installLine(out: CcusageFailure): string {
+  const said = String(out?.install ?? "").replace(/\s+/g, " ").trim();
+  return said.length > 240 ? `${said.slice(0, 239)}…` : said;
+}
+
 /**
  * The one sentence to show for a failed ccusage run — never the raw output.
- * Same ranking as explainCommandFailure: the map speaks, and `error` stays
- * evidence the modal hangs on the status line's title.
+ *
+ * Two jobs, in this order. `rankCcusageFailure` below picks the remedy, exactly
+ * as it always has and from the text alone; this wrapper then says WHICH of
+ * ccusage's two paths the remedy is about, because the reader cannot tell and
+ * neither could we. Three rounds of this bug were spent diagnosing the npx
+ * fallback's stderr while the managed install failed first and silently, and
+ * the only place that fact ever appeared was a hover title — if it appeared at
+ * all, which it did not, because the install's output was thrown away.
+ *
+ * A reply with no `stage` is answered exactly as before, byte for byte: that is
+ * an older deck, or a caller building the object by hand, and neither has an
+ * answer to give.
  */
 export function explainCcusageFailure(out: CcusageFailure, fallback: string): string {
+  const said = rankCcusageFailure(out, fallback);
+  const install = installLine(out);
+  switch (out?.stage) {
+    case "npx":
+      // The reported shape, and the one that cost three rounds. The install
+      // goes FIRST because it failed first and because it is the half nobody
+      // has been able to see; the fallback's remedy follows, still whole.
+      return install
+        ? `ccusage failed on both of its paths. The managed install failed first — ${install} — and the deck then fell back to npx, where ${lowerFirst(said)}`
+        : `there is no managed copy of ccusage on this machine, and the npx fallback failed: ${lowerFirst(said)}`;
+    case "managed":
+      return `${MANAGED} failed to run: ${lowerFirst(said)}`;
+    default:
+      // Including a stage this build has no wording for — a newer deck must not
+      // cost the reader the sentence that is already correct.
+      return said;
+  }
+}
+
+/** Joining two sentences into one: the second stops being a sentence. Only the
+ *  first character, and only when it is not part of a name the reader needs —
+ *  `ccusage`, `npx` and `npm` are all already lower case, so this is a no-op
+ *  for every sentence in the maps above except by accident. */
+const lowerFirst = (s: string): string =>
+  (/^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+
+/**
+ * The remedy, from the text and the reason code alone. Same ranking as
+ * explainCommandFailure: the map speaks, and `error` stays evidence the modal
+ * hangs on the status line's title.
+ */
+function rankCcusageFailure(out: CcusageFailure, fallback: string): string {
   const text = commandOutput(out);
   if (cannotLoad(text)) {
     // The deck's own fetched copy first. A file under `_npx` is one npx put
