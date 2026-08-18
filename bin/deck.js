@@ -8,6 +8,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import { dieOfSignal } from "../src/server/supervisor.mjs";
+import { parseArgs } from "../src/server/args.mjs";
 import {
   CURSOR_HIDE, CURSOR_SHOW, colorProfile, fit, glyphs, labelColumn, link, motionOK, oneLine,
   palette, pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK,
@@ -42,6 +43,22 @@ const SUPERVISED = typeof process.send === "function";
 
 if (flags.help) {
   printHelp();
+  process.exit(0);
+}
+
+// The version, on stdout, and then nothing — no hooks, no port, no browser.
+//
+// This is the first thing anyone types at a CLI they do not know and the second
+// thing anyone types when filing a bug, and until now it was the one question
+// the deck answered by starting a server and never exiting. The banner has
+// always carried the number, but only underneath a running deck, which is not
+// an answer: it cannot be piped, and the process it comes with has to be killed.
+//
+// Bare, unprefixed, one line: `ccdeck --version` is read by scripts as often as
+// by people, and `node --version` style ornamentation is what those scripts
+// then have to strip. PKG_VERSION is the same read the banner uses.
+if (flags.version) {
+  console.log(PKG_VERSION);
   process.exit(0);
 }
 
@@ -195,7 +212,7 @@ process.on("SIGHUP", () => { showCursor(); dieOfSignal("SIGHUP"); });
 // longer, silently broke the alignment of every other one.
 const LABELS = [
   "workspace", "Claude hooks", "Codex sessions", "claude-swap", "accounts",
-  "ccusage", "update", "name", "server ready", "log",
+  "ccusage", "update", "name", "server ready", "log", "unknown option",
 ];
 const LABEL_W = labelColumn(LABELS);
 
@@ -633,6 +650,11 @@ try { process.send?.({ type: "listening", port: realPort }); } catch { /* not su
 
 if (RESPAWN) {
   write(`  ${P.ok}${G.restart}${P.reset}  ${P.muted}restarted ${G.arrow} ${P.reset}v${PKG_VERSION}${P.muted} ${G.bullet} ${link(url, url, LINKS)}${P.reset}\n`);
+  // A respawn skips the whole startup report, but not this: the argv is the
+  // same argv, the typo in it is still there, and a deck that mentioned it once
+  // and then went quiet for every restart afterwards is back to hiding it from
+  // anyone who was not watching the first boot.
+  reportUnknownFlags(flags.unknown);
 } else {
   // The URL is the one detail an ellipsis would destroy — half an address is
   // not a shorter address — so it keeps its own line when the terminal is too
@@ -642,6 +664,8 @@ if (RESPAWN) {
     detail: link(url, url, LINKS), detailTone: `${P.accent}${P.bold}`, keep: true,
   }));
   if (persist) write(row({ label: "log", detail: fileLink(persist) }));
+  // Last of the rows, on purpose — see reportUnknownFlags.
+  reportUnknownFlags(flags.unknown);
   // Only when one is actually being opened. Under --no-open — which is how an
   // npx update relaunches, with a tab already waiting — this was announcing
   // something that never happened.
@@ -806,25 +830,34 @@ function reportReregistered({ file }) {
   write(`\n  ${P.ok}${G.ok}${P.reset}  ${P.muted}registered again ${G.arrow} ${fileLink(file)}${P.reset}\n`);
 }
 
-function parseArgs(args) {
-  const out = {};
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "-h" || a === "--help") out.help = true;
-    else if (a === "-p" || a === "--port") out.port = args[++i];
-    else if (a === "--no-open") out.noOpen = true;
-    else if (a === "--uninstall") out.uninstall = true;
-    else if (a === "--workspace") out.workspace = args[++i];
-    else if (a === "--scope") out.scope = true;
-    else if (a === "--all") out.all = true; // legacy no-op (now default)
-    else if (a === "--no-persist") out.noPersist = true;
-    else if (a === "--history") out.history = args[++i];
-    else if (a === "--codex") out.codex = true;
-    else if (a === "--no-codex") out.noCodex = true;
-    else if (a === "--claude") out.claude = true;
-    else if (a === "--no-claude") out.noClaude = true;
+/**
+ * Every token the parser did not recognise, named, one row each.
+ *
+ * Said rather than acted on: the deck goes on booting and still exits 0. It is
+ * not a one-shot command that can afford the usual contract. `bin/agent-dag.js`
+ * hands its own argv to every worker it spawns — including the npx relaunch,
+ * which starts a NEWER version of the package on the argv the user typed
+ * against an older one — and the README recommends running it from a wrapper.
+ * Refusing to boot over one token would turn a typo into a dark dashboard, and
+ * an argument the newer build no longer knows into a failed upgrade that costs
+ * the port and the session. The file already holds that position once, in the
+ * `--all` branch: a flag the deck stopped needing is still accepted rather than
+ * made fatal.
+ *
+ * So it goes where the deck puts everything else it decided on your behalf —
+ * the startup report — and it goes at the END of it. reportStartup writes its
+ * rows in a fixed order and three more land underneath them (the server, the
+ * log, the browser), so a warning printed among those rows is a warning the
+ * rows scroll over. Here it is the last line before the pulse indicator takes
+ * the bottom of the screen and stops repainting anything above it.
+ */
+function reportUnknownFlags(unknown) {
+  for (const token of unknown) {
+    write(row({
+      mark: G.warn, tone: P.warn, label: "unknown option",
+      detail: `${token} ${G.dash} see \`${PRODUCT} --help\``,
+    }));
   }
-  return out;
 }
 
 function printHelp() {
@@ -850,5 +883,9 @@ Options:
                            Hook entries only: the forwarder script, ~/.claude/agent-dag/,
                            the events log, ~/.agents-deck/ and claude-swap all stay
   -h, --help               Show this help
+  -v, --version            Print the version and exit
+
+Anything else on the command line is reported as an unknown option and then
+ignored: the deck still starts.
 `);
 }
