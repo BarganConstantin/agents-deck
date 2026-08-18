@@ -116,9 +116,26 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
           <span className="spawn-badge" title={`${data.childCount} subagents spawned`}>→ {data.childCount}</span>
         )}
         {data.cwdBasename && data.kind === "subagent" ? ` · ${data.cwdBasename}` : ""}
-        {data.model && (
-          <span className="model-chip" title={data.model}>{shortModel(data.model)}</span>
-        )}
+        {/* The chip README.md names as how the two CLIs are told apart, on the
+            nodes that have no model to put in it (#404). `provider` has been
+            carried on every node since Codex support landed and read by nothing
+            in the UI, so a Claude and a Codex session in one repo were two cards
+            separated by a session-id suffix and nothing else — and the model
+            chip, the documented workaround, is absent on synthetic nodes, on
+            subagents with no model event, and on every root before its first
+            ModelObserved.
+
+            Only "codex" falls back, deliberately. The reducer stamps "claude" as
+            the DEFAULT for any event that names no provider — that is how events
+            recorded before the field existed replay — so a "Claude Code" chip
+            would print an assumption as an observation, on every model-less node
+            of the commonest deck. A "codex" stamp is only ever set from a rollout
+            this deck actually read. */}
+        {data.model
+          ? <span className="model-chip" title={data.model}>{shortModel(data.model)}</span>
+          : data.provider === "codex"
+            ? <span className="model-chip" title="OpenAI Codex — no model reported yet">Codex</span>
+            : null}
       </div>
 
       {/* A row of its own rather than a chip in the title. The card is 260px
