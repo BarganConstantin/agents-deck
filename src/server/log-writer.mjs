@@ -20,6 +20,7 @@
 // by the host CLI, with no path back to the module it came from — the same
 // reason it re-derives the Claude config dir inline. The two copies are pinned
 // equal by a test, as challengeProof's pair already is.
+import { open } from "node:fs/promises";
 import { win32, posix } from "node:path";
 
 /**
@@ -147,4 +148,136 @@ export function writesCodexLog({ decks, pid, cwd, platform = process.platform })
     group.push(d);
   }
   return electWriters(group, platform).has(self);
+}
+
+// ─── Appending one whole line ─────────────────────────────────────────────
+//
+// The election above decides WHICH deck writes a line. This decides HOW, and
+// the two are answers to the same question: the log is one file that several
+// processes append to, so a line that arrives in pieces is a line another
+// writer can land inside.
+//
+// What was wrong. events.jsonl was appended with `fsPromises.appendFile`, which
+// is not one write(2). Node's writeFileHandle loops over the payload in chunks
+// of kWriteFileMaxChunkSize — 512 KiB — awaiting each one, so any line longer
+// than 524288 bytes became two or more separate appends with the event loop
+// free in between. Measured here, on Node 26 / macOS 15 / APFS, by watching the
+// file grow while one 5 MiB appendFile was in flight: it arrived in exactly ten
+// steps of 524288 bytes. A single handle.write of the same payload arrived in
+// one step of 5242880.
+//
+// That is reachable in ordinary use. `POST /api/event` accepts a body up to
+// 5,000,000 characters, and a PostToolUse carrying a large Read or Bash
+// response is routinely a good fraction of that. The event that gets spliced
+// into the middle is nearly always this deck's own: pushEvent kicks off
+// maybeResolveUsage / maybeResolveModel / maybeResolveContext on the same call,
+// and each of those pushes its own event a moment later. Reproduced at 8/8 runs
+// with one 1 MiB line and eight small ones issued in one tick, and 4/4 runs
+// across two processes appending 3 MiB lines to one file.
+//
+// The damage is silent and doubled: the oversized event is torn into two
+// unparseable halves AND the small event that landed between them is swallowed
+// inside one of those halves, so a boot replay loses both.
+//
+// What this does instead: exactly one write(2) per line, on a descriptor opened
+// O_APPEND. That is the primitive the atomicity rests on, so it is worth
+// stating exactly what each platform promises.
+//
+//   Linux — a write to a regular file holds the inode's i_rwsem for the whole
+//   call, so one write(2) is atomic against every other writer regardless of
+//   size, up to MAX_RW_COUNT (~2 GiB) after which the call returns short.
+//   O_APPEND additionally makes the seek-to-end and the write one step, which
+//   is what stops two processes overwriting each other's tail.
+//
+//   macOS — measured, not assumed, because the guarantee is not written down as
+//   plainly: single writes of 1 MiB and 5 MiB in-process, and 3 MiB from two
+//   processes at once, produced no torn line in any run, while appendFile of
+//   the same payloads tore in every run.
+//
+//   Windows — libuv issues the append as a WriteFile at the documented
+//   end-of-file offset on a handle opened FILE_APPEND_DATA, which NTFS serialises
+//   per call. This is the platform where the Codex rollout watcher is the only
+//   capture path there is, so it is also the platform with the most decks
+//   sharing one log.
+//
+// Where the guarantee does NOT hold: any filesystem that can return a short
+// write — NFS and some network/FUSE mounts under memory pressure, and any
+// platform once the payload passes its per-call ceiling. The loop below then
+// issues a second write for the remainder, and another writer can land between
+// them. Nothing available in userland fixes that, so the answer is the reader:
+// replayLog skips a line it cannot parse, counts it, and says so, rather than
+// stopping at it. A torn line costs one event, not the rest of the file.
+//
+// Why not cap or drop oversized events instead. The 5 MB ceiling is already the
+// cap, and it is enforced where it belongs — at ingest, with a 413 the poster
+// can see. Refusing to persist an event the deck is happily drawing would make
+// the canvas and its own replay disagree, which is the bug this fixes wearing a
+// different hat.
+//
+// Why the file is opened per line rather than kept open. maybeRotatePersistFile
+// renames events.jsonl to events.jsonl.1 at 50 MB and `/api/clear` truncates it
+// to zero; a descriptor held across either would go on filling the file nobody
+// reads any more. Opening per line is also exactly the syscall count appendFile
+// already paid — open, write, close — minus the extra writes.
+const appendTails = new Map();
+
+/**
+ * Append one already-serialized line to the shared log, whole.
+ *
+ * Appends are serialized per file behind a promise chain. That is not what
+ * makes them atomic — the single write(2) below is — but it keeps the order the
+ * lines land in equal to the order pushEvent produced them, which is the order
+ * a replay reads them back in, and it keeps this process to one open descriptor
+ * on the log no matter how many events arrive in one tick.
+ *
+ * Never rejects. This is called fire-and-forget from the hottest path in the
+ * process, and a rejection nobody awaits is a dead deck; a line that could not
+ * be written is a line lost, which the caller could not have done anything
+ * about anyway. The chain deliberately continues past a failure — one ENOSPC
+ * must not stop every later event from being recorded once space is back.
+ *
+ * @param {string} filePath absolute path to the log
+ * @param {string} line     the line to append, INCLUDING its trailing newline
+ */
+export function appendLogLine(filePath, line) {
+  const tail = (appendTails.get(filePath) ?? Promise.resolve())
+    .then(() => writeWholeLine(filePath, line))
+    .catch(() => {});
+  appendTails.set(filePath, tail);
+  // Drop the chain once it drains, so a process that writes to several logs
+  // over its life does not hold a promise per path it has finished with. Only
+  // the tail we just installed is cleared: if another append chained on in the
+  // meantime the map already points at that one, and deleting it would let the
+  // next line race the one still in flight.
+  tail.then(() => { if (appendTails.get(filePath) === tail) appendTails.delete(filePath); });
+  return tail;
+}
+
+/**
+ * One line, one write(2). The loop exists only for the short-write case
+ * described above; on every filesystem that does not do that it runs once.
+ *
+ * `position` is left null on purpose. That is what makes libuv issue write(2)
+ * rather than pwrite(2), and pwrite is the version that does not honour
+ * O_APPEND on every platform — it would write at an offset computed before the
+ * other writer moved the end of the file.
+ */
+async function writeWholeLine(filePath, line) {
+  // Encoded up front so the short-write loop can count bytes rather than UTF-16
+  // units. A multi-byte character split across two chunks would otherwise be
+  // resumed mid-sequence and the line would be mojibake even without a race.
+  const buf = Buffer.from(line, "utf8");
+  const handle = await open(filePath, "a");
+  try {
+    let written = 0;
+    while (written < buf.byteLength) {
+      const { bytesWritten } = await handle.write(buf, written, buf.byteLength - written, null);
+      // A write that reports no progress would spin this loop forever inside a
+      // promise nobody is watching. Give up on the line instead.
+      if (bytesWritten <= 0) throw new Error(`append made no progress at ${written}/${buf.byteLength} bytes`);
+      written += bytesWritten;
+    }
+  } finally {
+    await handle.close();
+  }
 }
