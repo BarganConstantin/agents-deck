@@ -37,6 +37,16 @@
 // rule in the sheet, so the next pressable control either joins the convention
 // or is written down as an exception.
 //
+// #356: one job, several answers, twice over. Nine rules run the `pulse`
+// keyframes and five of them paint --inflight and mean "this is running right
+// now" — they beat at 1.2s, 1.1s and 1.4s across two easings. And three centred
+// dialogs over a dimmed backdrop are reached from this canvas through one
+// useModalDismiss, of which one arrived on fadeIn + popIn and two were simply
+// present on the next frame. Both families are swept at the bottom of this file,
+// each derived from something the sheet says about itself rather than from a
+// list: the pulses by the colour token they paint, the dialogs by the shape they
+// are laid out in.
+//
 // Deliberately outside the canvas sweep: the topbar, banners and sidebar, whose
 // single status dots pulse opacity in a fixed strip rather than across the
 // surface the deck is watched on, and .cat-filter-bar, chrome that floats over
@@ -342,5 +352,173 @@ describe("press feedback is one convention, applied everywhere", () => {
     expect([...pressable].filter(s => !owners.has(s) && !EXEMPT.includes(s)).sort()).toEqual([]);
     // And the other way: nothing enumerated has quietly stopped being a control.
     expect([...owners].filter(s => !pressable.has(s)).sort()).toEqual([]);
+  });
+});
+
+/** Every non-reduced rule that runs the `pulse` keyframes. The name is matched
+ *  as a whole token so `--pulse-live` in a value is not mistaken for it. */
+const pulsing = all.filter(r => {
+  if (r.reduced) return false;
+  const value = decl(r.body, "animation");
+  return value != null && splitTop(value).some(part => part.split(/\s+/).includes("pulse"));
+});
+
+/** The bodies that decide what colour a pulsing rule paints: its own, plus the
+ *  rule it is a `::before` of — `.detail … .status-dot.inflight` carries the
+ *  `--inflight` its pseudo-element inherits through `currentColor`. */
+const paints = (rule: Rule): string =>
+  [rule, ...all.filter(r => !r.reduced && r.selector === rule.selector.replace(/::before$/, ""))]
+    .map(r => r.body).join(";");
+
+/** "This is running right now" is the --inflight token, so membership in the
+ *  live family is read off the token rather than off a list of selectors. A dot
+ *  that paints itself in flight joins the family whether or not anyone adds it
+ *  here, and then has to keep its tempo. */
+const live = pulsing.filter(r => /--inflight/.test(paints(r)));
+const otherPulses = pulsing.filter(r => !live.includes(r));
+
+/** The five rules that say a tool or a session is in flight. `.state-pill` and
+ *  `.sl-dot` are the same `agent.state` rendered on the node and in the sidebar;
+ *  the other three are the same tool `inflight` rendered on the bubble, in the
+ *  detail panel and in the modal title. For one active session most of them are
+ *  on screen at once, which is why they share a beat. */
+const LIVE_PULSE = [
+  ".state-pill.state-active::before",
+  ".sl-dot.state-active::before",
+  ".tool-burst .tb-spin",
+  ".detail .tool .name .status-dot.inflight::before",
+  ".modal-title .status-dot.inflight",
+];
+
+/** The pulses that are NOT that signal, each with the question it answers. They
+ *  keep their own rates on purpose: collapsing them would say the version you
+ *  are running, the health of the event stream and a tool in flight are one
+ *  fact. A new pulse fails this suite until it is either in the family above or
+ *  written down here with a reason. */
+const OTHER_PULSES: [selector: string, meaning: string][] = [
+  [".topbar .brand button.v .v-dot", "--warn: a newer ccdeck is published"],
+  [".ver-banner .ver-dot", "--warn: you are running a stale version"],
+  [".topbar .status .pill.live::before", "--ok: the event stream is connected"],
+  [".conn-banner .conn-dot", "--err: the event stream is down"],
+];
+
+/** The two live pulses that live on the canvas, and so are switched off by the
+ *  canvas block like everything else there. The other three are single dots in
+ *  panels and keep pulsing — see the note at the foot of the sheet, and
+ *  state-channels.test.ts, which forbids a state mark from depending on it. */
+const LIVE_ON_CANVAS = [".state-pill.state-active::before", ".tool-burst .tb-spin"];
+
+describe("one tempo for one meaning: the live pulse", () => {
+  it("sweeps the pulses the sheet actually has, so a pass means something", () => {
+    expect(pulsing.map(r => r.selector).sort())
+      .toEqual([...LIVE_PULSE, ...OTHER_PULSES.map(([sel]) => sel)].sort());
+  });
+
+  it("puts every --inflight pulse in the live family and nothing else", () => {
+    // Derived from the token, compared against the enumeration: a new dot that
+    // paints --inflight fails here until it is written down, and one that stops
+    // painting it fails here until it is taken out.
+    expect(live.map(r => r.selector).sort()).toEqual([...LIVE_PULSE].sort());
+    expect(otherPulses.map(r => r.selector).sort()).toEqual(OTHER_PULSES.map(([sel]) => sel).sort());
+  });
+
+  it("beats all five of them on one token, with no duration written twice", () => {
+    for (const rule of live) {
+      expect(decl(rule.body, "animation"), rule.selector).toBe("pulse var(--pulse-live) infinite");
+    }
+  });
+
+  it("declares that token once, at :root, outside any theme", () => {
+    const declared = all.filter(r => !r.reduced && decl(r.body, "--pulse-live") != null);
+    expect(declared.map(r => r.selector)).toEqual([":root"]);
+    // Symmetric keyframes take the symmetric curve; the default `ease` is
+    // front-loaded and made the breathe lopsided.
+    expect(decl(declared[0].body, "--pulse-live")).toBe("1.2s ease-in-out");
+  });
+
+  it("leaves the four that answer a different question alone", () => {
+    // Two --warn, one --ok, one --err. None of them may quietly adopt the live
+    // token: that would say a stale version and a running tool are one fact.
+    for (const [sel, meaning] of OTHER_PULSES) {
+      const rule = pulsing.find(r => r.selector === sel)!;
+      const value = decl(rule.body, "animation")!;
+      expect(value, `${sel} — ${meaning}`).not.toContain("--pulse-live");
+      expect(value, `${sel} — ${meaning}`).toMatch(/^pulse \d/);
+    }
+  });
+
+  it("earns its reduced-motion exemption on the keyframes, not on a promise", () => {
+    // The panel dots keep pulsing under reduced motion because `pulse` changes
+    // opacity and nothing else, and a fade is the recommended answer rather than
+    // the thing being escaped. The moment it moves anything, that stops holding.
+    const body = /@keyframes pulse\s*\{([\s\S]*?)\n\}/.exec(css)![1];
+    expect([...body.matchAll(/([\w-]+)\s*:/g)].map(m => m[1])).toEqual(["opacity", "opacity"]);
+    // And nothing half-neutralises it by rewriting the tempo behind the query.
+    expect(all.filter(r => r.reduced && decl(r.body, "--pulse-live") != null)).toEqual([]);
+  });
+
+  it("keeps the canvas half switched off and the panel half pulsing", () => {
+    // The split is deliberate and predates this: a dozen bubbles pulsing across
+    // the surface the deck is watched on is not one dot in a fixed strip.
+    for (const sel of LIVE_ON_CANVAS) {
+      expect((answers.get(sel) ?? []).some(r => decl(r.body, "animation") === "none"), sel).toBe(true);
+    }
+    for (const sel of LIVE_PULSE.filter(s => !LIVE_ON_CANVAS.includes(s))) {
+      expect(answers.get(sel) ?? [], sel).toEqual([]);
+    }
+  });
+});
+
+/** A centred dialog over a dimmed backdrop, by the shape it is laid out in
+ *  rather than by its name — fixed to the viewport, filling it, centring its one
+ *  child on both axes. A fourth dialog written this way joins the sweep on its
+ *  own and has to answer for its entrance. */
+const isBackdrop = (rule: Rule) =>
+  decl(rule.body, "position") === "fixed" && decl(rule.body, "inset") === "0" &&
+  decl(rule.body, "align-items") === "center" && decl(rule.body, "justify-content") === "center";
+
+const backdrops = all.filter(r => !r.reduced && isBackdrop(r));
+
+/** backdrop → the panel it centres. All three are reached from this canvas
+ *  through one useModalDismiss and dismissed by one Escape key, so they are one
+ *  interaction and get one arrival. */
+const DIALOGS: [backdrop: string, panel: string][] = [
+  [".modal-backdrop", ".modal"],
+  [".ctx-modal-backdrop", ".ctx-modal"],
+  [".uh-backdrop", ".uh-modal"],
+];
+
+describe("one entrance for one interaction: the modal", () => {
+  it("finds every centred dialog in the sheet, not only the ones listed", () => {
+    expect(backdrops.map(r => r.selector).sort()).toEqual(DIALOGS.map(([b]) => b).sort());
+  });
+
+  it("dims behind all three of them the same way", () => {
+    for (const [backdrop] of DIALOGS) {
+      const rule = all.find(r => !r.reduced && r.selector === backdrop)!;
+      expect(decl(rule.body, "animation"), backdrop).toBe("fadeIn 140ms ease-out");
+    }
+  });
+
+  it("brings all three panels in the same way, over that dim", () => {
+    // popIn's transform-origin stays centre: a modal is the documented exception
+    // to origin-awareness, and nothing in this UI is anchored to its trigger.
+    for (const [, panel] of DIALOGS) {
+      const rule = all.find(r => !r.reduced && r.selector === panel)!;
+      expect(decl(rule.body, "animation"), panel).toBe("popIn 180ms cubic-bezier(0.22,1,0.36,1)");
+    }
+    expect(/@keyframes popIn\b[^}]*\}/.exec(css)![0]).toMatch(/transform\s*:/);
+  });
+
+  it("collapses all three to the backdrop's own fade under reduced motion", () => {
+    // popIn lifts 4px and scales, over whatever the reader was looking at, so
+    // each panel is answered — by its own selector, since a media query adds no
+    // specificity and one dialog's rule does not reach another's.
+    for (const [, panel] of DIALOGS) {
+      const answer = (answers.get(panel) ?? []).at(-1);
+      expect(answer, panel).toBeDefined();
+      expect(decl(answer!.body, "animation"), panel).toBe("fadeIn 140ms ease-out");
+      expect(answer!.at, panel).toBeGreaterThan(all.find(r => !r.reduced && r.selector === panel)!.at);
+    }
   });
 });
