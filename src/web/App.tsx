@@ -555,7 +555,16 @@ function snapshotToFlow(
         animated: (a.state === "active" || isSelectedEdge) && !edgeDim && !fading,
         type: "smoothstep",
         // No edge label — the target node already displays the agent name.
-        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "opacity 500ms ease, stroke-width 200ms ease" } as React.CSSProperties,
+        // The transition is named here and valued in the stylesheet. An inline
+        // style outranks every selector, so the literal string this used to
+        // carry could not be answered by a `prefers-reduced-motion` rule at
+        // all (#357) — a reader who asked for less motion still got 200ms of
+        // stroke-width travel on every edge that gained or lost a selection.
+        // `--edge-transition` moves that decision into styles.css, where the
+        // media query drops the stroke-width half and keeps the opacity fade,
+        // and it costs this component nothing: no hook, no listener, and no
+        // re-render of the canvas when the preference changes.
+        style: { "--session-hue": hue, strokeWidth: selectedWidth, opacity: effectiveOpacity, transition: "var(--edge-transition)" } as React.CSSProperties,
         className: cls,
       });
     }

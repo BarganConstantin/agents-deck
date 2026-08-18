@@ -58,7 +58,17 @@ describe("custom properties have both a writer and a reader", () => {
   });
 
   it("declares no property that neither a rule nor a component ever reads", () => {
-    expect([...declared].filter(t => !readInCss.has(t) && !namedInJs.has(t))).toEqual([]);
+    // `readInTsx` counts here as of #357. Until then every property the sheet
+    // declared was also read by the sheet, so the two ways a component can be
+    // the reader — naming the property to set it (`namedInJs`) and resolving it
+    // in an inline style (`var(--edge-transition)`) — collapsed into one case
+    // and only the first was listed. #357 declares --edge-transition and
+    // --ctx-arc-transition at :root precisely so that App.tsx and ContextModal
+    // can hand their inline `transition` a value the cascade still owns, which
+    // makes a component's var() the ONLY reader either one has. Reading a
+    // property from markup is not the same defect as declaring one nobody
+    // reads, and this check is for the second.
+    expect([...declared].filter(t => !readInCss.has(t) && !namedInJs.has(t) && !readInTsx.has(t))).toEqual([]);
   });
 
   it("still sees the properties JS owns, so the writer side is not vacuous", () => {

@@ -167,6 +167,41 @@
   --ctl-h: 30px;
 }
 
+/* The two transitions this deck writes from JS, declared here so that the
+   cascade can still reach them.
+
+   An inline `style` is not an author rule and does not compete with one: it
+   outranks every selector there is, so a `@media (prefers-reduced-motion:
+   reduce)` block can only reach it by shouting `!important` at it. #357 found
+   the deck's only two JS-written transitions — the session edge in App.tsx and
+   the context donut's arc in ContextModal.tsx — outside the reduced-motion
+   contract for precisely that reason, and unreachable by any rule that could be
+   added to this file. A custom property inverts the relationship: the inline
+   style names a value it does not own, this block owns it, and the media query
+   below rewrites it for every element reading it at once, with no `!important`
+   anywhere and nothing for a future rule to have to outrank.
+
+   The alternative considered was a useReducedMotion() hook reading matchMedia
+   in React. It works, but it turns an OS preference into component state — the
+   canvas re-renders when it changes, and something has to own the listener —
+   and it can only drop the whole `transition` string, where the edge wants to
+   keep half of it. Under reduced motion the edge keeps its 500ms opacity fade,
+   which is the recommended fallback rather than the thing being escaped from,
+   and loses only the stroke-width travel; the donut's arc is nothing but travel
+   sweeping around a circle, so it goes to `none` entirely. A custom property
+   also answers a preference toggled mid-session on its own, with no listener to
+   attach, and no frame on which the canvas re-renders because of one. */
+:root {
+  --edge-transition: opacity 500ms ease, stroke-width 200ms ease;
+  --ctx-arc-transition: stroke-dasharray 400ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --edge-transition: opacity 500ms ease;
+    --ctx-arc-transition: none;
+  }
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root {
@@ -4866,3 +4901,47 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    a button across the whole panel and make it read as a banner. */
 .ap-empty .ap-fix { align-self: flex-start; margin: 5px 0 0; }
 .ap-empty .ap-fix:disabled { opacity: 0.6; cursor: default; }
+
+/* ── reduced motion, where it is not the canvas and not a press ───────────── */
+/*
+ * #260 carried reduced motion onto the canvas and #357 found the four places it
+ * still stopped short of, all of them in panels and all of them easing a
+ * property that lays the element out rather than one the compositor can hand to
+ * the GPU. Each of the four is driven by a number that changes on its own: the
+ * quota fill and its pace marker move whenever a new usage sample lands, the
+ * context fill whenever a turn adds tokens, and the usage-history bar whenever
+ * a day's total is revised. So a reader who asked the OS for less motion got a
+ * panel of bars sliding and a marker walking sideways under their eyes, on a
+ * schedule they do not control and cannot predict — which is the exact case
+ * 2.3.3 is written about. They still show the same value; they arrive at it in
+ * one step instead of travelling to it over 300–400ms.
+ *
+ * The modal is the one entrance in the app that carries a transform. `popIn`
+ * lifts it 4px and scales it from 0.985, and it opens over whatever the reader
+ * was looking at. It becomes the same 140ms fade the canvas entrances collapse
+ * to, matched to `.modal-backdrop`'s own fadeIn so the dialog and the dim it
+ * sits on arrive together rather than one behind the other.
+ *
+ * This block is at the end of the sheet, not beside each rule, for one reason:
+ * a media query adds no specificity, so a reduced-motion rule beats the rule it
+ * answers only by coming later in source order. The five selectors here are
+ * spread over three thousand lines, and last-in-the-file is the single position
+ * that is after all of them and stays after all of them.
+ *
+ * Not here, and deliberately: the pulse on a live status dot. `pulse` animates
+ * opacity and nothing else, and a fade is the recommended answer to reduced
+ * motion rather than a thing to escape from — switching it off would remove a
+ * channel that says "this is running right now" and put nothing back. The same
+ * reasoning already keeps the topbar, banner and sidebar dots out of every
+ * other reduced-motion block in this file, and reduced-motion-reach.test.ts
+ * derives the exclusion from the keyframes instead of listing the selectors, so
+ * a dot that ever starts moving will be caught rather than grandfathered.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .ctx-window-fill,
+  .qb-fill,
+  .qb-pace-marker,
+  .uh-bar { transition: none; }
+
+  .modal { animation: fadeIn 140ms ease-out; }
+}
