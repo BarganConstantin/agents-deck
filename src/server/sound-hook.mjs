@@ -10,6 +10,17 @@
 // Only ever touches its own entry, tagged `__agent-dag-sound`. Hooks the user
 // wrote themselves are left exactly as found — including the platform-specific
 // ones this replaces, which are reported rather than deleted.
+//
+// Claude Code only, and deliberately: everything here is one entry in Claude
+// Code's settings.json, which Claude Code alone reads and executes. There is no
+// Codex equivalent — the deck installs no Codex hooks and tails the rollout
+// files instead — so a Codex turn ends in silence and no amount of writing to
+// this file changes that. The browser is where that is said rather than
+// guessed: the topbar button is drawn only where Claude Code is, and its
+// tooltip names the limit and the mechanism behind it. If this module ever does
+// learn a second provider, src/web/provider-copy.ts's finishSoundTitle is the
+// sentence that has to move with it, and finish-sound-scope.test.ts fails until
+// it does (#394).
 import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
