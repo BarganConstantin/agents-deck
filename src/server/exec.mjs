@@ -18,6 +18,13 @@
 // rather than pasted together. Getting this wrong is not a degraded feature:
 // the throw escaped the retry path and took the whole process down on Windows
 // before the server ever started.
+//
+// Going through cmd.exe then raises a question a direct spawn never has to ask:
+// under what NAME. A `.cmd` shim finds its own payload relative to `%~dp0`, so a
+// bare name — which carries no directory — makes it look under the deck's
+// working directory instead of its own. Every batch candidate is therefore
+// launched by its full path where one can be found; see shimPath and
+// candidateSpec.
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 
@@ -29,8 +36,17 @@ const WIN_EXTS = [".exe", ".cmd", ".bat", ""];
 // free, and these run on a poll.
 const resolved = new Map();
 
-function candidates(cmd) {
-  if (process.platform !== "win32") return [cmd];
+/**
+ * The spellings to try for `cmd`, best first.
+ *
+ * Exported with the platform as a parameter for the reason everything else in
+ * this file is: the Windows answer decides which candidate becomes a batch one,
+ * and a batch candidate is the only kind #457 touches — so a test that wants to
+ * follow a caller's bare name all the way to the command line cmd.exe receives
+ * has to be able to ask for the Windows list from a machine that is not Windows.
+ */
+export function candidates(cmd, platform = process.platform) {
+  if (platform !== "win32") return [cmd];
   // An explicit extension is respected as given.
   if (/\.[a-z]+$/i.test(cmd)) return [cmd];
   const known = resolved.get(cmd);
@@ -185,6 +201,46 @@ export const spawnSpec = (file, args, platform = process.platform) =>
   isBatch(file, platform) ? viaCmd(file, args) : { file, args, opts: {} };
 
 /**
+ * The same thing for ONE CANDIDATE SPELLING out of the list above — which on
+ * Windows means deciding the NAME the shim is launched under before deciding
+ * how, because those are not the same question.
+ *
+ * `spawnSpec` answers "how". This answers what #457 put in front of it. A batch
+ * candidate runs THROUGH cmd.exe (see viaCmd), and a `.cmd` shim locates its own
+ * payload relative to `%~dp0` — the drive and path of the command token cmd.exe
+ * was handed. A bare `claude.cmd` carries no directory at all, so `%~dp0` came
+ * out as the deck's WORKING DIRECTORY and the shim went hunting for its
+ * JavaScript under whatever folder the deck happened to be started from. #456
+ * proved exactly that for ccusage's `npm.cmd` and `npx.cmd`; it left the three
+ * helpers below alone, and they carry the shims the panels depend on — the
+ * `claude.cmd` behind the quota poll and the sign-in, and whatever `.cmd` a
+ * Python installer left for cswap. Same defect, same machine, wider blast
+ * radius.
+ *
+ * `?? raw` is the whole safety story and is not optional: when shimPath can see
+ * no layout it answers null, and the candidate stays the bare name today's code
+ * already uses, so nothing that works now can start failing. It is the same
+ * `?? name` ccusage.mjs and npx.mjs spell, so the repo has one rule rather than
+ * three. shimPath also refuses any name that already carries a directory, which
+ * is what keeps a caller's own absolute candidate — quotaClaudeBin's
+ * `%APPDATA%\npm\claude.cmd`, cswapCandidates' `~/.local/bin/cswap.exe` — from
+ * being re-rooted somewhere else entirely.
+ *
+ * `launch` comes back beside the spec because looksMissing has to be told the
+ * spelling cmd.exe was ACTUALLY GIVEN rather than the one the loop started
+ * from; its own header explains what breaks otherwise, and that coupling is the
+ * reason #456 stopped short of doing this.
+ *
+ * On POSIX `isBatch` is false, so no lookup happens, no filesystem is touched,
+ * `launch` is `raw`, and the spec is the object spawnSpec always returned —
+ * byte-identical, which is the point.
+ */
+export function candidateSpec(raw, args, platform = process.platform, deps) {
+  const launch = isBatch(raw, platform) ? (shimPath(raw, deps) ?? raw) : raw;
+  return { ...spawnSpec(launch, args, platform), launch };
+}
+
+/**
  * Stop a child AND everything it started.
  *
  * On POSIX the child is the tool, so a signal to it is the whole job and this
@@ -277,8 +333,30 @@ const sameCommand = (quoted, name) => {
  * command it could not find, that name must be the candidate we asked for — a
  * tool that shells out itself can forward the message about some other command.
  *
- * `name` is the candidate spelling that produced the output. Callers that only
- * have the text (failureText) omit it and get the shape rules alone.
+ * `name` is the spelling cmd.exe was ACTUALLY GIVEN — which since #457 is the
+ * shim's absolute path whenever shimPath found one, not the bare candidate the
+ * loop started from. That distinction is the coupling #456 named as its reason
+ * for stopping short, and it is a one-way trap rather than a detail: cmd.exe
+ * echoes the command token back exactly as it received it, so a check against
+ * the bare name stops matching the instant the token becomes a path. What that
+ * costs is not a cosmetic mismatch — it is the honesty of the whole answer. A
+ * shim that shimPath saw and that is gone by the time cmd.exe looks for it (a
+ * stale memo, an uninstall mid-session, a network drive that dropped, a roaming
+ * profile still syncing) would come back as an ordinary exit 1 whose stderr is
+ * cmd.exe's two-line "is not recognized / operable program or batch file."
+ * instead of the `code: "ENOENT"` every panel keys its "not installed" message
+ * off. The user would be told their CLI failed, and shown half a sentence about
+ * batch files, when the truthful answer is that it is not there.
+ *
+ * Feeding it the launch spelling keeps the comparison EXACT, which is what the
+ * paragraph above is protecting: matching loosely — on the basename, say —
+ * would let a tool that shells out itself have its own child's "is not
+ * recognized" read as the tool's absence, re-running a command that may be
+ * `cswap remove 3`. So the rule is not "compare less", it is "compare against
+ * what was actually asked for".
+ *
+ * Callers that only have the text (failureText) omit it and get the shape rules
+ * alone.
  */
 export function looksMissing(text, name = "") {
   const lines = String(text ?? "").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -324,9 +402,10 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20, env } = 
         return resolve({ ok: false, code: "ENOENT", killed: false, timedOut: false, stdout: "", stderr: "" });
       }
       const raw = tries[i];
-      const { file, args: argv, opts } = isBatch(raw)
-        ? viaCmd(raw, args)
-        : { file: raw, args, opts: {} };
+      // `launch` is what cmd.exe is handed and `raw` is what the loop is
+      // reasoning about; on Windows those differ for a batch candidate whose
+      // shim was found (#457) and are the same everywhere else.
+      const { file, args: argv, opts, launch } = candidateSpec(raw, args);
 
       const tree = isBatch(raw);
       let timer = null, timedOut = false;
@@ -354,8 +433,14 @@ export function run(cmd, args, { timeout = 20_000, maxBuffer = 4 << 20, env } = 
         // be a shell's verdict rather than the tool's own words — spawned
         // directly, a missing file is a plain ENOENT and anything printed came
         // from a tool that ran.
-        const missing = Boolean(err) && tree && looksMissing(`${stderr ?? ""}\n${stdout ?? ""}`, raw);
+        const missing = Boolean(err) && tree && looksMissing(`${stderr ?? ""}\n${stdout ?? ""}`, launch);
         if (err && (tryNext(err) || missing) && i + 1 < tries.length) return attempt(i + 1);
+        // The CANDIDATE is what gets remembered, never the resolved path. The
+        // memo is the only entry `candidates` offers afterwards, so recording an
+        // absolute path would pin this process to one install location for its
+        // whole life — an upgrade that moves the shim would then fail forever
+        // where today it simply gets found again. Re-running the lookup per
+        // attempt costs a handful of stats against a process spawn.
         if (!err) resolved.set(cmd, raw);
         resolve({
           ok: !err,
@@ -475,7 +560,10 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
   const attempt = (i) => {
     if (i >= tries.length) return finish(-1, { code: "ENOENT" });
     const raw = tries[i];
-    const { file, args: argv, opts } = isBatch(raw) ? viaCmd(raw, args) : { file: raw, args, opts: {} };
+    // Same split as in `run`: `launch` is the spelling cmd.exe receives — an
+    // absolute `.cmd` once shimPath can see one — and `raw` stays the candidate
+    // the loop and the memo are about.
+    const { file, args: argv, opts, launch } = candidateSpec(raw, args);
     let proc;
     try {
       proc = spawn(file, argv, { stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true, ...opts });
@@ -523,7 +611,7 @@ export function runInteractive(cmd, args, { timeout = 300_000, maxOutput = 256 <
       // batch candidate, which is the only kind launched through a shell, and
       // to output that is cmd.exe's message alone — everything below re-runs
       // the whole command, and these commands remove accounts.
-      if (code !== 0 && isBatch(raw) && looksMissing(`${stderr}\n${stdout}`, raw)) {
+      if (code !== 0 && isBatch(raw) && looksMissing(`${stderr}\n${stdout}`, launch)) {
         if (i + 1 < tries.length) {
           stdout = ""; stderr = ""; pending = "";
           child = null;
@@ -569,9 +657,11 @@ export function runDetached(cmd, args) {
   const attempt = (i) => {
     if (i >= tries.length) return;
     const raw = tries[i];
-    const { file, args: argv, opts } = isBatch(raw)
-      ? viaCmd(raw, args)
-      : { file: raw, args, opts: {} };
+    // Nothing here reads output, so there is no looksMissing call to keep
+    // honest — but the shim still has to be launched by its full path, or the
+    // detached `cswap list` this exists for computes `%~dp0` from the deck's cwd
+    // exactly like every other caller.
+    const { file, args: argv, opts } = candidateSpec(raw, args);
     try {
       const child = spawn(file, argv, { stdio: "ignore", shell: false, windowsHide: true, ...opts });
       child.on("error", (err) => { if (tryNext(err)) attempt(i + 1); });
