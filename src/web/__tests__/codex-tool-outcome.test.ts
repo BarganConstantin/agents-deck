@@ -50,7 +50,7 @@
 // No DOM — plain node, vitest — so this drives the real mapper and the real
 // reducer, with the object shapes copied from real rollout lines.
 import { describe, it, expect } from "vitest";
-import { applyEvent, initialState, sweepStaleTools, type GraphState } from "../reducer";
+import { applyEvent, initialState, STALE_SESSION_MS, sweepStaleTools, type GraphState } from "../reducer";
 import type { HookEnvelope, HookPayload } from "../types";
 // @ts-expect-error — .mjs server module, no types
 import { codexObjToPayload } from "../../server/index.mjs";
@@ -58,7 +58,9 @@ import { codexObjToPayload } from "../../server/index.mjs";
 const SESSION = "01a00e99-37b3-7781-90d7-aa76a7fca6fa";
 const CWD = "/repo";
 const T0 = 1_700_000_000_000;
-/** App.tsx runs the tool sweep with this cutoff. */
+/** The cutoff App.tsx used to run the tool sweep with, kept here because these
+ *  tests are about a provider the sweep never touches whatever the window is —
+ *  #436 later moved the real call site onto STALE_SESSION_MS. */
 const STALE_TOOL_MS = 90_000;
 
 type Rollout = { type: string; payload: Record<string, unknown> };
@@ -314,7 +316,15 @@ describe("a Codex call parked on an approval prompt", () => {
 
 describe("the same sweep on a Claude session", () => {
   // The exemption is per provider and must not have become an exemption for
-  // everybody: on Claude a missing PostToolUse really does mean a lost event.
+  // everybody: on Claude, a session that has gone silent really did take its
+  // in-flight call down with it, and that call still has to settle.
+  //
+  // #436 changed WHEN, not whether. The sweep used to fire on the call's own age
+  // after ninety seconds, which on Claude caught every honest slow `Bash` as
+  // well; it now fires on the session's silence over STALE_SESSION_MS, the same
+  // window sweepStaleSessions reaps the session on. So this session — one that
+  // emits nothing after the call starts — still ends up failed, an hour and a
+  // half later instead of a minute and a half.
   const claudeSession = "claude-session-1";
   const claudeRoot = (s: GraphState) => s.agents.get(claudeSession)!;
 
@@ -325,15 +335,27 @@ describe("the same sweep on a Claude session", () => {
     return state;
   }
 
-  it("still stamps an unanswered Claude tool failed after ninety seconds", () => {
+  it("still stamps an unanswered Claude tool failed once its session is silent", () => {
     const state = claudePending();
     expect(claudeRoot(state).provider).toBe("claude");
-    expect(sweepStaleTools(state, T0 + STALE_TOOL_MS + 5_000, STALE_TOOL_MS)).toBe(true);
+    expect(sweepStaleTools(state, T0 + STALE_SESSION_MS + 5_000, STALE_SESSION_MS)).toBe(true);
 
     const t = claudeRoot(state).tools.find(x => x.id === "tu_1")!;
     expect(t.ok).toBe(false);
-    expect(t.endedAt).toBe(T0 + STALE_TOOL_MS);
-    expect(t.errorPreview).toBe("stale (no PostToolUse received)");
+    // The last moment there was evidence the call was running, which on this
+    // session is the PreToolUse itself.
+    expect(t.endedAt).toBe(T0);
+    expect(t.errorPreview).toBe("session ended before this call returned");
+  });
+
+  it("leaves the same call alone at ninety seconds, when it is merely slow", () => {
+    // The #436 regression guard on this provider, stated against the same
+    // fixture the sweep does still eventually settle.
+    const state = claudePending();
+    expect(sweepStaleTools(state, T0 + STALE_TOOL_MS + 5_000, STALE_SESSION_MS)).toBe(false);
+    const t = claudeRoot(state).tools.find(x => x.id === "tu_1")!;
+    expect(t.ok).toBeUndefined();
+    expect(t.endedAt).toBeUndefined();
   });
 
   it("leaves a Claude failure reaching the deck as PostToolUseFailure untouched", () => {

@@ -127,7 +127,6 @@ const BUBBLE_MS = 420;
 // left uncovered so its label stays clickable).
 const GROUP_PAD = 18;
 
-const STALE_TOOL_MS = 90_000;
 const AGENT_CAP = 200;
 const AGENT_GRACE_MS = 5 * 60_000;
 // How many finished sessions stay on the canvas. Small on purpose: the board
@@ -1298,7 +1297,14 @@ function Inner() {
     const id = setInterval(() => {
       const t = Date.now();
       setNow(t);
-      let changed = sweepStaleTools(stateRef.current, t, STALE_TOOL_MS);
+      // Both sweeps run on STALE_SESSION_MS because they are asking the same
+      // question — is this session still there? — about two things that die
+      // together. #436: the tool sweep used to ask it on a ninety-second clock of
+      // its own, which meant the deck failed a session's tool calls an hour and a
+      // half before it was willing to call that session gone, and stamped a red ×
+      // on every `Bash` slower than a minute and a half. Order between the two is
+      // immaterial: neither writes `lastEventAt`, which is what both read.
+      let changed = sweepStaleTools(stateRef.current, t, STALE_SESSION_MS);
       // And the session above those tools, when nothing at all has been heard
       // from it in STALE_SESSION_MS. A terminal killed while a permission prompt
       // was up sends no final event, so its root stays `active` and its
