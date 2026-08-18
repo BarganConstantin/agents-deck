@@ -665,6 +665,9 @@ export const STALE_SESSION_MS = 90 * 60_000;
  * Only `active` agents are settled — an `err` node keeps its error — and the
  * subagents go with the root, since a session nothing has been heard from has no
  * live children either.
+ *
+ * The session's attribution stack goes with them, for the reason `Stop` gives
+ * for dropping it there (#442). See the note at the delete below.
  */
 export function sweepStaleSessions(state: GraphState, now: number, maxMs: number): boolean {
   let changed = false;
@@ -694,6 +697,52 @@ export function sweepStaleSessions(state: GraphState, now: number, maxMs: number
       a.endedAt = heardAt;
       changed = true;
     }
+
+    // #442: the attribution stack goes with the nodes the loop above just
+    // settled. This sweep is the stand-in for a `Stop` that never arrived, and
+    // `Stop` drops the stack for a reason that applies here word for word: keys
+    // land on it at `SubagentStart` and come off only at `SubagentStop`, hook
+    // POSTs are fire-and-forget, and one sent while the server was restarting is
+    // gone for good. A key left behind is not inert — `resolveOwner` reads the
+    // stack top for every event that carries no `agent_id`, which is all the real
+    // `UserPromptSubmit` and `Pre`/`PostToolUse` traffic, so the human's next
+    // prompt and every root-level tool call of that turn render under a subagent
+    // that finished two hours ago.
+    //
+    // Nothing downstream repairs it, which is why this has to happen here.
+    // `UserPromptSubmit` makes it worse rather than better: its retirement loop
+    // stamps `exitAt` on the settled subagent and the `resolveOwner` call four
+    // lines later clears `exitAt`, `endedAt` and `state` on the very same node in
+    // the very same event, so the zombie is un-retired by the act of typing. Both
+    // pruners then decline it at cap 0 and grace 0 because it is `active` again,
+    // and `popActive` only ever removes its own key — so the stale one sits
+    // UNDERNEATH any later `SubagentStart` and resurfaces as stack top the moment
+    // that newer, legitimate subagent stops. It is not confined to one turn.
+    //
+    // Clearing is safe on the premise this sweep is built on, and the premise is
+    // stronger here than at `Stop`. A subagent doing long work emits its own
+    // Pre/PostToolUse under this same session id, and every one of those stamps
+    // `lastEventAt` on this root — so a session that reached `maxMs` of TOTAL
+    // silence has no subagent still working under it by construction, whatever
+    // the stack still says.
+    //
+    // It is also the only choice that agrees with the un-reap in `applyEvent`
+    // (#350). A late event puts the ROOT back — `reaped` cleared, `state` active,
+    // `endedAt` undone — and deliberately leaves the settled subagents `done`,
+    // because a subagent that was mid-flight when its session went quiet is
+    // genuinely over and `SubagentStart` is the documented way one comes back.
+    // Restoring the stack alongside the root would therefore hand a `done` node
+    // the whole of the resumed session's traffic: exactly the zombie above, now
+    // re-created by the recovery path. The stack stays empty, the resumed session
+    // attributes to its root, and a subagent that really did survive re-announces
+    // itself and is pushed back on by `pushActive` as usual.
+    //
+    // `changed` is not touched: the stack is attribution state for events that
+    // have not arrived yet, and nothing on screen is drawn from it, so removing a
+    // key is not a reason to re-render this tick. `Map.delete` on a session that
+    // never had a stack — the common case — is a no-op, so the sweep stays free
+    // for the sessions this is not about.
+    state.activeSubagentStack.delete(root.sessionId);
   }
   return changed;
 }
