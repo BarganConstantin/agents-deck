@@ -15,7 +15,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { killTree, shimPath, spawnSpec } from "./exec.mjs";
+import { killTree, pathLookup, shimPath, spawnSpec } from "./exec.mjs";
 import { oneLine, termColumns } from "./term.mjs";
 import { PRODUCT } from "./brand.mjs";
 
@@ -368,18 +368,113 @@ function maybeBackgroundUpdate(installedVersion) {
   } catch { /* ignore */ }
 }
 
+// ── the user's own copy ─────────────────────────────────────────────────────
+
+/**
+ * A ccusage the USER put somewhere, either by naming it outright or by having
+ * it on PATH — or null when there is no such thing.
+ *
+ * This is #433, and the case for it is not that a PATH search is nice to have.
+ * The deck has been telling people "put ccusage on PATH yourself" in
+ * admin-failure.ts for as long as that sentence has existed, and nothing
+ * anywhere ever looked: a user who did exactly what they were told, and could
+ * prove it with `ccusage --version` in their own shell, got the identical
+ * failure on the next click. Two ways out of that, and the other one is to
+ * delete the promise. It is kept because there is a configuration that needs it
+ * and has no other:
+ *
+ *   - `AGENTS_DECK_NO_INSTALL=1` is documented as "never install or update
+ *     claude-swap / ccusage". Someone who sets it AND installs ccusage
+ *     themselves has done the only thing that flag can sensibly mean, and until
+ *     now the deck answered "ccusage is not installed" while it was installed
+ *     and on their PATH. There was NO combination of settings that made a
+ *     self-managed ccusage work.
+ *   - The #432 machine — npm and npx both unusable on disk — cannot create the
+ *     managed install and cannot run the npx fallback. A copy the user already
+ *     has is the only route left, and it was the one route the deck refused to
+ *     look down.
+ *
+ * The override wins over PATH the way AGENTS_DECK_CSWAP does over cswap's own
+ * search, and is never remembered, because somebody debugging a bad resolution
+ * needs a change to it to take effect on the next click rather than the next
+ * restart. Nothing here is cached for the same reason, and it is affordable:
+ * a lookup is a handful of stats, once per uncached fetch, against a process
+ * spawn that follows it.
+ *
+ * `platform` and `deps` are parameters, and this is exported, for the reason
+ * every other Windows answer in this module is: the PATHEXT walk and the
+ * `.cmd` spelling have to be checkable from a machine that cannot run Windows.
+ */
+export function userCcusage(platform = process.platform, deps, env = process.env) {
+  const named = env.AGENTS_DECK_CCUSAGE;
+  if (named) {
+    // A path the user typed is used as typed — pathLookup would refuse it
+    // anyway, since re-rooting a name that carries a directory is a way to run
+    // something other than what was asked for. Whether it EXISTS is the
+    // caller's question, because "the path you gave me is not there" is a
+    // different sentence from "you have no ccusage".
+    return { file: String(named), named: true };
+  }
+  const found = pathLookup("ccusage", platform, deps);
+  return found ? { file: found, named: false } : null;
+}
+
+/** Does the file an explicit override names actually exist? Split out so the
+ *  existence check is injectable alongside the lookup above. */
+const overrideIsThere = (file, { exists = existsSync } = {}) => {
+  try {
+    return exists(file);
+  } catch {
+    return false;
+  }
+};
+
 // Ensure a runnable ccusage. Returns { kind:"node", entry } for the managed
-// install, or { kind:"npx" } as the portable fallback.
+// install, { kind:"path", file } for a copy the user provided, or { kind:"npx" }
+// as the portable fallback.
+//
+// The order is the whole design decision, so it is stated rather than implied.
+//
+// An explicit AGENTS_DECK_CCUSAGE is first and is never fallen through: a user
+// who pointed the deck at a file and got silently ignored has been given a
+// setting that does nothing, which is worse than not having one. If it does not
+// resolve, the failure names THAT — "npx is not on this deck's PATH" would be
+// both true and completely beside the point.
+//
+// The managed install then comes BEFORE the PATH copy, which is the opposite of
+// what #433 proposed, and deliberately. Preferring PATH would silently change
+// which ccusage runs on every machine that already has both — a deck that works
+// today would start running a copy it has never run, and an old global ccusage
+// without `daily --json` would turn a working panel into a broken one for no
+// reason the user asked for. The PATH copy is an ESCAPE ROUTE, and it wants to
+// be reached exactly when the managed install is not there; someone who wants
+// their own copy to win over the deck's says so with AGENTS_DECK_CCUSAGE, which
+// is unambiguous in a way a precedence rule never is.
+//
+// PATH comes before INSTALLING, though. Downloading a second copy of a tool
+// that is already on the machine is not something to do to somebody, and it is
+// what makes the order identical with and without AGENTS_DECK_NO_INSTALL=1 —
+// that flag now removes a step rather than changing the sequence.
 async function getRunner() {
+  const mine = userCcusage();
+  if (mine?.named) {
+    if (!overrideIsThere(mine.file)) {
+      throw tagged("bad_override",
+        `AGENTS_DECK_CCUSAGE points at ${mine.file}, and there is no such file`);
+    }
+    return { kind: "path", file: mine.file, named: true };
+  }
   let resolved = resolveEntry();
   if (resolved) {
     maybeBackgroundUpdate(resolved.version);
     return { kind: "node", entry: resolved.entry };
   }
-  // Nothing installed and installs are forbidden. The npx fallback is not an
-  // escape hatch — `npx -y ccusage@latest` downloads and runs the same package
-  // — so there is no runner to hand back. Fail with the reason, which the
-  // usage-history modal shows, instead of quietly installing.
+  if (mine) return { kind: "path", file: mine.file, named: false };
+  // Nothing installed, nothing of the user's to run, and installs are
+  // forbidden. The npx fallback is not an escape hatch — `npx -y ccusage@latest`
+  // downloads and runs the same package — so there is no runner to hand back.
+  // Fail with the reason, which the usage-history modal shows, instead of
+  // quietly installing.
   if (installsDisabled()) {
     throw tagged("no_install", "ccusage is not installed, and installs are off (AGENTS_DECK_NO_INSTALL=1)");
   }
@@ -393,11 +488,11 @@ async function getRunner() {
   return { kind: "npx", installError: _lastInstallError };
 }
 
-/** Which of ccusage's two paths a failure came from, in the deck's own words.
+/** Which of ccusage's three paths a failure came from, in the deck's own words.
  *  `stage` travels to the browser; the modal leads with it rather than making
  *  the reader guess from a stack trace which half of this module they are
  *  looking at. */
-const STAGE = { node: "managed", npx: "npx" };
+const STAGE = { node: "managed", path: "path", npx: "npx" };
 
 /** Mark a failure with the path that produced it, and with the managed
  *  install's own account when that is why this path was taken at all. Set once:
@@ -406,6 +501,11 @@ const STAGE = { node: "managed", npx: "npx" };
 function stamp(err, runner) {
   if (err && typeof err === "object") {
     if (!err.stage) err.stage = STAGE[runner?.kind] ?? "npx";
+    // Which file, when the answer is a file the deck did not put there. The
+    // stage alone says "your own copy failed" and leaves the reader to work out
+    // WHICH copy, and on a machine with an override, a PATH entry and a managed
+    // install that is exactly the question they cannot answer from here.
+    if (runner?.kind === "path" && err.bin === undefined) err.bin = runner.file;
     if (runner?.installError && err.install === undefined) err.install = runner.installError;
   }
   return err;
@@ -454,14 +554,33 @@ function discardDamagedInstall(runner, err) {
   return !resolveEntry();
 }
 
-// One attempt with one runner. Neither branch gets a shell. The managed install
-// is `node <entry> …`, which never needed one; the npx fallback is routed
-// through spawnSpec instead — see npxSpec, and note that `args` here ends in
-// whatever /api/ccusage was asked for.
+/**
+ * What `spawn` gets for a ccusage the user provided.
+ *
+ * `file` is always an absolute path by the time it reaches here — pathLookup
+ * resolves the directory and an override is a path the user typed — and that is
+ * load-bearing rather than tidy. On Windows the thing on PATH is `ccusage.cmd`,
+ * a batch file, so spawnSpec routes it through cmd.exe; a batch file launched
+ * by BARE name computes `%~dp0` from the deck's working directory and goes
+ * looking for its payload there, which is #456 exactly. Resolving first and
+ * quoting second is the same order the npm and npx shims go through.
+ *
+ * Exported for tests: the platform is a parameter so the Windows command line
+ * can be checked from any OS.
+ */
+export const userSpec = (file, args = [], platform = process.platform) =>
+  spawnSpec(file, args, platform);
+
+// One attempt with one runner. No branch gets a shell. The managed install is
+// `node <entry> …`, which never needed one; the user's own copy and the npx
+// fallback are routed through spawnSpec instead — see npxSpec and userSpec, and
+// note that `args` here ends in whatever /api/ccusage was asked for.
 function runOnce(runner, args) {
   const { file, args: full, opts } = runner.kind === "node"
     ? { file: process.execPath, args: [runner.entry, ...args], opts: {} }
-    : fallbackSpec(args);
+    : runner.kind === "path"
+      ? userSpec(runner.file, args)
+      : fallbackSpec(args);
   return new Promise((resolve, reject) => {
     const child = spawn(file, full, { windowsHide: true, ...opts });
     let out = "", err = "";
@@ -577,13 +696,16 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
     // `stage` and `install` are the halves that used to be lost. They are what
     // let the modal say WHICH path failed and why, on screen, instead of
     // guessing it from the shape of a stack trace — the guess that shipped two
-    // wrong diagnoses in a row (#432, #450). Undefined when nothing ran, and
-    // JSON.stringify drops them, so an older browser sees the reply it expects.
+    // wrong diagnoses in a row (#432, #450). `bin` joined them for #433: with a
+    // third path, "your own copy failed" is only half an answer until it names
+    // which file that was. Undefined when nothing ran, and JSON.stringify drops
+    // them, so an older browser sees the reply it expects.
     result = {
       ok: false,
       reason: err?.reason ?? "run_failed",
       stage: err?.stage,
       install: err?.install,
+      bin: err?.bin,
       error: String(err?.message ?? err),
       fetchedAt: now,
     };
@@ -601,11 +723,28 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
  * explanation. Called from the CLI so that cost is paid while the deck is
  * still booting.
  *
- * Returns { state: "present" | "installing" | "updating" | "unavailable" }.
- * Never throws and never blocks on the install itself — a slow registry must
- * not hold up the server.
+ * Returns { state: "present" | "user" | "installing" | "updating" |
+ * "unavailable" }. Never throws and never blocks on the install itself — a slow
+ * registry must not hold up the server.
+ *
+ * The order here is getRunner's order, and it has to be: a boot that installs a
+ * managed copy while the user already has one on PATH would make getRunner's
+ * "PATH before installing" true only until the first restart, and would spend a
+ * download saying so. `user` is reported without a version because finding one
+ * means RUNNING the thing, and the boot is not the place to spawn a process to
+ * fill in a status row.
  */
 export function primeCcusage() {
+  const mine = userCcusage();
+  // An override that names a file which is not there is not reported here at
+  // all: the boot has nothing useful to say about it and getRunner will say it
+  // properly, with the path, the first time the modal is opened.
+  if (mine && (!mine.named || overrideIsThere(mine.file))) {
+    const resolved = resolveEntry();
+    // The managed install still wins when it exists — see getRunner — so an
+    // existing deck's boot row does not change.
+    if (mine.named || !resolved) return { state: "user", bin: mine.file };
+  }
   // The CLI already skips this call under AGENTS_DECK_NO_INSTALL=1; repeating
   // the check here keeps the promise a property of the module rather than of
   // one caller.

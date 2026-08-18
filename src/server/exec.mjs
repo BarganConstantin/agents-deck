@@ -151,31 +151,83 @@ export function shellQuoteArg(arg, platform = process.platform) {
  * so a Windows layout checked from macOS would come back with forward slashes.
  * `execPath`, `pathEnv` and `exists` are injected for the same reason — the
  * Windows answer has to be checkable from an OS that cannot run it.
+ *
+ * The walk itself now lives in `pathLookup` below, because #433 needed the same
+ * one for a tool that is not a shim; this is that walk with the two answers a
+ * shim needs — Windows, and node's own directory first.
  */
-export function shimPath(name, {
+export const shimPath = (name, deps) =>
+  pathLookup(name, "win32", { besideNode: true, ...deps });
+
+/**
+ * Where `name` actually lives on PATH, as an absolute path, or null when
+ * nothing on PATH answers to it.
+ *
+ * This is the general form of shimPath above, and it exists because #433 asked
+ * for a third way to reach ccusage: the copy a user installed themselves. The
+ * deck's own error text has told people to "put ccusage on PATH yourself" since
+ * before there was anything that looked, so the choice was to either look or
+ * stop saying it — see getRunner in ccusage.mjs for which way that went.
+ *
+ * Writing it as ONE walk rather than a second one is the point. A PATH search
+ * on Windows is not a PATH search plus a note: `ccusage` there is `ccusage.cmd`
+ * or `ccusage.exe` and never the bare name, because PATHEXT is a shell's job
+ * and spawn is not a shell — which is the whole reason `candidates` exists, so
+ * that is what supplies the spellings here. And a `.cmd` found this way is
+ * returned as a FULL PATH, which is what keeps #456 fixed: launched by its bare
+ * name through cmd.exe, a shim computes `%~dp0` from the deck's working
+ * directory and goes hunting for its payload there.
+ *
+ * `besideNode` is the one thing a shim wants and a tool does not. npm ships
+ * beside node, so looking there first is right for `npm.cmd`; for anything else
+ * it would quietly overrule the order the user put their own PATH in, which is
+ * the one statement of preference they actually made.
+ *
+ * The check is existence, not executability. That is what `run`'s candidate
+ * loop effectively asks too — it spawns and moves on if the spawn fails — and
+ * an executable bit is not a thing Windows has. The residue is a directory on
+ * PATH that happens to be named after the tool; it would be resolved here and
+ * fail on spawn, with the failure naming the path, which is a better place to
+ * find out than a silent miss.
+ */
+export function pathLookup(name, platform = process.platform, {
   execPath = process.execPath,
   pathEnv = process.env.PATH ?? process.env.Path ?? "",
   exists = existsSync,
+  besideNode = false,
 } = {}) {
   // A name that already carries a directory needs no lookup, and re-rooting it
   // would be a way to run something else entirely.
   if (typeof name !== "string" || !name || /[\\/]/.test(name)) return null;
+  const win = platform === "win32";
+  const sep = win ? "\\" : "/";
   const dirs = [];
-  const beside = String(execPath ?? "").split(/[\\/]/).slice(0, -1).join("\\");
-  if (beside) dirs.push(beside);
-  for (const raw of String(pathEnv ?? "").split(";")) {
+  if (besideNode) {
+    const beside = String(execPath ?? "").split(/[\\/]/).slice(0, -1).join(sep);
+    if (beside) dirs.push(beside);
+  }
+  // `;` on Windows, `:` everywhere else. Splitting on the wrong one is not a
+  // near miss: a POSIX PATH read with `;` is one enormous directory that
+  // exists nowhere, so every lookup would answer null and the feature would
+  // look like it had never been written.
+  for (const raw of String(pathEnv ?? "").split(win ? ";" : ":")) {
     // A PATH entry may be quoted, and may end in a separator; neither is part
     // of the directory, and both would produce a path nothing exists at.
     const dir = raw.trim().replace(/^"|"$/g, "").replace(/[\\/]+$/, "");
     if (dir) dirs.push(dir);
   }
+  // On POSIX this is `[name]`, so the inner loop runs once and the cost is one
+  // stat per directory, exactly as before.
+  const spellings = candidates(name, platform);
   for (const dir of dirs) {
-    const full = `${dir}\\${name}`;
-    try {
-      if (exists(full)) return full;
-    } catch {
-      // An entry that cannot even be stat'ed — a disconnected network drive is
-      // the usual one — is a miss, not a reason to stop looking.
+    for (const spelling of spellings) {
+      const full = `${dir}${sep}${spelling}`;
+      try {
+        if (exists(full)) return full;
+      } catch {
+        // An entry that cannot even be stat'ed — a disconnected network drive
+        // is the usual one — is a miss, not a reason to stop looking.
+      }
     }
   }
   return null;
