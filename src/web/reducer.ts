@@ -1,5 +1,5 @@
 // Event → graph reducer. Pure-ish: same events in any order = same end state.
-import type { AgentNodeData, HookEnvelope, HookPayload, TokenUsage, ToolCall, WaitingBlock } from "./types";
+import type { AgentNodeData, ContextBreakdown, HookEnvelope, HookPayload, TokenUsage, ToolCall, WaitingBlock } from "./types";
 
 function emptyUsage(): TokenUsage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
@@ -122,6 +122,27 @@ function basename(p?: string): string | undefined {
   if (!p) return undefined;
   const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1];
+}
+
+/** A breakdown that asserts nothing, for a root that has not been told anything
+ *  about its context yet.
+ *
+ *  One function rather than two object literals because the two writers below —
+ *  the `context_tokens` stamp and the `ContextObserved` branch — merge into
+ *  whatever is already there, and a field that one of them forgot to seed would
+ *  read `undefined` where the type promises a number and print "NaN" in the
+ *  modal. Adding a field to `ContextBreakdown` should not be able to miss a
+ *  starting value in one place and not the other. */
+function emptyContextBreakdown(): ContextBreakdown {
+  return {
+    msgsUser: 0,
+    msgsAssistant: 0,
+    toolUses: 0,
+    toolResults: 0,
+    systemReminders: 0,
+    currentContextTokens: 0,
+    memoryFiles: [],
+  };
 }
 
 function rootAgentId(sessionId: string): string {
@@ -819,6 +840,31 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
     if (root) root.approvalPolicy = p.approval_policy;
   }
 
+  // How much of that window is occupied right now, from the same Codex
+  // `token_count` record that reports the window itself — and in the same place,
+  // above the branches that return early, for the same reason (#399).
+  //
+  // It rides on `UsageObserved` rather than arriving as its own event because it
+  // is measured at the same instant as the usage totals and by the same record:
+  // splitting one record into two events would let the deck show a spend and an
+  // occupancy that disagree about which request they describe.
+  //
+  // WHY THIS DOES NOT REPLACE root.context WHOLESALE. The rest of the breakdown
+  // comes from somewhere else entirely — a transcript scan on the Claude side, a
+  // filesystem scan for memory files on the Codex one — and arrives on its own
+  // schedule. Merging is what lets the two land in either order; assigning a
+  // fresh breakdown here would erase the file list every 1.5 seconds.
+  //
+  // Zero is a legitimate value and is written, not skipped: a session whose
+  // context was just cleared really is at zero, and the donut is gated on
+  // `> 0` at the card so it disappears rather than drawing an empty ring.
+  if (typeof p.context_tokens === "number" && p.context_tokens >= 0) {
+    const root = state.agents.get(sessionId);
+    if (root) {
+      root.context = { ...(root.context ?? emptyContextBreakdown()), currentContextTokens: p.context_tokens };
+    }
+  }
+
   // ModelObserved is a synthetic enrichment event emitted by the server
   // after it scans the root session's transcript file. Apply to the ROOT
   // agent only — subagents may run under a different model (Sonnet child
@@ -845,23 +891,44 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
   }
 
   // ContextObserved carries the structural breakdown of the session's context
-  // window (message counts, CLAUDE.md files, current window size) that the
+  // window (message counts, memory files, current window size) that the
   // context donut and ContextModal read. Session root only.
+  //
+  // FIELD-BY-FIELD, KEEPING WHAT IT DOES NOT MENTION. This used to rebuild the
+  // whole breakdown from one payload, defaulting every absent key to 0 and an
+  // empty list, which made the event destructive rather than additive. Three
+  // producers now write into this one object and none of them knows everything:
+  // the Claude transcript scan (counts + occupancy), the Claude memory scan, and
+  // the Codex memory scan, which has file paths and nothing else. The old shape
+  // was already lossy on the Claude side too — `maybeResolveContext` sends the
+  // file list with no breakdown whenever the transcript has not been folded yet,
+  // and that zeroed every count the previous pass had established.
+  //
+  // An absent key therefore means "this producer has nothing to say about it",
+  // never "it is zero". A producer that means zero sends the number zero.
   if (name === "ContextObserved") {
     const ctx = (p.context ?? null) as Record<string, unknown> | null;
     if (ctx) {
       const root = state.agents.get(sessionId);
       if (root) {
+        const prev = root.context ?? emptyContextBreakdown();
+        const num = (key: string, fallback: number): number =>
+          typeof ctx[key] === "number" ? (ctx[key] as number) : fallback;
+        // `claudeMdFiles` is the name this list shipped under before it also
+        // held AGENTS.md paths, and it is still read here because the deck
+        // replays its own persisted JSONL at boot: a log written by an older
+        // build is exactly where the old key still appears.
+        const files = Array.isArray(ctx.memoryFiles) ? ctx.memoryFiles
+          : Array.isArray(ctx.claudeMdFiles) ? ctx.claudeMdFiles
+          : null;
         root.context = {
-          msgsUser: Number(ctx.msgsUser ?? 0),
-          msgsAssistant: Number(ctx.msgsAssistant ?? 0),
-          toolUses: Number(ctx.toolUses ?? 0),
-          toolResults: Number(ctx.toolResults ?? 0),
-          systemReminders: Number(ctx.systemReminders ?? 0),
-          currentContextTokens: Number(ctx.currentContextTokens ?? 0),
-          claudeMdFiles: Array.isArray(ctx.claudeMdFiles)
-            ? (ctx.claudeMdFiles as Array<{ path: string; bytes: number }>)
-            : [],
+          msgsUser: num("msgsUser", prev.msgsUser),
+          msgsAssistant: num("msgsAssistant", prev.msgsAssistant),
+          toolUses: num("toolUses", prev.toolUses),
+          toolResults: num("toolResults", prev.toolResults),
+          systemReminders: num("systemReminders", prev.systemReminders),
+          currentContextTokens: num("currentContextTokens", prev.currentContextTokens),
+          memoryFiles: (files ?? prev.memoryFiles) as Array<{ path: string; bytes: number }>,
         };
       }
     }
