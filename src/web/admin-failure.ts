@@ -142,22 +142,30 @@ export function commandOutput(out: CommandFailure): string {
  * and under `error` whatever the thing that failed wrote down.
  *
  * `stage` and `install` are the two the route used to keep to itself. ccusage
- * has two paths — the managed install under ~/.agents-deck/ccusage, and the
- * `npx -y ccusage@latest` fallback taken when that install is missing AND could
- * not be created — and `error` is only ever the LAST one's output. Which path
- * that was, and what the install said on its way out, were nowhere in the
- * response at all: they were guessed at from the shape of the stack trace, and
- * that guess is what shipped two wrong diagnoses in a row (#432, #450) while
- * the install's own words sat on a terminal row the deck had already repainted.
+ * has three paths — a copy the user provided, the managed install under
+ * ~/.agents-deck/ccusage, and the `npx -y ccusage@latest` fallback taken when
+ * that install is missing AND could not be created — and `error` is only ever
+ * the LAST one's output. Which path that was, and what the install said on its
+ * way out, were nowhere in the response at all: they were guessed at from the
+ * shape of the stack trace, and that guess is what shipped two wrong diagnoses
+ * in a row (#432, #450) while the install's own words sat on a terminal row the
+ * deck had already repainted.
  *
- * Both are optional because an older deck does not send them, and because
+ * `bin` arrived with the third path (#433). A stage of "path" says the user's
+ * own copy failed and stops there, and on a machine that has an override, a
+ * PATH entry and a managed install, "which copy" is precisely the thing the
+ * reader cannot work out for themselves.
+ *
+ * All three are optional because an older deck does not send them, and because
  * nothing has a stage until something has run.
  */
 export type CcusageFailure = (CommandFailure & {
-  /** Which path produced `error`: "managed" or "npx". */
+  /** Which path produced `error`: "managed", "path" or "npx". */
   stage?: string;
   /** The managed install's own account of why it is not there, one line. */
   install?: string;
+  /** The file that ran, when it was one the deck did not install. */
+  bin?: string;
 }) | null;
 
 // ccusage is not claude-swap and none of the codes above fit it. It is a package
@@ -168,7 +176,18 @@ export type CcusageFailure = (CommandFailure & {
 // `err.message` happened to be — "spawn npx ENOENT" as the entire account of a
 // stats panel with nothing in it.
 export const CCUSAGE_REASONS: Record<string, string> = {
-  no_install: "ccusage is not installed, and AGENTS_DECK_NO_INSTALL=1 forbids fetching it — unset that variable and restart the deck, or install ccusage yourself",
+  // The second half of this was a dead end until #433: the deck refused to
+  // install and then never looked for the copy it had just told the reader to
+  // install, so AGENTS_DECK_NO_INSTALL=1 had no working configuration at all.
+  // It looks on PATH now, which is what lets the sentence stay.
+  no_install: "ccusage is not installed, and AGENTS_DECK_NO_INSTALL=1 forbids fetching it — unset that variable and restart the deck, or install ccusage yourself so it is on this deck's PATH",
+  // An AGENTS_DECK_CCUSAGE that names nothing. Its own sentence rather than a
+  // fall-through, because falling through would report "npx is not on this
+  // deck's PATH" to somebody who never asked the deck to use npx — true, and
+  // about a completely different thing than the setting they got wrong. The
+  // server puts the path in `error`, which is where a value from the user's own
+  // environment belongs.
+  bad_override: "AGENTS_DECK_CCUSAGE names a file that is not there — correct it to the full path of your ccusage, or unset it to let the deck find its own",
   timeout: "ccusage took more than 90 seconds and was stopped — a narrower range usually finishes",
   bad_output: "ccusage ran but printed no usage data — try again, and run ccusage daily --json in a terminal if it keeps happening",
   run_failed: "ccusage could not report usage — try again",
@@ -192,6 +211,15 @@ export const CCUSAGE_REASONS: Record<string, string> = {
 // unfixable by trying again. All four are also a machine that does not HAVE
 // npx; the fifth way that sentence gets said — npx present and broken — is
 // npxBroken below, and it needs a different remedy.
+//
+// The second clause — "or put ccusage on PATH yourself" — was a lie until #433.
+// Nothing in the deck had ever looked at PATH for ccusage: getRunner knew the
+// managed install and npx and nothing else, so a reader who did exactly what
+// this told them, and could prove it with `ccusage --version` in their own
+// shell, got this identical box on the next click. The words are kept because
+// the deck now does what they say — userCcusage in ccusage.mjs — and because
+// this is the machine that most needs the escape route: no npx means no
+// fallback, and a fresh install cannot be fetched either.
 const NO_NPX =
   "ccusage could not be started — npx is not on this deck's PATH. Install Node's npm/npx, or put ccusage on PATH yourself";
 
@@ -338,6 +366,16 @@ export function explainCcusageFailure(out: CcusageFailure, fallback: string): st
         : `there is no managed copy of ccusage on this machine, and the npx fallback failed: ${lowerFirst(said)}`;
     case "managed":
       return `${MANAGED} failed to run: ${lowerFirst(said)}`;
+    case "path":
+      // The copy the reader provided, and the one sentence where naming the
+      // file is not a detail. This path is reached because the deck FOUND
+      // something — on PATH, or at AGENTS_DECK_CCUSAGE — so "your ccusage
+      // failed" without saying which file leaves them checking the wrong one,
+      // and a stale global copy shadowing a good one is the likeliest way to
+      // land here at all.
+      return out.bin
+        ? `the ccusage this deck found at ${out.bin} failed to run: ${lowerFirst(said)}`
+        : `the ccusage this deck found on your PATH failed to run: ${lowerFirst(said)}`;
     default:
       // Including a stage this build has no wording for — a newer deck must not
       // cost the reader the sentence that is already correct.

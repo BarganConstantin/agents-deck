@@ -41,15 +41,30 @@ const FAKE_HOME = mkdtempSync(join(tmpdir(), "ccdeck-ccusage-"));
 const prevHome = process.env.HOME;
 const prevUserProfile = process.env.USERPROFILE;
 const prevNoInstall = process.env.AGENTS_DECK_NO_INSTALL;
+const prevPath = process.env.PATH;
+const prevOverride = process.env.AGENTS_DECK_CCUSAGE;
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
+// And #433: the deck now looks for a ccusage the USER provided — at
+// AGENTS_DECK_CCUSAGE first, then on PATH — before it considers installing one.
+// These tests are about what the deck does when there is NO ccusage anywhere,
+// so both have to be empty, and emptying them is not optional tidiness: PATH is
+// the developer's own, `npm i -g ccusage` is a perfectly ordinary thing to have
+// done, and without this the file would pass or fail depending on whose machine
+// ran it. FAKE_HOME is a real directory with nothing in it, which is a truer
+// stand-in for a bare PATH than the empty string.
+process.env.PATH = FAKE_HOME;
+delete process.env.AGENTS_DECK_CCUSAGE;
 
 // @ts-expect-error — .mjs server module, no types
 const { fetchCcusageDaily, primeCcusage } = await import("../../server/ccusage.mjs");
 
 const PKG_DIR = join(FAKE_HOME, ".agents-deck", "ccusage", "node_modules", "ccusage");
 
-const restore = (key: "HOME" | "USERPROFILE" | "AGENTS_DECK_NO_INSTALL", was: string | undefined) => {
+const restore = (
+  key: "HOME" | "USERPROFILE" | "AGENTS_DECK_NO_INSTALL" | "PATH" | "AGENTS_DECK_CCUSAGE",
+  was: string | undefined,
+) => {
   if (was === undefined) delete process.env[key];
   else process.env[key] = was;
 };
@@ -58,6 +73,8 @@ afterAll(() => {
   restore("HOME", prevHome);
   restore("USERPROFILE", prevUserProfile);
   restore("AGENTS_DECK_NO_INSTALL", prevNoInstall);
+  restore("PATH", prevPath);
+  restore("AGENTS_DECK_CCUSAGE", prevOverride);
   rmSync(FAKE_HOME, { recursive: true, force: true });
 });
 

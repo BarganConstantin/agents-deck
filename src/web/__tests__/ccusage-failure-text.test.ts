@@ -34,12 +34,22 @@ const prev = {
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
   CODEX_HOME: process.env.CODEX_HOME,
   AGENTS_DECK_NO_INSTALL: process.env.AGENTS_DECK_NO_INSTALL,
+  PATH: process.env.PATH,
+  AGENTS_DECK_CCUSAGE: process.env.AGENTS_DECK_CCUSAGE,
 };
 process.env.HOME = SANDBOX;
 process.env.USERPROFILE = SANDBOX;
 process.env.CLAUDE_CONFIG_DIR = join(SANDBOX, ".claude");
 process.env.CODEX_HOME = join(SANDBOX, ".codex");
 process.env.AGENTS_DECK_NO_INSTALL = "1";
+// #433 made a ccusage the user provided — at AGENTS_DECK_CCUSAGE, or on PATH —
+// a runner in its own right, and under AGENTS_DECK_NO_INSTALL=1 it is the one
+// path left. That is exactly what the no_install case below is asserting the
+// ABSENCE of, so PATH here has to hold no ccusage; the developer's own PATH
+// very well might. The children this file really does spawn are launched by
+// absolute path (process.execPath), so emptying it costs them nothing.
+process.env.PATH = SANDBOX;
+delete process.env.AGENTS_DECK_CCUSAGE;
 if (!homedir().startsWith(SANDBOX)) {
   throw new Error(`refusing to run: homedir() is ${homedir()}, outside ${SANDBOX}`);
 }
