@@ -64,10 +64,14 @@ const AGENT_NAMES: Record<string, string> = {
 
 /** One of ccusage's agent ids, as a name to print. Unknown ids are title-cased
  *  rather than passed through raw, so a CLI added to ccusage after this build
- *  still reads as a product name; an empty id comes back empty. */
+ *  still reads as a product name; an empty id comes back empty.
+ *
+ *  `hasOwn` rather than truthiness (#474). The id is whatever ccusage put in its
+ *  JSON, and an inherited member is truthy: `AGENT_NAMES["constructor"]` is a
+ *  function, which would be printed beside a dollar figure instead of a name. */
 export function agentLabel(id: string): string {
   const key = id.toLowerCase();
-  if (AGENT_NAMES[key]) return AGENT_NAMES[key];
+  if (Object.hasOwn(AGENT_NAMES, key)) return AGENT_NAMES[key];
   return key ? key[0].toUpperCase() + key.slice(1) : "";
 }
 
