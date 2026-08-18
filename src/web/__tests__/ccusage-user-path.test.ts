@@ -286,6 +286,12 @@ async function quietly<T>(work: () => Promise<T>): Promise<{ value: T; lines: st
   }
 }
 
+// `--by-agent` trails every vector below as of #431: the deck asks ccusage not
+// to merge Claude Code's spend into Codex's, and appends the flag to the same
+// `daily --json --since …` it has always sent. It is spelled out in each
+// expectation rather than factored into a constant because these assertions are
+// whole-vector comparisons, and what they are for is that the whole vector is
+// visible in the file that pins it.
 describe("a ccusage the user installed themselves", () => {
   it("is what runs when there is no managed install", async () => {
     ccusageOnPath();
@@ -293,7 +299,7 @@ describe("a ccusage the user installed themselves", () => {
     const res = await fetchCcusageDaily({ since: "20260501" });
 
     expect(res.ok).toBe(true);
-    expect(calls).toEqual([{ file: ON_PATH, args: ["daily", "--json", "--since", "20260501"] }]);
+    expect(calls).toEqual([{ file: ON_PATH, args: ["daily", "--json", "--since", "20260501", "--by-agent"] }]);
   });
 
   it("is used instead of downloading a second copy of the same tool", async () => {
@@ -324,7 +330,7 @@ describe("a ccusage the user installed themselves", () => {
 
     expect(res.ok).toBe(true);
     expect(res.reason).toBeUndefined();
-    expect(calls).toEqual([{ file: ON_PATH, args: ["daily", "--json", "--since", "20260503"] }]);
+    expect(calls).toEqual([{ file: ON_PATH, args: ["daily", "--json", "--since", "20260503", "--by-agent"] }]);
   });
 
   it("still refuses under that flag when there is genuinely no ccusage anywhere", async () => {
@@ -354,7 +360,7 @@ describe("a ccusage the user installed themselves", () => {
 
     expect(res.ok).toBe(true);
     // Not one npm, not one npx: the broken halves are never even reached.
-    expect(calls).toEqual([{ file: ON_PATH, args: ["daily", "--json", "--since", "20260505"] }]);
+    expect(calls).toEqual([{ file: ON_PATH, args: ["daily", "--json", "--since", "20260505", "--by-agent"] }]);
   });
 
   it("does not displace a managed install that is already there", async () => {
@@ -395,7 +401,7 @@ describe("AGENTS_DECK_CCUSAGE", () => {
 
     await fetchCcusageDaily({ since: "20260508" });
 
-    expect(calls).toEqual([{ file: mine, args: ["daily", "--json", "--since", "20260508"] }]);
+    expect(calls).toEqual([{ file: mine, args: ["daily", "--json", "--since", "20260508", "--by-agent"] }]);
   });
 
   it("fails as itself when it names a file that is not there", async () => {
@@ -485,7 +491,14 @@ describe("what the deck says when the user's own copy is the one that failed", (
     // entry, an override and a managed install. A stale global copy shadowing a
     // good one is the likeliest way to be reading this at all.
     ccusageOnPath();
-    runPlan.push({ stderr: "ccusage: unknown option --json", code: 1 });
+    // Twice, because a failed run is two attempts as of #431: the first carries
+    // `--by-agent` and the second drops it, in case that flag was the whole
+    // objection. A real copy that cannot take `--json` refuses both of them, so
+    // two identical replies is what this machine actually does.
+    runPlan.push(
+      { stderr: "ccusage: unknown option --json", code: 1 },
+      { stderr: "ccusage: unknown option --json", code: 1 },
+    );
 
     const { value: res } = await quietly(() => fetchCcusageDaily({ since: "20260510" }));
 
@@ -504,13 +517,23 @@ describe("what the deck says when the user's own copy is the one that failed", (
     // installed is not the deck's to remove — and the retry it triggers would
     // re-run the identical spawn anyway.
     ccusageOnPath();
-    runPlan.push({ stderr: "Error: Cannot find module './lib/index.js'", code: 1 });
+    runPlan.push(
+      { stderr: "Error: Cannot find module './lib/index.js'", code: 1 },
+      { stderr: "Error: Cannot find module './lib/index.js'", code: 1 },
+    );
 
     const { value: res } = await quietly(() => fetchCcusageDaily({ since: "20260511" }));
 
     expect(res.ok).toBe(false);
     expect(userCcusage()).toEqual({ file: ON_PATH, named: false });
-    expect(calls).toHaveLength(1);
+    // Two spawns, and both of them the user's own file: the flag retry (#431)
+    // and nothing else. The rebuild this error triggers on a MANAGED install
+    // would have shown up as an `npm install` and a third spawn, which is the
+    // thing this test is here to say does not happen to somebody else's file.
+    expect(calls).toEqual([
+      { file: ON_PATH, args: ["daily", "--json", "--since", "20260511", "--by-agent"] },
+      { file: ON_PATH, args: ["daily", "--json", "--since", "20260511"] },
+    ]);
   });
 
   it("still answers a reply with no stage exactly as it always did", () => {

@@ -39,6 +39,81 @@ function providerNames(p: Providers): string | null {
 }
 
 /**
+ * The names ccusage's own agent ids do not title-case into.
+ *
+ * ccusage reports one lowercase id per CLI it read — `claude`, `codex`,
+ * `opencode`, `amp`, `droid`, `gemini` and a dozen more — and the deck prints
+ * them beside dollar figures, so they have to be the names the products go by.
+ * Only the ones a title-case cannot reach are listed: `claude` and `codex`
+ * because this deck has always called them Claude Code and Codex, and the four
+ * that carry an internal capital or a suffix in ccusage's own table. Everything
+ * else — Amp, Droid, Goose, Gemini, Grok, Kilo, Kimi, Qwen, Codebuff, Hermes —
+ * title-cases correctly and is deliberately NOT enumerated here: an id this
+ * deck has never seen is far likelier to be a CLI ccusage learned about after
+ * this line was written than a mistake, and printing it title-cased is a better
+ * answer than dropping it or shipping a table that goes stale in silence.
+ */
+const AGENT_NAMES: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  openclaw: "OpenClaw",
+  copilot: "GitHub Copilot",
+  pi: "pi-agent",
+};
+
+/** One of ccusage's agent ids, as a name to print. Unknown ids are title-cased
+ *  rather than passed through raw, so a CLI added to ccusage after this build
+ *  still reads as a product name; an empty id comes back empty. */
+export function agentLabel(id: string): string {
+  const key = id.toLowerCase();
+  if (AGENT_NAMES[key]) return AGENT_NAMES[key];
+  return key ? key[0].toUpperCase() + key.slice(1) : "";
+}
+
+/** A list of names for the middle of a sentence: "A", "A and B", "A, B and C".
+ *  No Oxford comma, matching providerNames above, which has said "Claude Code
+ *  and Codex" since it was written. */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * What the usage-history modal says it is showing, under its title.
+ *
+ * The line used to be the constant "via ccusage · local Claude / Codex logs",
+ * and #431 is about the gap between its two halves: it named two CLIs and the
+ * chart below then added them together, so the subtitle promised a distinction
+ * the panel refused to make. It was also wrong in a second direction nobody had
+ * noticed — ccusage reads sixteen CLIs, not two, so a machine running OpenCode
+ * had its spend in that number under a subtitle that denied it existed.
+ *
+ * So the line is derived, and from the run when there is one. `found` is the
+ * agent ids the range actually came back with, which is a MEASUREMENT of whose
+ * logs are in the figures on screen; `providers` is what the deck was started
+ * to watch, which is a different fact and can honestly disagree — a deck run
+ * with `--no-codex` still gets Codex spend out of ccusage, because ccusage
+ * reads the logs on the machine rather than the deck's flags.
+ *
+ * The measurement wins when it exists, and `providers` is the fallback for
+ * every state where there is nothing to measure: the first render, a run still
+ * going, a run that failed, an empty range, and a ccusage too old to report the
+ * split at all. That is the case #402 put `providers` in /api/health for — it
+ * is the only thing that can keep a Claude-only machine from being told about
+ * Codex, and a Codex-only machine from being told about Claude Code, before any
+ * data exists to say otherwise.
+ *
+ * A deck watching neither CLI names none, for the same reason providerNames
+ * returns null there: "local logs" claims nothing that can turn out to be
+ * false.
+ */
+export function usageSubtitle(p: Providers, found: readonly string[] = []): string {
+  const names = found.length ? joinNames(found.map(agentLabel)) : providerNames(p);
+  return names ? `via ccusage · local ${names} logs` : "via ccusage · local agent logs";
+}
+
+/**
  * Where this deck's events physically come from.
  *
  * Two capture paths, and only one of them is hooks: Claude Code posts through

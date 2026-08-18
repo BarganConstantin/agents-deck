@@ -100,7 +100,20 @@ const PERMANENT_CODES = new Set([
   "invalid_grant",
 ]);
 
-/** Decode a JWT payload. Returns null for anything that isn't a 3-part JWT. */
+/**
+ * Decode a JWT payload. Returns null for anything that isn't a 3-part JWT.
+ *
+ * Exported for its test and not for a caller (#383). Its two readers are
+ * `expiryMs` below — which decides whether the deck spends the single-use
+ * refresh token, the one mistake in this file that costs the user a `codex
+ * login` — and `identityFrom`, which reads the plan, the account id and the
+ * email out of the id_token. Both take the answer from a file the deck did not
+ * write and cannot validate, so every way this can be handed something that is
+ * not a JWT is a real input, and neither reader can be driven far enough to
+ * exercise them: `expiryMs` collapses the whole result to one number and
+ * `identityFrom` needs a full auth file plus a refresh round-trip to reach.
+ * See codex-jwt-decode.test.ts.
+ */
 export function decodeJwt(token) {
   if (typeof token !== "string") return null;
   const parts = token.split(".");

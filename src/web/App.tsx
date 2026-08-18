@@ -3200,7 +3200,12 @@ function Inner() {
       )}
 
       {openedTool && <ToolModal tool={openedTool} onClose={() => setOpenedToolId(null)} />}
-      {usageHistoryOpen && <UsageHistoryModal onClose={() => setUsageHistoryOpen(false)} />}
+      {/* `providers` is what the modal's subtitle falls back to until a ccusage
+          run has said whose logs are actually in the figures (#431). It is not
+          a gate: ccusage reads the logs on this machine rather than this deck's
+          flags, so a deck started with --no-codex can still be shown Codex
+          spend, and the subtitle follows the data when there is any. */}
+      {usageHistoryOpen && <UsageHistoryModal providers={providers} onClose={() => setUsageHistoryOpen(false)} />}
       {contextFor && (() => {
         const root = stateRef.current.agents.get(contextFor);
         if (!root) return null;

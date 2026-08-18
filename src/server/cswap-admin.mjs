@@ -110,7 +110,19 @@ export function newSlot(before, after) {
   return fresh.length === 1 ? fresh[0] : null;
 }
 
-/** Anthropic's own view of who is signed in. Null when it cannot be read. */
+/**
+ * Anthropic's own view of who is signed in. Null when it cannot be read.
+ *
+ * Exported for its test rather than for a caller (#383). Both callers are inside
+ * the login flow and neither can show what was parsed: `spawnLogin` keeps only
+ * `identity?.email` as the address to restore to, and `submitLoginCode` turns
+ * the whole thing into a pass/fail — a null there is the difference between a
+ * sign-in the deck accepts and one it reports as "signed in, but the claude CLI
+ * still reports nobody logged in". The success path, where the email read here
+ * is what matches the new credential to a cswap slot, is reachable only with a
+ * real signed-in CLI on the machine running the suite. See
+ * cswap-identity.test.ts.
+ */
 export async function currentIdentity() {
   const r = await run(await claudeBin(), ["auth", "status", "--json"], { timeout: 20_000 });
   if (!r.ok) return null;

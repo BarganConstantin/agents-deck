@@ -87,7 +87,26 @@ export async function cswapBin() {
   return "cswap";   // not found; leave the bare name so errors read sensibly
 }
 
-/** Forget the cached resolution — call after installing. */
+/**
+ * Forget the cached resolution — call after installing.
+ *
+ * WHAT IS ACTUALLY STALE HERE (#383). Note that `cswapBin` above memoizes only
+ * SUCCESS: the "not found" answer is the bare name returned without ever being
+ * written to `_bin`, so a lookup that found nothing is already re-run on the
+ * next call and there is no negative result for this to clear. What it clears is
+ * a positive one — a path that resolved, was cached, and has since been
+ * superseded. That is not hypothetical on the install path: `cswapVersion` runs
+ * `--version` a SECOND time under the default timeout after `cswapBin` has
+ * already cached the copy its own 8s probe accepted, so a copy that is present
+ * but too slow, half-written or broken caches a path and still reports no
+ * version — and the install that follows lands a working cswap somewhere the
+ * cached path may not point at. Clearing is cheap; a deck driving the wrong
+ * binary for the life of the process is not.
+ *
+ * Exported for its test rather than for a caller (#383): the one caller is
+ * ensureCswap below, whose return value says nothing about which binary the
+ * following twenty account operations will be sent to. See cswap-bin-memo.test.ts.
+ */
 export function resetCswapBin() { _bin = null; }
 
 /** Installed version string, or null when cswap cannot be found. */
@@ -327,7 +346,11 @@ export async function ensureCswap() {
 
   const result = await installCswap();
   if (!result.ok) return { state: "unavailable", ...result };
-  resetCswapBin();   // it exists now; the earlier "not on PATH" answer is stale
+  // Something was just installed, so any path resolved before it is a guess made
+  // against a different filesystem. Nothing is cached when the earlier lookup
+  // found nothing — see resetCswapBin — but a lookup that DID resolve, to a copy
+  // whose `--version` then failed, is exactly the case that got us here.
+  resetCswapBin();
 
   // Freshly installed tools land in ~/.local/bin, which may not be on the PATH
   // of the shell that launched us — cswapBin looks there directly, so this
