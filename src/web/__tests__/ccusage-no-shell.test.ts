@@ -68,10 +68,19 @@ const prev = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   NO_INSTALL: process.env.AGENTS_DECK_NO_INSTALL,
+  PATH: process.env.PATH,
+  CCUSAGE: process.env.AGENTS_DECK_CCUSAGE,
 };
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
 delete process.env.AGENTS_DECK_NO_INSTALL;
+// #433 added a third runner — a ccusage the user provided, at
+// AGENTS_DECK_CCUSAGE or on PATH — and it is tried before the npx fallback this
+// file is about. Both are emptied so the fallback is what gets reached: a
+// developer with `npm i -g ccusage` would otherwise never spawn npx here, and
+// the file would be checking nothing on their machine.
+process.env.PATH = FAKE_HOME;
+delete process.env.AGENTS_DECK_CCUSAGE;
 
 // @ts-expect-error — .mjs server module, no types
 const { fallbackSpec, fetchCcusageDaily } = await import("../../server/ccusage.mjs");
@@ -80,7 +89,8 @@ const PKG_DIR = join(FAKE_HOME, ".agents-deck", "ccusage", "node_modules", "ccus
 
 afterAll(() => {
   for (const [key, was] of [["HOME", prev.HOME], ["USERPROFILE", prev.USERPROFILE],
-    ["AGENTS_DECK_NO_INSTALL", prev.NO_INSTALL]] as const) {
+    ["AGENTS_DECK_NO_INSTALL", prev.NO_INSTALL], ["PATH", prev.PATH],
+    ["AGENTS_DECK_CCUSAGE", prev.CCUSAGE]] as const) {
     if (was === undefined) delete process.env[key];
     else process.env[key] = was;
   }

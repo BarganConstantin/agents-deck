@@ -347,8 +347,30 @@ function trimTools(state: GraphState, a: AgentNodeData): void {
     for (const t of dropped) {
       // An evicted call can still be in-flight; leaving it in the live index
       // would strand an entry no PostToolUse or stale sweep can ever reach.
-      state.toolIndex.delete(t.id);
-      state.toolOwner.delete(t.id);
+      //
+      // Only where the maps still point at THIS call, which is the guard #443
+      // put on `releaseToolIds` and flagged as missing here. A `tool_use_id` does
+      // not belong to one `ToolCall` for good: a `PreToolUse` re-delivered after
+      // its call settled finds nothing in `toolIndex` and pushes a second call
+      // under the same id, re-pointing both maps at it. Deleting by id alone
+      // then let the eviction of the OLD copy — which this loop reaches on a
+      // window that is 200 calls wide and says nothing about the new one — strand
+      // the live call: gone from `toolIndex`, so its own `PostToolUse` could only
+      // find it by the resurrection scan and the stale sweep could never settle
+      // it, and gone from `toolOwner`, so its usage would be attributed by the
+      // `tc.agentId` fallback instead of by the map.
+      //
+      // `toolIndex` decides for both maps rather than each guarding itself,
+      // because the two are written and cleared as a pair and only the index
+      // identifies the call itself. `releaseToolIds` can ask `toolOwner` about
+      // the agent id it is evicting; here the surviving copy can sit on the very
+      // agent whose history is being trimmed — `resolveOwner` hands a
+      // re-delivered `PreToolUse` back to the root whenever no subagent is live —
+      // so owner equality would hold for both copies and guard nothing.
+      if (state.toolIndex.get(t.id) === t) {
+        state.toolIndex.delete(t.id);
+        state.toolOwner.delete(t.id);
+      }
     }
   }
   // Entries below the blob window are always trimmed already, so this walks
@@ -1313,6 +1335,43 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
         }
       }
       if (!tc) break;
+      // Everything below this line runs exactly once per call, because a second
+      // copy of one outcome is not a second outcome.
+      //
+      // This event is the only one of the four the file hardens against
+      // re-delivery that does ARITHMETIC. `PreToolUse` refreshes a known id in
+      // place so `toolCount` advances once, `UserPromptSubmit` declines to
+      // re-append a prompt it already has, and `pushActive` declines to re-push
+      // a key — but `addUsage` at the bottom of this block is `+=`, so every
+      // surplus copy added the call's tokens to its owner again, and cost is
+      // computed from those tokens. `UsageObserved` overwrites the root with
+      // cumulative totals and does eventually correct one, but it needs a
+      // `transcript_path` and is throttled per session, and it never touches a
+      // subagent at all — so on a subagent, or on a session whose hooks have
+      // stopped, the inflated figure is what the deck bills forever.
+      //
+      // The discriminator is `outcomeApplied` and it has to be, because every
+      // cheaper test is wrong. `endedAt != null` is what the sweep writes too,
+      // so refusing on it would delete the whole resurrection path #436 depends
+      // on: a call the sweep gave up on is the case where a late outcome MUST
+      // land and un-say the failure. Absence from `toolIndex` is what both the
+      // sweep and the first delivery of this event leave behind, so `resurrected`
+      // is true for a late outcome and for a duplicate alike and separates
+      // nothing. Keeping the entry in `toolIndex` to recognise the second copy is
+      // not available either — #361 reads that map as "exactly the calls that
+      // have not settled" to decide which subagent a permission prompt belongs
+      // to, and a settled call left in it outranks the blocked one. What is left
+      // is to record that an outcome was applied, on the call, at the moment it
+      // is applied, which is what the sweep by construction never does.
+      //
+      // It is the OBJECT that carries the flag and not the id, which matters
+      // because one `tool_use_id` can name two `ToolCall`s: a `PreToolUse`
+      // re-delivered after its call settled finds nothing in `toolIndex` and
+      // pushes a fresh call on whichever agent is live by then (#443). An id-keyed
+      // "already seen" set would swallow the second object's first real outcome;
+      // a flag on the object cannot.
+      if (tc.outcomeApplied) break;
+      tc.outcomeApplied = true;
       tc.endedAt = now;
       tc.ok = name === "PostToolUse";
       // A response arriving for an already-trimmed call must not re-attach the

@@ -248,10 +248,20 @@ const prevEnv = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   AGENTS_DECK_NO_INSTALL: process.env.AGENTS_DECK_NO_INSTALL,
+  PATH: process.env.PATH,
+  AGENTS_DECK_CCUSAGE: process.env.AGENTS_DECK_CCUSAGE,
 };
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
 delete process.env.AGENTS_DECK_NO_INSTALL;
+// #433 put a third runner in front of the npx fallback — a ccusage the user
+// provided, at AGENTS_DECK_CCUSAGE or on PATH. The server half below is about
+// the managed install failing and npx failing behind it, and neither can be
+// reached on a machine that has its own ccusage, so this file supplies a PATH
+// that has none. Note that the shimPath cases above are unaffected either way:
+// they inject their whole Windows disk.
+process.env.PATH = FAKE_HOME;
+delete process.env.AGENTS_DECK_CCUSAGE;
 
 // @ts-expect-error — .mjs server module, no types
 const { fetchCcusageDaily } = await import("../../server/ccusage.mjs");

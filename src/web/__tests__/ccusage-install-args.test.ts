@@ -41,10 +41,19 @@ const prev = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   NO_INSTALL: process.env.AGENTS_DECK_NO_INSTALL,
+  PATH: process.env.PATH,
+  CCUSAGE: process.env.AGENTS_DECK_CCUSAGE,
 };
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
 delete process.env.AGENTS_DECK_NO_INSTALL;
+// #433: primeCcusage now uses a ccusage the user already has — at
+// AGENTS_DECK_CCUSAGE or on PATH — rather than fetching a second copy of it.
+// This file is about the install it starts when there is no such thing, so
+// there must be no such thing, whatever the developer running the suite has
+// installed globally.
+process.env.PATH = FAKE_HOME;
+delete process.env.AGENTS_DECK_CCUSAGE;
 
 // @ts-expect-error — .mjs server module, no types
 const { installSpec, primeCcusage } = await import("../../server/ccusage.mjs");
@@ -55,7 +64,8 @@ const INSTALL_ARGS = ["install", "ccusage@latest", "--prefix", PREFIX,
 
 afterAll(() => {
   for (const [key, was] of [["HOME", prev.HOME], ["USERPROFILE", prev.USERPROFILE],
-    ["AGENTS_DECK_NO_INSTALL", prev.NO_INSTALL]] as const) {
+    ["AGENTS_DECK_NO_INSTALL", prev.NO_INSTALL], ["PATH", prev.PATH],
+    ["AGENTS_DECK_CCUSAGE", prev.CCUSAGE]] as const) {
     if (was === undefined) delete process.env[key];
     else process.env[key] = was;
   }
