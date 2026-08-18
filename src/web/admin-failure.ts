@@ -170,7 +170,9 @@ export const CCUSAGE_REASONS: Record<string, string> = {
 // spellings, /bin/sh's "npx: command not found" and dash's "npx: not found",
 // still reachable from an older deck. All four arrive as run_failed carrying
 // that line, and "ccusage could not report usage" is true, useless, and
-// unfixable by trying again.
+// unfixable by trying again. All four are also a machine that does not HAVE
+// npx; the fifth way that sentence gets said — npx present and broken — is
+// npxBroken below, and it needs a different remedy.
 const NO_NPX =
   "ccusage could not be started — npx is not on this deck's PATH. Install Node's npm/npx, or put ccusage on PATH yourself";
 
@@ -180,12 +182,55 @@ function npxMissing(text: string): boolean {
     && /(command not found|not found|not recognized|ENOENT)/i.test(text);
 }
 
+// The fifth shape, and the one the four above cannot see: npm and npx are on
+// PATH, they launch, and NODE fails to load the script the shim points at.
+// Reported from Windows (#432) — `%~dp0` inside npm.cmd and npx.cmd had
+// resolved to the user's home root, so both shims ran and both died with
+//
+//     Error: Cannot find module 'C:\Users\…\node_modules\npm\bin\npx-cli.js'
+//     code: 'MODULE_NOT_FOUND'
+//
+// None of npxMissing's four alternates matches that: `MODULE_NOT_FOUND` is not
+// `not found`, the underscore is not a space. So it fell through to
+// CCUSAGE_REASONS.run_failed — "ccusage could not report usage — try again" —
+// and trying again is the one thing that cannot work when npm is broken on
+// disk. Every retry re-runs the identical spawn for the identical stack.
+//
+// It gets its own sentence rather than a fifth alternate on NO_NPX because the
+// remedy is a different one. NO_NPX says npx is not on PATH and to install
+// Node's npm/npx; here npx IS on PATH and installed, and what is wrong is the
+// installation itself — so the answer is to repair it, and saying "not on this
+// deck's PATH" to someone who can see it on their PATH is the kind of wrong
+// that makes a reader stop believing the rest.
+const NPX_BROKEN =
+  "ccusage could not be started — npm/npx is installed on this machine but damaged: Node could not load the script the shim points at. Reinstall Node (npm and npx come with it), then reopen this modal";
+
+/**
+ * npm or npx present, launched, and unable to load its own code.
+ *
+ * Both halves are required. The module-resolution wording alone would also
+ * match ccusage failing to load something of ITS own — a half-written managed
+ * install under ~/.agents-deck, which ccusage.mjs now rebuilds by itself and
+ * which has nothing to do with the user's Node — and blaming the machine's npm
+ * for that would send someone to reinstall Node over a cache directory the deck
+ * owns. Naming npm or npx is what makes the sentence about their installation:
+ * the shim's own script is the file in the message, `npm-prefix.js` or
+ * `npx-cli.js`, and a Windows path separator is a word boundary like any other.
+ */
+function npxBroken(text: string): boolean {
+  return /\bnpm\b|\bnpx\b/i.test(text)
+    && /\b(?:ERR_)?MODULE_NOT_FOUND\b|cannot find (?:module|package)/i.test(text);
+}
+
 /**
  * The one sentence to show for a failed ccusage run — never the raw output.
  * Same ranking as explainCommandFailure: the map speaks, and `error` stays
  * evidence the modal hangs on the status line's title.
  */
 export function explainCcusageFailure(out: CcusageFailure, fallback: string): string {
+  // Broken before missing: they cannot both be true of one machine, and this is
+  // the more specific claim of the two.
+  if (npxBroken(commandOutput(out))) return NPX_BROKEN;
   if (npxMissing(commandOutput(out))) return NO_NPX;
   if (out?.reason && CCUSAGE_REASONS[out.reason]) return CCUSAGE_REASONS[out.reason];
   // A build talking to a newer server still names the thing that happened,
