@@ -47,7 +47,7 @@ import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import { versionChipLabel, versionChipTitle, versionNoticeLabel } from "./version-chip";
 import { emptyScope } from "./scope";
 import { ASSUMED, readProviders, type Providers } from "./providers";
-import { captureHints, eventsCountTitle, sessionsCountTitle } from "./provider-copy";
+import { captureHints, eventsCountTitle, finishSoundTitle, sessionsCountTitle } from "./provider-copy";
 import { pauseButton, statusPill } from "./status-pill";
 import { searchStatus, shouldDimUnmatched } from "./search-status";
 import { matchesQuery, SEARCH_PLACEHOLDER } from "./search-match";
@@ -2528,8 +2528,17 @@ function Inner() {
               carrying it. This installs or removes a Stop hook on disk: there
               is no region it discloses and nothing on screen appears when it
               goes on, so "expanded" would be a promise of content that does not
-              exist. A setting that is on or off is what "pressed" means. */}
-          {soundOn !== null && (
+              exist. A setting that is on or off is what "pressed" means.
+
+              Gone without Claude Code, by the same rule the accounts button
+              below states: this switch is one entry in Claude Code's
+              settings.json, so on a machine that has no Claude Code it is a
+              control whose only effect is to write a hook nothing will ever
+              execute. Where Claude Code IS here it stays, and the tooltip says
+              which turns it covers — see finishSoundTitle, which also records
+              the two ways of making Codex audible that were considered and why
+              neither is this fix (#394). */}
+          {providers.claude && soundOn !== null && (
             <button
               className="btn icon-btn"
               onClick={(e) => {
@@ -2552,18 +2561,15 @@ function Inner() {
                 toggleSound();
               }}
               disabled={soundBusy}
-              title={
-                (soundOn
-                  ? "Sound on turn finish: on — click to remove the hook"
-                  : "Sound on turn finish: off — click to add a Stop hook") +
-                (soundClash > 0
-                  ? `\n\n${soundClash} sound hook${soundClash > 1 ? "s" : ""} of your own in settings.json also run${soundClash > 1 ? "" : "s"} here.`
-                  : "") +
-                (soundParked > 0
-                  ? `\n\n${soundParked} of your own sound hook${soundParked > 1 ? "s were" : " was"} set aside so this switch actually controls the sound. Nothing was deleted — shift-click to put ${soundParked > 1 ? "them" : "it"} back.`
-                  : "")
-              }
-              aria-label="Toggle finish sound"
+              title={finishSoundTitle(providers, { on: soundOn, clash: soundClash, parked: soundParked })}
+              /* The name a screen reader announces, and it names the CLI too.
+                 `title` reaches assistive tech only as a description, which is
+                 announced later than the name and by no means everywhere — so
+                 the one qualification a Codex user needs cannot live only
+                 there. Static rather than derived from `providers` because the
+                 button does not render at all without Claude Code, which makes
+                 "Claude Code" true every time this string is read. */
+              aria-label="Toggle Claude Code finish sound"
               aria-pressed={soundOn}
             >
               <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>

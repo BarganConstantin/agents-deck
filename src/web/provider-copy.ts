@@ -154,3 +154,79 @@ export function captureHints(p: Providers): CaptureHint[] {
 
   return [claude, codex];
 }
+
+/** What the finish-sound toggle knows about itself, from /api/sound-hook. */
+export interface FinishSoundState {
+  /** Whether our Stop entry is currently in settings.json. */
+  on: boolean;
+  /** Sound hooks the user wrote themselves that also fire on this machine. */
+  clash: number;
+  /** Sound hooks of theirs the toggle has set aside so it controls the sound. */
+  parked: number;
+}
+
+/**
+ * The finish-sound toggle's tooltip — including the turns it does NOT cover.
+ *
+ * This switch is one line in Claude Code's settings.json: a `Stop` hook whose
+ * command is notify.js, which Claude Code itself executes at the end of a turn.
+ * Nothing about that reaches Codex. The deck installs no Codex hooks — it
+ * stopped in the commit that introduced Codex support, because they do not fire
+ * reliably on Windows — and reads the rollout JSONL files instead, after the
+ * fact. So a Codex user turned this on, watched turn after turn finish in
+ * silence, and had nothing anywhere to read it against (#394). An unqualified
+ * "Sound on turn finish" is the whole of the problem: the silence is correct
+ * behaviour and it is indistinguishable from a broken toggle.
+ *
+ * Two other endings were available and both were rejected:
+ *
+ *   - Play it in the browser with Web Audio. The hook plays with no tab open at
+ *     all, because it runs on the machine; a tab cannot. It would also be
+ *     silent in a tab that has never been clicked, which autoplay policy makes
+ *     the normal state of a monitoring deck left in the background — the exact
+ *     tab this feature exists for. One switch would then mean two different
+ *     promises, and the weaker one only where the user is not looking.
+ *
+ *   - Spawn notify.js from the server when the rollout watcher emits its
+ *     synthetic Codex `Stop` (#395 added that event, so the moment is known
+ *     now). Closer, but the switch still would not mean one thing: the Claude
+ *     sound is a hook on the machine, so it fires once whether zero decks or
+ *     four are running and whatever `--workspace` they were given, while a
+ *     server-side sound fires once PER deck tailing that rollout (the
+ *     writesCodexLog election that de-dupes the log only runs under --persist),
+ *     only inside that deck's workspace, and not at all when no deck is up. And
+ *     the switch has nowhere honest to keep its state for a machine that has no
+ *     Claude Code: turning it on writes a `Stop` hook into a settings.json for a
+ *     CLI that is not installed, which is the class of bug #402 and #404 just
+ *     removed. That is a feature with its own design, not this defect.
+ *
+ * So the toggle stays what it is and says what it is. The sentence names the
+ * mechanism, not just the limit, because "Claude Code only" is a fact a user can
+ * act on and "sound" alone is not — and it is added only on a machine that has a
+ * Codex to be silent about. On a Claude-only machine there is nothing to warn
+ * anyone off, and the deck does not draw the button at all without Claude Code.
+ */
+export function finishSoundTitle(p: Providers, s: FinishSoundState): string {
+  const lead = s.on
+    ? "Sound on turn finish: on — click to remove the hook"
+    : "Sound on turn finish: off — click to add a Stop hook";
+
+  // First, ahead of the settings.json footnotes below: those are about hooks the
+  // user wrote, and this is about which of their turns the switch covers at all.
+  const scope = p.codex
+    ? "\n\nClaude Code turns only. The sound is a Stop hook Claude Code runs itself when a turn ends; " +
+      "the deck installs nothing for Codex and reads its rollout files after the fact, " +
+      "so Codex turns finish in silence."
+    : "";
+
+  const clash = s.clash > 0
+    ? `\n\n${s.clash} sound hook${s.clash > 1 ? "s" : ""} of your own in settings.json also run${s.clash > 1 ? "" : "s"} here.`
+    : "";
+
+  const parked = s.parked > 0
+    ? `\n\n${s.parked} of your own sound hook${s.parked > 1 ? "s were" : " was"} set aside so this switch actually controls the sound. ` +
+      `Nothing was deleted — shift-click to put ${s.parked > 1 ? "them" : "it"} back.`
+    : "";
+
+  return lead + scope + clash + parked;
+}
