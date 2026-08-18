@@ -35,6 +35,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { PRODUCT } from "./brand.mjs";
+import { resetLabelIso } from "./reset-label.mjs";
 
 const USAGE_URL   = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
@@ -83,15 +84,13 @@ async function readOAuthToken() {
 }
 
 // ISO-8601 → "Jun 19, 1:19pm" (local time, matching the CLI display format).
-function fmtResetIso(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return null;
-  // "Jun 19, 1:19 PM" → "Jun 19, 1:19pm" (matches the CLI display format)
-  return d.toLocaleString("en-US", {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
-  }).replace(/\s+(AM|PM)/, (_, p) => p.toLowerCase());
-}
+//
+// The body moved to reset-label.mjs in #374: codex-quota.mjs had a copy that
+// claimed in its own comment to match this one and did not, so the Codex lanes
+// and the Claude lanes printed the same instant two different ways in the same
+// panel. This rendering is the one both surfaces use now. The alias stays so
+// the four call sites below read the way they always have.
+const fmtResetIso = resetLabelIso;
 
 function isoToSec(iso) {
   if (!iso) return null;

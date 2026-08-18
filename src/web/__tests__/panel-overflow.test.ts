@@ -45,6 +45,10 @@ import { fileURLToPath } from "node:url";
 
 const css = readFileSync(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
 const usageSrc = readFileSync(fileURLToPath(new URL("../components/UsagePanel.tsx", import.meta.url)), "utf8");
+// The stacked cost bar, which this panel drew inline until #374 merged the
+// three copies of it into one component. The panel still renders it inside its
+// own subtree, which is what the descendant rule below depends on.
+const costBarSrc = readFileSync(fileURLToPath(new URL("../components/CostBar.tsx", import.meta.url)), "utf8");
 const accountsSrc = readFileSync(fileURLToPath(new URL("../components/AccountsPanel.tsx", import.meta.url)), "utf8");
 const aliasSaveSrc = readFileSync(fileURLToPath(new URL("../alias-save.ts", import.meta.url)), "utf8");
 const cswapSrc = readFileSync(fileURLToPath(new URL("../../server/cswap-admin.mjs", import.meta.url)), "utf8");
@@ -58,6 +62,7 @@ const strip = (src: string) =>
 const bare = strip(css);
 const accounts = strip(accountsSrc);
 const usage = strip(usageSrc);
+const costBar = strip(costBarSrc);
 
 // ── the stylesheet, as rules ────────────────────────────────────────────────
 
@@ -212,18 +217,25 @@ describe("the cost bar inside the usage panel", () => {
     expect(usage).toMatch(/className="usage-panel"/);
     // The role between the class and the label arrived with #381, which is what
     // makes that label reach the accessibility tree at all — a <div> with no
-    // role resolves to `generic` and a generic element cannot be named. Nothing
-    // this test is about changed with it; the assertion is still "the bar is
-    // written in THIS file", which is what makes the scoped width rule run.
-    expect(usage).toMatch(/<div className="cost-bar" role="img" aria-label="Cost breakdown">/);
+    // role resolves to `generic` and a generic element cannot be named.
+    //
+    // The bar itself left this file with #374, which merged the three copies of
+    // it into components/CostBar.tsx. Nothing this test is about changed —
+    // `.usage-panel .cost-bar` is a DESCENDANT selector, and the panel still
+    // renders the bar inside its own subtree, which is the whole claim. What
+    // moved is where the assertion has to look: this file for the element being
+    // drawn under the panel's root, and the component for the class that rule
+    // matches on.
+    expect(usage).toMatch(/<CostBar cost=\{totalCost\} \/>/);
+    expect(costBar).toMatch(/className=\{large \? "cost-bar cost-bar-lg" : "cost-bar"\} role="img" aria-label="Cost breakdown">/);
     // The last segment is the one an overhanging bar clips, and it is the
     // priciest token class in the panel.
-    const segments = [...usage.matchAll(/"cb-(input|output|cache-r|cache-w)"/g)].map(m => m[1]);
+    const segments = [...costBar.matchAll(/"cb-(input|output|cache-r|cache-w)"/g)].map(m => m[1]);
     expect(segments).toEqual(["input", "output", "cache-r", "cache-w"]);
     // Segment widths are percentages OF THE BAR, so the bar's right edge is the
     // last segment's right edge — there is no slack inside to absorb an
     // overhang.
-    expect(usage).toMatch(/style=\{\{ width: `\$\{pct\}%` \}\}/);
+    expect(costBar).toMatch(/style=\{\{ width: `\$\{pct\}%` \}\}/);
   });
 });
 

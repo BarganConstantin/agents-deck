@@ -9,6 +9,8 @@ import type { AgentState } from "../types";
 import { fmtTokens } from "../token-format";
 import type { Providers } from "../providers";
 import { shortModel } from "../model-label";
+import { resetCountdown } from "../relative-time";
+import CostBar from "./CostBar";
 import { stateLabel } from "./AgentNode";
 
 // ── Quota types ────────────────────────────────────────────────────────────
@@ -77,59 +79,15 @@ interface SessionRow {
  *  is only the first of those. */
 const UNKNOWN_MODEL = "__unknown__";
 
-function CostBar({ cost }: { cost: CostBreakdown }) {
-  const total = cost.total;
-  if (total <= 0) return null;
-  const seg = (val: number, cls: string, label: string) => {
-    if (val <= 0) return null;
-    const pct = (val / total) * 100;
-    return (
-      <span
-        key={cls}
-        className={`cb-seg ${cls}`}
-        style={{ width: `${pct}%` }}
-        title={`${label}: ${fmtCost(val)} (${pct.toFixed(0)}%)`}
-      />
-    );
-  };
-  return (
-    // role="img", and it is what makes the aria-label beside it exist at all
-    // (#381). #381 reported this defect on two panel roots; a sweep of every
-    // aria-label in the bundle found it three more times, all of them this bar,
-    // which is written out three times in three files (that duplication is
-    // #374's). A <div> with no role resolves to `generic`, and a generic
-    // element cannot be named — the label has been dropped on the floor here
-    // since the bar was written.
-    // img is the right role for THIS one and the wrong role for the usage
-    // history's chart, which looks identical and is not: img makes the whole
-    // subtree presentational, which is a lie when the subtree holds focusable
-    // buttons and the plain truth when it holds four coloured spans that
-    // nothing can reach. See UsageHistoryModal for the other half of that.
-    // What the label SAYS — a category rather than the figures the segments
-    // are drawn from — is a separate question and a copy one; this is the
-    // change that makes it possible for it to say anything.
-    <div className="cost-bar" role="img" aria-label="Cost breakdown">
-      {seg(cost.input, "cb-input", "input")}
-      {seg(cost.output, "cb-output", "output")}
-      {seg(cost.cacheRead, "cb-cache-r", "cache read")}
-      {seg(cost.cacheWrite, "cb-cache-w", "cache write")}
-    </div>
-  );
-}
+// The stacked cost bar this panel drew is components/CostBar.tsx now — it was
+// written out here, in App.tsx and in SessionSummary.tsx, and #381's role fix
+// had to be made three times because of it (#374). The reasoning behind the
+// role, which was written in this file, moved to the component with it.
+//
+// Its countdown went to relative-time.ts for the same reason: the accounts
+// panel had one too, and the two render the same quota reset.
 
-// ── Countdown + pace helpers ───────────────────────────────────────────────
-function fmtCountdown(resetAtSec: number, nowSec: number): string | null {
-  const diff = resetAtSec - nowSec;
-  if (diff <= 0) return null;
-  const h = Math.floor(diff / 3600);
-  const m = Math.floor((diff % 3600) / 60);
-  if (h > 23) {
-    const d = Math.floor(diff / 86400);
-    const rh = Math.floor((diff % 86400) / 3600);
-    return `${d}d ${rh}h`;
-  }
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
+// ── Pace helpers ───────────────────────────────────────────────────────────
 
 interface PaceInfo {
   label: string;
@@ -188,7 +146,7 @@ function QuotaBar({ pct, label, reset, resetAt, windowSec, limitReached, nowSec 
   // minimum 2% visual fill so a 0% bar is still visible as a thin sliver
   const fillW    = capped === 0 ? 2 : capped;
 
-  const countdown = resetAt ? fmtCountdown(resetAt, nowSec) : null;
+  const countdown = resetAt ? resetCountdown(resetAt, nowSec) : null;
   const pace = (resetAt && windowSec) ? computePace(capped, resetAt, windowSec, nowSec) : null;
 
   return (

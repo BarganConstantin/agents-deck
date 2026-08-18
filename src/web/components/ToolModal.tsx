@@ -1,17 +1,15 @@
 import React from "react";
 import type { ToolCall } from "../types";
 import { useModalDismiss } from "./use-modal-dismiss";
+// The row that opens this dialog printed the same milliseconds one decimal
+// place coarser, so a 1.24s tool read "1.2s" there and "1.24s" here (#374).
+// One function now; the sentinel below is the only thing that still differs.
+import { toolDuration } from "../duration";
 
 function safeJson(v: unknown): string {
   if (v == null) return "(none)";
   if (typeof v === "string") return v;
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
-}
-
-function dur(t: ToolCall): string {
-  if (t.endedAt == null) return "in-flight…";
-  const ms = t.endedAt - t.startedAt;
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
 
 export default function ToolModal({
@@ -53,7 +51,7 @@ export default function ToolModal({
             <span className="modal-tool-id" title={tool.id}>{tool.id.slice(0, 12)}…</span>
           </div>
           <div className="modal-actions">
-            <span className="modal-dur">{dur(tool)}</span>
+            <span className="modal-dur">{toolDuration(tool, "in-flight…")}</span>
             <button className="btn icon-btn" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
           </div>
         </header>

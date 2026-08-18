@@ -8,6 +8,13 @@ import { codexApprovalTell } from "../codex-approval";
 // React component behind it. See model-label.ts for why the move happened with
 // that fix rather than with #374's wider consolidation.
 import { shortModel } from "../model-label";
+// The card's token count, which used to be a private three-tier `fmtTok` here —
+// byte-identical to the two copies #323 deleted, and the fourth one it missed
+// (#374). See token-format.ts for the tier it did not have.
+import { fmtTokens } from "../token-format";
+// The card's elapsed clock, which used to be declared in this file and which
+// the detail panel wrote out again, one tier short. See duration.ts.
+import { elapsed } from "../duration";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
@@ -61,16 +68,6 @@ export function costBreakdownTooltip(usage: TokenUsage, modelId: string | undefi
   ].join("\n");
 }
 import type { AgentNodeData, TokenUsage, ToolCall, WaitingBlock } from "../types";
-
-function elapsed(start: number, end: number | undefined, now: number): string {
-  const ms = (end ?? now) - start;
-  if (ms < 1000) return `${Math.max(0, ms)}ms`;
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rs = s % 60;
-  return `${m}m ${String(rs).padStart(2, "0")}s`;
-}
 
 export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>) {
   const now = data.now ?? Date.now();
@@ -181,7 +178,7 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
         {inflight > 0 && <span className="inflight-meta"><b>{inflight}</b> in-flight</span>}
         {(data.usage.inputTokens + data.usage.outputTokens) > 0 && (
           <span className="tokens-meta" title={`in:${data.usage.inputTokens}  out:${data.usage.outputTokens}  cache-r:${data.usage.cacheReadTokens}  cache-c:${data.usage.cacheCreateTokens}${(data.usage.reasoningOutputTokens ?? 0) > 0 ? `  reasoning:${data.usage.reasoningOutputTokens}` : ""}`}>
-            <b>{fmtTok(data.usage.inputTokens + data.usage.outputTokens)}</b> tok
+            <b>{fmtTokens(data.usage.inputTokens + data.usage.outputTokens)}</b> tok
           </span>
         )}
         {data.model && (() => {
@@ -296,12 +293,6 @@ function WaitingRow({ waiting, now }: { waiting: WaitingBlock; now: number }) {
       <b>{elapsed(waiting.since, undefined, now)}</b>
     </div>
   );
-}
-
-function fmtTok(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 /** Sparkline of tool starts per bucket over the last 60s. Most-recent

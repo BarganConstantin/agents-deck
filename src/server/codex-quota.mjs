@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { CODEX_HOME } from "./codex-dir.mjs";
 import { getCodexAuth, forceCodexRefresh, isCredentialHost } from "./codex-auth.mjs";
 import { PRODUCT } from "./brand.mjs";
+import { resetLabel } from "./reset-label.mjs";
 
 // Resolved by codex-dir.mjs rather than here. This file used to spell it
 // `process.env.CODEX_HOME ?? join(homedir(), ".codex")`, which keeps an empty
@@ -76,13 +77,15 @@ function resetAt(o) {
   return num(o?.resets_at) ?? num(o?.resetsAt) ?? num(o?.reset_at) ?? null;
 }
 
-/** "Jun 18, 4:09pm" — matches the Claude quota formatting so both read alike. */
-function fmtReset(unixSec) {
-  if (!unixSec) return null;
-  return new Date(unixSec * 1000).toLocaleString("en-US", {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
-  }).replace(",", "").toLowerCase().replace(/\s+am/, "am").replace(/\s+pm/, "pm");
-}
+/** "Jun 18, 4:09pm" — matches the Claude quota formatting so both read alike.
+ *
+ *  It did not, and the sentence above is why #374 called this one out: this
+ *  copy passed the same options to `toLocaleString` and then stripped the comma
+ *  and lower-cased the whole string, so it printed "jun 18 4:09pm" where the
+ *  Claude lane one row up printed "Jun 18, 4:09pm". Swept over 2,794 instants
+ *  the two disagreed on every one. Both read from reset-label.mjs now, and the
+ *  claim above is true for the first time. */
+const fmtReset = resetLabel;
 
 // ── window classification ──────────────────────────────────────────────────
 // Slot position is NOT the lane. Free plans return a weekly window in the

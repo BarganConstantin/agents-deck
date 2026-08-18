@@ -437,7 +437,14 @@ describe("what a reader is told, now that the dot is decoration everywhere", () 
     // modal writes where the duration goes and `error` is what it tags the
     // response with, and both predate this change.
     expect(app).toMatch(/const TOOL_STATUS_LABEL = \{ inflight: "in-flight", done: "done", err: "error" \} as const;/);
-    expect(toolModal).toMatch(/return "in-flight…";/);
+    // The modal used to `return "in-flight…"` from its own duration formatter.
+    // #374 merged that formatter with the row's, which rounded the same
+    // milliseconds one decimal coarser, and the sentinel is the one genuine
+    // difference between the two surfaces — so it is an argument now rather
+    // than a literal in a function body. What this test is about did not
+    // change: the word the modal prints where the duration goes is still
+    // `in-flight…`, and it is still written in this file.
+    expect(toolModal).toMatch(/toolDuration\(tool, "in-flight…"\)/);
     expect(toolModal).toMatch(/<span className="err-tag">error<\/span>/);
   });
 

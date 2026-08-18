@@ -54,6 +54,11 @@ import { searchStatus, shouldDimUnmatched } from "./search-status";
 import { matchesQuery, SEARCH_PLACEHOLDER } from "./search-match";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
+// The detail panel used to spell both of these out inline — an elapsed clock a
+// tier shorter than the agent card's, and a tool duration a decimal place
+// coarser than the dialog the same row opens (#374). See duration.ts.
+import { elapsed, toolDuration } from "./duration";
+import CostBar from "./components/CostBar";
 import type { AgentNodeData, HookEnvelope, ToolCall } from "./types";
 
 function cssVar(name: string): string {
@@ -3339,11 +3344,11 @@ function Detail({
   onShowSummary?: (sessionId: string) => void;
   onExportSession?: (sessionId: string) => void;
 }) {
-  const elapsedMs = (agent.endedAt ?? now) - agent.startedAt;
-  const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
-  const elapsedLabel = elapsedSec < 60
-    ? `${elapsedSec}s`
-    : `${Math.floor(elapsedSec / 60)}m ${String(elapsedSec % 60).padStart(2, "0")}s`;
+  // The panel and the card it was opened from are on screen together, so this
+  // is the card's clock rather than a second one written out here (#374). The
+  // only value that moves is a span under a second, which used to read "0s"
+  // beside a card reading "437ms" for the same agent.
+  const elapsedLabel = elapsed(agent.startedAt, agent.endedAt, now);
 
   const cost = costForUsage(agent.usage, agent.model);
   const hasCost = cost.total > 0;
@@ -3475,35 +3480,11 @@ function Detail({
         {agent.tools.length === 0 && <div className="empty">No tool calls yet.</div>}
         <div>
           {agent.tools.slice().reverse().map(t => (
-            <ToolRow key={t.id} t={t} now={now} onClick={() => onOpenTool(t.id)} />
+            <ToolRow key={t.id} t={t} onClick={() => onOpenTool(t.id)} />
           ))}
         </div>
       </section>
     </>
-  );
-}
-
-/** Stacked bar showing the cost split across input / output / cache-read /
- *  cache-write. Each segment width = its share of the total. Hides
- *  zero-width segments. */
-function CostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
-  const total = cost.total;
-  if (total <= 0) return null;
-  const seg = (val: number, cls: string, label: string) => {
-    if (val <= 0) return null;
-    const pct = (val / total) * 100;
-    return <span key={cls} className={`cb-seg ${cls}`} style={{ width: `${pct}%` }}
-      title={`${label}: ${fmtCost(val)} (${pct.toFixed(0)}%)`} />;
-  };
-  return (
-    // role="img" — without it the label below is dropped by the accessibility
-    // tree, for the reason UsagePanel's copy of this bar spells out (#381).
-    <div className="cost-bar" role="img" aria-label="Cost breakdown">
-      {seg(cost.input, "cb-input", "input")}
-      {seg(cost.output, "cb-output", "output")}
-      {seg(cost.cacheRead, "cb-cache-r", "cache read")}
-      {seg(cost.cacheWrite, "cb-cache-w", "cache write")}
-    </div>
   );
 }
 
@@ -3515,23 +3496,30 @@ function CostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
  *  two surfaces already said it that way before #373 touched either. */
 const TOOL_STATUS_LABEL = { inflight: "in-flight", done: "done", err: "error" } as const;
 
-function ToolRow({ t, now, onClick }: { t: ToolCall; now: number; onClick: () => void }) {
+// No `now` prop any more. It only ever fed the duration, and the duration only
+// ever used it on the branch it then threw away — an open call prints a
+// sentinel, and a finished one carries both of its own timestamps. The row is
+// not memoised, so the tick that re-renders the panel still re-renders it.
+function ToolRow({ t, onClick }: { t: ToolCall; onClick: () => void }) {
   const status = t.endedAt == null ? "inflight" : t.ok === false ? "err" : "done";
-  const dur = (t.endedAt ?? now) - t.startedAt;
-  const durLabel = t.endedAt == null ? "…" : dur < 1000 ? `${dur}ms` : `${(dur / 1000).toFixed(1)}s`;
+  // This row is the button that opens ToolModal for this exact call, and the
+  // two used to round the same milliseconds differently — "1.2s" here and
+  // "1.24s" one click later (#374). The sentinel is the only thing that still
+  // differs, because a list cell has no room for the word the dialog writes.
+  const durLabel = toolDuration(t, "…");
   return (
     <button className="tool clickable" title={t.inputPreview || t.name} onClick={onClick}>
       <span className="name">
         {/* The dot said nothing here — an empty <span> that was not even marked
             decorative — so a failed call and a finished one both announced
-            "Bash 1.2s" and differed by red against green, the one pair a
+            "Bash 1.24s" and differed by red against green, the one pair a
             red-green CVD cannot separate at all (#373). The dot is explicitly
             decoration now, because the stylesheet draws its ✓ and × with
             `content:` and generated content IS spoken by some readers: without
             aria-hidden the row would say the mark and then the word.
             The word leads, where the dot is, for the reason the session list
             gives — the accessible name is the contents in DOM order, so
-            "error Bash 1.2s" is read in the order it is seen. */}
+            "error Bash 1.24s" is read in the order it is seen. */}
         <span className={`status-dot ${status}`} aria-hidden />
         <span className="vis-hidden">{TOOL_STATUS_LABEL[status]}</span>
         {t.name}
