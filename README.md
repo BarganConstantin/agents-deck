@@ -2,7 +2,7 @@
 
 # ccdeck
 
-**A live canvas for your AI agents.** Watch Claude Code and OpenAI Codex fork subagents, call tools, and finish — all on one calm graph, in real time.
+**A live canvas for your AI agents.** Watch Claude Code and OpenAI Codex call tools and finish — every Claude Code subagent on a node of its own — all on one calm graph, in real time.
 
 [![npm](https://img.shields.io/npm/v/ccdeck?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/ccdeck)
 [![npm downloads](https://img.shields.io/npm/dm/agents-deck?color=blue)](https://www.npmjs.com/package/agents-deck)

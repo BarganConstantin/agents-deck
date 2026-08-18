@@ -2897,6 +2897,12 @@ button.tool.clickable:last-child { border-bottom: none; }
   font-size: 12px;
   opacity: 0.75;
 }
+/* The hint is one line per capture path now (#404), and the 14px that separates
+   the block from the paragraph above it is too much between two lines that are
+   answering the same question. */
+.empty-hero .hint-row + .hint-row {
+  margin-top: 6px;
+}
 
 /* ---------------- tool detail modal ---------------- */
 

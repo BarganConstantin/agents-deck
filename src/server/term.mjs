@@ -424,8 +424,17 @@ export function wordmark({
  * `\r` only ever reached the second row and every repaint left the first one
  * behind. A deck no hook can find is not listening in any sense the user cares
  * about, which is why that state has a message here at all.
+ *
+ * `claude` is what makes that last sentence conditional. A deck watching only
+ * Codex is not waiting on a hook: startCodexWatcher is started by startServer
+ * and never consults the discovery file, and writesCodexLog keeps a deck with no
+ * record on disk writing its log. Capture and persistence both work perfectly
+ * there, while this line used to repaint "hooks cannot find this deck" every
+ * 800ms, forever (#404) — a permanent alarm about a mechanism that deck does not
+ * use. The one-time report at boot still says what IS lost; see
+ * unregisteredDetail.
  */
-export function pulseText({ registered = true, columns = 80, unicode = true, indent = 2 } = {}) {
+export function pulseText({ registered = true, claude = true, columns = 80, unicode = true, indent = 2 } = {}) {
   const g = glyphs(unicode);
   const room = Math.max(4, columns - indent - 3 - 1);
   const pick = (options) => options.find((o) => o.length <= room) ?? options[options.length - 1].slice(0, room);
@@ -436,8 +445,36 @@ export function pulseText({ registered = true, columns = 80, unicode = true, ind
     `not registered ${g.dash} hooks cannot find this deck`,
     "not registered",
   ]);
+  // Both branches are still measured, registered or not, because the line is
+  // redrawn over itself and the shorter message has to cover the longer one on
+  // the beat after a deck loses its registration.
   const width = Math.min(room, Math.max(ok.length, bad.length));
-  return (registered ? ok : bad).padEnd(width);
+  return (registered || !claude ? ok : bad).padEnd(width);
+}
+
+/**
+ * The second line of the "not registered" report, which bin/deck.js prints once
+ * per change of state rather than every beat.
+ *
+ * What a missing discovery file costs is not the same on the two capture paths,
+ * and the old sentence — "hooks find this deck through <file>, so until that
+ * file exists no events arrive" — stated the Claude Code answer as if it were
+ * both. On a Codex-only deck it is false twice over: no hook is looking for this
+ * deck, and events do keep arriving, because the rollout watcher reads the files
+ * directly. What that deck really loses is the writer election in
+ * log-writer.mjs, which is how several decks tailing one rollout agree on which
+ * of them appends it to a shared events log. A deck with no record on disk is
+ * assumed to be writing, so nothing is dropped — the log can gain the same line
+ * twice instead.
+ *
+ * @param file the discovery file that could not be written.
+ * @param claude whether this deck is watching Claude Code at all.
+ */
+export function unregisteredDetail({ file, claude = true }) {
+  if (claude) {
+    return `Claude Code hooks find this deck through ${file}, so until that file exists no Claude Code events arrive.`;
+  }
+  return `Codex capture does not use ${file} — the deck tails the rollout files itself — so events still arrive. Only decks sharing one events log need it, to agree on which of them records.`;
 }
 
 // ── cursor ───────────────────────────────────────────────────────────────────
