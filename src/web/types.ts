@@ -142,6 +142,19 @@ export interface AgentNodeData {
    *  (model_context_window). When present, takes precedence over the static
    *  table in pricing.ts. */
   contextWindow?: number;
+  /** Codex-only: `approval_policy` off the newest `turn_context` in the rollout
+   *  — "never", "on-request", "on-failure", "untrusted". Only the root carries
+   *  it, because it is a property of the session and not of any one agent.
+   *
+   *  It exists because it is the only recorded fact that says whether this
+   *  session can stop and ask a human AT ALL, and the deck has no other way to
+   *  know: Codex emits no notification and writes no approval record, so
+   *  `waiting` below is permanently null here and every alarm surface is
+   *  structurally blind to a blocked Codex session. This does not
+   *  make the block visible — nothing can — it makes the BLINDNESS visible, on
+   *  the sessions where it can cost something. codex-approval.ts holds the rule
+   *  and the reason it is never fed into `isAlarming`. */
+  approvalPolicy?: string;
   /** Set to the timestamp at which this agent should disappear (e.g. a new
    *  turn has started and this subagent already finished). UI plays an exit
    *  animation, then drops it from the canvas. */
@@ -233,5 +246,9 @@ export interface HookPayload {
   /** Codex-only: emitted by sessions/<sid>/event_msg/task_started events,
    *  surfaced by the server-side rollout reader. */
   model_context_window?: number;
+  /** Codex-only: the session's approval policy, read off `turn_context` by the
+   *  rollout watcher and spread onto every payload it emits — see
+   *  `AgentNodeData.approvalPolicy`. */
+  approval_policy?: string;
   [key: string]: any;
 }

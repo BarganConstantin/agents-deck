@@ -10,6 +10,15 @@
 import React from "react";
 import { useViewport } from "reactflow";
 import type { AgentNodeData, ToolCall } from "../types";
+import {
+  categoryFor,
+  codexScriptCommand,
+  CODEX_SHELL_TOOLS,
+  CODEX_TOOL_EMOJI,
+  CODEX_TOOL_LABEL,
+  CODEX_TOOL_NAMES,
+  type ToolCategory,
+} from "../tool-taxonomy";
 
 const FADE_MS = 600;
 const MAX_PER_AGENT = 4;
@@ -32,37 +41,11 @@ const AGENT_W_MIN = 220;
 const ESTIMATED_BUBBLE_W = 96;
 const SUB_GAP = 28;
 
-// Group every tool into a category so we can tint its bubble accent. Picked
-// to read at a glance even at low zoom: file = blue, shell = amber, web =
-// cyan, agent = pink, tasks/todos = green, plan = violet, mcp = teal.
-type ToolCategory = "file" | "shell" | "web" | "agent" | "task" | "plan" | "mcp" | "other";
-
-const TOOL_CATEGORY: Record<string, ToolCategory> = {
-  Read: "file", Write: "file", Edit: "file", MultiEdit: "file",
-  Glob: "file", Grep: "file", LS: "file", NotebookEdit: "file",
-  Bash: "shell", PowerShell: "shell",
-  // Codex shell tools — same category as Bash/PowerShell
-  shell: "shell", exec_command: "shell", shell_command: "shell",
-  write_stdin: "shell", wait: "shell",
-  // Codex file-edit tool — same category as Edit/Write
-  apply_patch: "file",
-  // Codex planning tool — same category as TodoWrite/TaskCreate
-  update_plan: "task",
-  WebFetch: "web", WebSearch: "web",
-  Task: "agent", Agent: "agent",
-  TodoWrite: "task", TaskCreate: "task", TaskUpdate: "task",
-  TaskList: "task", TaskGet: "task", TaskOutput: "task", TaskStop: "task",
-  EnterPlanMode: "plan", ExitPlanMode: "plan", AskUserQuestion: "plan",
-  Skill: "plan", Workflow: "plan",
-  ScheduleWakeup: "other", CronCreate: "other", CronList: "other",
-  CronDelete: "other", Monitor: "other", PushNotification: "other",
-  RemoteTrigger: "other", ToolSearch: "other",
-};
-
-function categoryFor(name: string): ToolCategory {
-  if (name.startsWith("mcp__")) return "mcp";
-  return TOOL_CATEGORY[name] ?? "other";
-}
+// Which category a tool falls in — file = blue, shell = amber, web = cyan,
+// agent = pink, tasks/todos = green, plan = violet, mcp = teal — now lives in
+// tool-taxonomy.ts, shared with App.tsx's detail strip and filter chips. It
+// used to be a private literal here and a near-identical private literal
+// there, and the two drifted apart the first time Codex renamed a tool (#417).
 
 // Distinct emojis for every CC built-in I know about + sensible fallback.
 const TOOL_EMOJI: Record<string, string> = {
@@ -74,16 +57,6 @@ const TOOL_EMOJI: Record<string, string> = {
   Grep: "🔎",
   Bash: "⚡",
   PowerShell: "💻",
-  // Codex shell tools
-  shell: "⚡",
-  exec_command: "⚡",
-  shell_command: "⚡",
-  write_stdin: "💻",
-  wait: "⏳",
-  // Codex file-edit tool
-  apply_patch: "🩹",
-  // Codex planning tool
-  update_plan: "📋",
   LS: "📂",
   Task: "🤖",
   Agent: "🤖",
@@ -110,6 +83,8 @@ const TOOL_EMOJI: Record<string, string> = {
   Monitor: "📡",
   PushNotification: "🔔",
   RemoteTrigger: "📡",
+  // …and every Codex tool, from the one spec table they all derive from.
+  ...CODEX_TOOL_EMOJI,
 };
 
 function emojiFor(name: string): string {
@@ -231,11 +206,23 @@ interface CommandSkin {
  *  - Codex shell: { command: ["powershell.exe","-NoProfile","-Command","<cmd>"] }
  *  - Codex exec_command: { cmd: "ls", workdir: "..." }
  *  - Codex shell_command: { command: "cd X && git status" }
+ *  - Codex exec:  { script: "const r = await tools.exec_command({cmd:\"…\"})" }
  *  - Fallback:    if input is a bare string, use it directly. */
 function commandStringOf(input: unknown): string | null {
   if (typeof input === "string") return input;
   if (!input || typeof input !== "object") return null;
   const obj = input as Record<string, unknown>;
+  // The Codex `exec` tool first, because what it carries is a PROGRAM and not a
+  // command: taking its first token the way parseShellCommand would draws
+  // "⚙️ const" on every Codex call in the deck (#417). codexScriptCommand digs
+  // out the `cmd` the script hands to tools.exec_command, so the sub-bubble
+  // reads the same "🐙 git" a Claude Bash call does. It returns null for
+  // anything that is not a Codex script, which leaves every other shape below
+  // reached exactly as before — including PowerShell's own `script` key.
+  if (typeof obj.script === "string") {
+    const fromScript = codexScriptCommand(obj.script);
+    if (fromScript) return fromScript;
+  }
   if (typeof obj.cmd === "string") return obj.cmd;
   if (typeof obj.command === "string") return obj.command;
   // Codex `shell` tool: command is a string array like
@@ -258,14 +245,18 @@ function commandStringOf(input: unknown): string | null {
   return null;
 }
 
-const SHELL_TOOLS = new Set(["Bash", "PowerShell", "shell", "exec_command", "shell_command", "write_stdin", "wait"]);
+// Claude's two shell tools, plus every Codex tool the spec table marks as
+// carrying a command. Deriving the Codex half is what stops a renamed Codex
+// shell tool from silently losing its sub-bubble — the one consequence of #417
+// the user actually noticed, because the sub-bubble is what shows WHAT RAN.
+const SHELL_TOOLS = new Set(["Bash", "PowerShell", ...CODEX_SHELL_TOOLS]);
 
 // Codex tool names are much longer than CC's ("exec_command"/"shell_command"
 // vs "Bash"), so the fixed ESTIMATED_BUBBLE_W under-shoots the primary
 // bubble's real width and the chained sub-bubble lands on top of it with no
 // gap. For these tools only we widen the primary estimate from the label
 // length; floored at ESTIMATED_BUBBLE_W so Claude bubbles are unchanged.
-const CODEX_TOOLS = new Set(["shell", "exec_command", "shell_command", "write_stdin", "wait", "apply_patch", "update_plan"]);
+const CODEX_TOOLS = CODEX_TOOL_NAMES;
 
 /** Estimated primary-bubble width in px. Codex tools and MCP calls both chain
  *  a sub-bubble behind a primary whose label can run long — an unrecognised
@@ -503,19 +494,11 @@ function skinFor(toolName: string, input: unknown): CommandSkin | null {
  *  back to the existing emojiFor / tool name. */
 interface PrimaryDisplay { emoji: string; label: string; hue?: number }
 
-// Codex exposes raw internal tool names ("exec_command", "shell_command",
+// Codex exposes raw internal tool names ("exec", "exec_command",
 // "apply_patch"…). Show clean, Claude-style labels on the bubble instead;
 // the original name still goes into the tooltip (b.toolName) so nothing is
 // hidden. Display-only — does not affect categorisation or Claude tools.
-const CODEX_PRIMARY_LABEL: Record<string, string> = {
-  shell: "Shell",
-  exec_command: "Shell",
-  shell_command: "Shell",
-  write_stdin: "stdin",
-  wait: "wait",
-  apply_patch: "Edit",
-  update_plan: "Plan",
-};
+const CODEX_PRIMARY_LABEL: Record<string, string> = CODEX_TOOL_LABEL;
 
 function primaryDisplayFor(toolName: string): PrimaryDisplay {
   const mcp = parseMcpName(toolName);
