@@ -467,12 +467,14 @@ export function pruneDoneSessions(state: GraphState, now: number, cap: number, g
   return removed;
 }
 
-/** Sweep over every CLAUDE agent's tool list and finalise any tool that has been
- *  "in-flight" longer than `maxMs` — usually because a hook event was lost
- *  (session killed mid-call, PostToolUse never delivered). Without this they
- *  pulse forever in the burst layer and pollute the in-flight counter.
- *  Codex agents are skipped, because there a missing result means the call has
- *  not finished rather than that its result was lost — see the note inside.
+/** Finalise every in-flight tool call belonging to a CLAUDE session that has
+ *  gone completely silent for `maxMs` — the session was killed mid-call and the
+ *  PostToolUse that would have settled the call is never coming. Without this
+ *  those calls pulse forever in the burst layer and pollute the in-flight
+ *  counter. Codex agents are skipped, because there a missing result means the
+ *  call has not finished rather than that its result was lost — see the note
+ *  inside. The clock is the SESSION's last event and never the call's own age;
+ *  see the note on the guard below for why that distinction is the whole point.
  *  Returns true when at least one tool was staled, so callers can trigger
  *  a re-render. Mutates state in place. */
 export function sweepStaleTools(state: GraphState, now: number, maxMs: number): boolean {
@@ -507,13 +509,93 @@ export function sweepStaleTools(state: GraphState, now: number, maxMs: number): 
     // is exempt — an event recorded before `provider` existed replays without
     // one and must keep the Claude behaviour it was swept with.
     if (a.provider === "codex") continue;
+
+    // #436: the clock is the SESSION's silence, not the call's age.
+    //
+    // Claude does emit a PostToolUse for every call it completes, so a call that
+    // will never get one is a real thing to draw. But "no PostToolUse yet" and
+    // "no PostToolUse ever" are not the same state, and a timestamp on the call
+    // alone cannot tell them apart: at any age, a silent call is either a session
+    // that died mid-call or a command that is simply still running. Judged on age
+    // this sweep guessed "died", and on this machine's log it guessed wrong far
+    // more often than right — of the 16 Claude calls it would have stamped failed
+    // at the old ninety seconds, 13 went on to return normally (12 `Bash`, one
+    // `AskUserQuestion`; longest 776.2s, drawn red and counted as an error for
+    // 686.2s of that) and only 3 were genuinely lost. Four in five of its verdicts
+    // were false, and a call drawn as failed while it is still working is a lie
+    // the user acts on — they go and kill the build the deck says already broke.
+    //
+    // No threshold on the call's own age can fix that, which is why this is not
+    // simply a bigger number. Ninety seconds sat below Claude Code's own Bash
+    // timeout (120s default, up to 600s), so the sweep fired inside the CLI's
+    // documented operating range; but 600s does not save it either — two of the
+    // measured honest calls ran past that, because PreToolUse fires before the
+    // permission decision, so a call parked on a human is unbounded in exactly the
+    // way #397's Codex approval prompt is. There is no number that is above every
+    // legitimate call and below every dead one, because the two overlap.
+    //
+    // The discriminator that does separate them is a different fact entirely, and
+    // it is already on the node: `lastEventAt` (#350) is when this session was
+    // last heard from at all. A session still emitting events is alive, so its
+    // quiet call is slow; a session that has emitted nothing is the case this
+    // sweep was built for. That is the same judgement `sweepStaleSessions` makes
+    // one level up, so it is made here on the same clock and the same window
+    // rather than on a second, shorter one that contradicts it — the deck used to
+    // call a session dead enough to fail its tools at ninety seconds while still
+    // calling it alive at ninety minutes.
+    //
+    // Both halves are load-bearing, and swapping the clock WITHOUT also adopting
+    // that window would have fixed nothing. A foreground tool call is the whole of
+    // what its session is doing, so the session is silent for the length of the
+    // call by construction: all 13 false positives above ran on sessions whose
+    // longest silence inside the call window was the call itself (776.2s of call,
+    // 769.9s of silence). Read against a ninety-second window, `lastEventAt` would
+    // have condemned every one of them exactly as `startedAt` did. What it buys is
+    // the case the age clock cannot see at all — a session whose subagents are
+    // still reporting is alive no matter how old one of its calls is — and, more
+    // than that, it makes the window mean something: ninety minutes is not a
+    // bigger guess, it is the number this file already defends for "presumed
+    // dead", and this sweep is now asking that question and no other.
+    //
+    // The direction this is now wrong in is the cheap one. A genuinely lost call
+    // stays drawn in-flight until its session goes quiet for the full window
+    // instead of settling at ninety seconds — a spinner that lingers rather than a
+    // failure that never happened. Nothing is lost by waiting: all 3 genuinely
+    // orphaned calls measured here belong to sessions that did eventually fall
+    // silent, so every one of them still settles, just later and only once there is
+    // evidence for it. #397 made the same trade for Codex.
+    //
+    // Falling back to the call's own start when the root is gone keeps a subagent
+    // orphaned by `pruneOldAgents` from holding an in-flight call forever; a
+    // session whose root has already been pruned is over by definition.
+    const root = state.agents.get(rootAgentId(a.sessionId));
+    const heardAt = root?.lastEventAt ?? root?.startedAt;
+
     for (const t of a.tools) {
-      if (t.endedAt == null && now - t.startedAt > maxMs) {
-        t.endedAt = t.startedAt + maxMs;
+      // `heardAt` cannot precede the call's own PreToolUse in practice — that
+      // event stamped it — but `Math.max` makes the guard hold anyway rather than
+      // depending on an invariant enforced somewhere else in the file.
+      const silentSince = Math.max(t.startedAt, heardAt ?? t.startedAt);
+      if (t.endedAt == null && now - silentSince > maxMs) {
+        // Stamped at the last moment there is any evidence the call was running,
+        // exactly as `sweepStaleSessions` stamps the session's own `endedAt`, so
+        // the call and the session it died with agree about when that was. The
+        // old `startedAt + maxMs` was a duration invented by the sweep.
+        t.endedAt = silentSince;
         t.ok = false;
-        t.errorPreview = "stale (no PostToolUse received)";
-        // Also drop it from the live tool index so a late PostToolUse won't
-        // try to settle it after the fact.
+        // Says what was observed rather than naming an internal mechanism the
+        // reader has never heard of. The old string — "stale (no PostToolUse
+        // received)" — described the sweep's own plumbing and was untrue in every
+        // false positive above; #397 settled the same wording question for Codex
+        // by not asserting a cause at all, and this is the Claude equivalent for
+        // the one case where a cause is actually known.
+        t.errorPreview = "session ended before this call returned";
+        // Also drop it from the live tool index, so the id is not held open by a
+        // session that is gone. This does NOT make the call unsettleable: the
+        // PostToolUse handler falls back to scanning the owner's tool list and
+        // resurrects it, which is what happens when the sweep guessed wrong and
+        // the session comes back — the same un-reap `lastEventAt` performs for
+        // the root above.
         state.toolIndex.delete(t.id);
         state.toolOwner.delete(t.id);
         changed = true;
