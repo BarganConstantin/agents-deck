@@ -8,6 +8,11 @@
 // entirely. It is always best-effort — the deck's core function does not
 // depend on it, so a failure is reported and then ignored.
 import { run, runDetached } from "./exec.mjs";
+// The version comparator was written out here as well, identical apart from a
+// type guard this copy lacked, and only the self-update one was under test
+// (#374). No cycle: self-update.mjs imports node:* and ./exec.mjs, which this
+// file already imports itself.
+import { isOlder } from "./self-update.mjs";
 import { bootstrapUv, existingBootstrappedUv } from "./uv-bootstrap.mjs";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join, posix as posixPath, win32 as winPath } from "node:path";
@@ -266,17 +271,6 @@ async function latestOnPypi() {
   } catch {
     return null;
   }
-}
-
-/** Numeric-segment version compare; returns true when `a` is older than `b`. */
-function isOlder(a, b) {
-  const seg = (v) => v.split(/[.\-+]/).map(n => parseInt(n, 10)).map(n => Number.isNaN(n) ? 0 : n);
-  const x = seg(a), y = seg(b);
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0);
-    if (d !== 0) return d < 0;
-  }
-  return false;
 }
 
 /**

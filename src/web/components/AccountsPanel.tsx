@@ -20,6 +20,7 @@ import {
   explainReload,
   nextFailure,
 } from "../accounts-reload";
+import { resetCountdown, shortAgoSec } from "../relative-time";
 
 interface Lane {
   id: string;
@@ -83,23 +84,23 @@ const SAVED_MS = 1_800;
 const RELOAD_TIMEOUT_MS = 30_000;
 const THRESHOLDS = [70, 80, 85, 90, 95];
 
-/** "3h 43m" / "6d 21h" — recomputed client-side so it never shows a stale countdown. */
-function countdown(resetAtSec: number, nowSec: number): string | null {
-  const diff = resetAtSec - nowSec;
-  if (diff <= 0) return null;
-  const d = Math.floor(diff / 86400);
-  const h = Math.floor((diff % 86400) / 3600);
-  const m = Math.floor((diff % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
+// This panel used to carry its own `countdown` and its own `ago`. The usage
+// panel had the same countdown under another name and relative-time.ts had the
+// same `ago` under `shortAgo` — and that module's header names THIS panel as
+// one of the surfaces it exists to keep in one dialect (#374). Both now come
+// from there; the wrapper below is what makes the second one exact rather than
+// approximate.
 
+/** The panel's ages, from a millisecond stamp and its second-resolution clock.
+ *
+ *  `shortAgo` takes a millisecond delta, and `shortAgo(nowSec * 1000 - at)`
+ *  would NOT be what this panel computed: flooring a stamp that has a
+ *  sub-second part after the subtraction lands a second lower than flooring it
+ *  before, which walks every threshold by a second. Subtracting in seconds and
+ *  handing the result to the seconds-form helper is character for character the
+ *  arithmetic the private copy did. */
 function ago(ms: number, nowSec: number): string {
-  const s = nowSec - Math.floor(ms / 1000);
-  if (s < 60)    return "just now";
-  if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  return shortAgoSec(nowSec - Math.floor(ms / 1000));
 }
 
 /**
@@ -161,7 +162,7 @@ export function errorText(code: string): { text: string; hint: string; fixable: 
 function LaneBar({ lane, nowSec }: { lane: Lane; nowSec: number }) {
   const capped = Math.min(100, Math.max(0, lane.pct));
   const color  = capped >= 90 ? "var(--err)" : capped >= 70 ? "var(--warn)" : "var(--accent)";
-  const reset  = lane.resetAt ? countdown(lane.resetAt, nowSec) : null;
+  const reset  = lane.resetAt ? resetCountdown(lane.resetAt, nowSec) : null;
   return (
     <div className="ap-lane">
       <span className="ap-lane-label">{lane.label}</span>

@@ -7,6 +7,10 @@ import { costForUsage, fmtCost } from "../pricing";
 import type { GraphState } from "../reducer";
 import type { AgentNodeData } from "../types";
 import { shortModel } from "../model-label";
+// The breakdown bar used to be a third copy of one component, `SsCostBar`,
+// which differed from the other two by its name and the one class that makes it
+// taller (#374). That class is the `size` prop now.
+import CostBar from "./CostBar";
 import { useModalDismiss } from "./use-modal-dismiss";
 
 interface Props {
@@ -56,7 +60,7 @@ export default function SessionSummary({ state, sessionId, onClose }: Props) {
             <div className="ss-hero-right">
               {summary.cost.total > 0 && (
                 <>
-                  <SsCostBar cost={summary.cost} />
+                  <CostBar cost={summary.cost} size="lg" />
                   <div className="ss-cost-legend">
                     <span className="ssl ssl-in">input <b>{fmtCost(summary.cost.input)}</b></span>
                     <span className="ssl ssl-out">output <b>{fmtCost(summary.cost.output)}</b></span>
@@ -109,27 +113,6 @@ function Stat({ label, value, tone }: { label: string; value: number | string; t
     <div className={`ss-stat${tone ? ` tone-${tone}` : ""}`}>
       <div className="ss-stat-value">{value}</div>
       <div className="ss-stat-label">{label}</div>
-    </div>
-  );
-}
-
-function SsCostBar({ cost }: { cost: ReturnType<typeof costForUsage> }) {
-  const total = cost.total;
-  if (total <= 0) return null;
-  const seg = (val: number, cls: string, label: string) => {
-    if (val <= 0) return null;
-    const pct = (val / total) * 100;
-    return <span key={cls} className={`cb-seg ${cls}`} style={{ width: `${pct}%` }} title={`${label}: ${fmtCost(val)} (${pct.toFixed(0)}%)`} />;
-  };
-  return (
-    // role="img" — without it the label beside it is dropped by the
-    // accessibility tree, for the reason UsagePanel's copy of this bar spells
-    // out (#381).
-    <div className="cost-bar cost-bar-lg" role="img" aria-label="Cost breakdown">
-      {seg(cost.input, "cb-input", "input")}
-      {seg(cost.output, "cb-output", "output")}
-      {seg(cost.cacheRead, "cb-cache-r", "cache read")}
-      {seg(cost.cacheWrite, "cb-cache-w", "cache write")}
     </div>
   );
 }

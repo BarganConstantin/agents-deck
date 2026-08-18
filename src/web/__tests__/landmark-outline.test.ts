@@ -68,6 +68,9 @@ const sessions = source("SessionList.tsx");
 const history = source("UsageHistoryModal.tsx");
 const summary = source("SessionSummary.tsx");
 const addAccount = source("AddAccountDialog.tsx");
+// The stacked cost bar, which was written out in three of the files above until
+// #374 gave it a file of its own.
+const costBar = source("CostBar.tsx");
 
 /** Every file in the bundle, as [name, comment-stripped text]. The separator is
  *  normalised because two of the assertions below name a file inside
@@ -166,10 +169,16 @@ describe("the deck's five regions are five landmarks (#381)", () => {
   });
 
   it("gave the cost bar the role that makes its label exist", () => {
-    // Three copies of one component, in three files — that duplication is
-    // #374's to remove, and until it does, all three carry the fix.
+    // It was three copies of one component in three files when #381 landed, so
+    // the fix had to be made three times and this assertion had to name three
+    // files. #374 removed the duplication: the bar is components/CostBar.tsx
+    // now, both of its class spellings carry the role, and the three panels
+    // import it. The assertion got stronger rather than narrower — it is no
+    // longer possible for one surface to have the role and another not.
+    expect(code(costBar)).toMatch(/className=\{large \? "cost-bar cost-bar-lg" : "cost-bar"\} role="img" aria-label="Cost breakdown"/);
     for (const [file, src] of [["App.tsx", app], ["UsagePanel.tsx", usage], ["SessionSummary.tsx", summary]] as const) {
-      expect(code(src), file).toMatch(/className="cost-bar[^"]*" role="img" aria-label="Cost breakdown"/);
+      expect(code(src), `${file} imports the bar`).toMatch(/import CostBar from "\.(\/components)?\/CostBar";/);
+      expect(code(src), `${file} draws no bar of its own`).not.toMatch(/className="cost-bar/);
     }
   });
 });

@@ -69,9 +69,18 @@ const _inflight = new Map();
 
 // ── version comparison ───────────────────────────────────────────────────────
 
-/** True when `a` sorts before `b`. Numeric-segment compare, same shape as the
- *  one in cswap-install.mjs — non-numeric segments count as 0, missing
- *  segments pad with 0, so "1.30" < "1.30.1" and "1.9.0" < "1.10.0". */
+/** True when `a` sorts before `b`. Numeric-segment compare — non-numeric
+ *  segments count as 0, missing segments pad with 0, so "1.30" < "1.30.1" and
+ *  "1.9.0" < "1.10.0".
+ *
+ *  cswap-install.mjs had this written out a second time, without the type guard
+ *  below, and imports it from here now (#374). The two bodies were identical:
+ *  swept over 271,441 version-string pairs they disagreed on none, and the
+ *  guard was the whole difference — `isOlder(null, "1.0.0")` answers false here
+ *  and threw a TypeError there. Nothing could reach that call with a non-string
+ *  (both arguments are behind `typeof v === "string"` checks at the one call
+ *  site), so this is the copy with a test behind it absorbing the one without,
+ *  not a bug fix. */
 export function isOlder(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
   const seg = (v) => v.split(/[.\-+]/).map(n => parseInt(n, 10)).map(n => Number.isNaN(n) ? 0 : n);
