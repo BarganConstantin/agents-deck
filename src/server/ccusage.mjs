@@ -12,10 +12,11 @@
 // managed install is missing/broken we fall back to the old npx path so the
 // feature still works on a fresh machine.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { killTree, spawnSpec } from "./exec.mjs";
+import { oneLine, termColumns } from "./term.mjs";
 import { PRODUCT } from "./brand.mjs";
 
 const CACHE_MS = 120_000; // 2 min — modal is manual-open; cheap to keep warm
@@ -96,6 +97,43 @@ function installsDisabled() {
 function tagged(reason, message) {
   return Object.assign(new Error(message), { reason });
 }
+
+// Everything this module says out loud goes through here, and it says one line.
+//
+// Both failures below carry a subprocess's entire stderr as their `message`,
+// and on a machine whose npm shim is broken that is a fifteen-line Node stack
+// trace. Handed to console.error whole, it landed across the deck's own status
+// rows and its `\r`-repainted pulse line — and because primeCcusage runs at
+// boot, it was the first thing such a machine ever showed (#432). The evidence
+// is not lost by shortening this: a failed RUN carries its full text back to
+// the browser in `error`, which the usage-history modal keeps on the status
+// line's title, one hover away — the same division of labour admin-failure.ts
+// states for claude-swap's output. What this line is for is the operator
+// watching the terminal, who needs to know which of the two things failed and
+// why, not to read a stack.
+//
+// The width is read per call: a terminal can be resized while the deck runs,
+// and this can fire hours in.
+function note(what, err) {
+  const head = `${PRODUCT} ccusage: ${what}: `;
+  console.error(head + oneLine(err?.message ?? err, termColumns(process.stderr) - head.length));
+}
+
+/**
+ * Node saying it could not load a file it was pointed at.
+ *
+ * Both spellings are here because both happen: CommonJS throws
+ * `MODULE_NOT_FOUND`, ESM throws `ERR_MODULE_NOT_FOUND` with the wording
+ * "Cannot find package" for a bare specifier, and ccusage's entry point is ESM
+ * while the npm/npx shims it may be launched through are not.
+ *
+ * Exported for tests. The one caller is the managed-install branch of
+ * runCcusage, where the child is `node <our entry>` and nothing else — so a
+ * module Node cannot resolve is by construction a file of OURS that is missing,
+ * never the user's npm.
+ */
+export const cannotLoadModule = (text) =>
+  /\b(?:ERR_)?MODULE_NOT_FOUND\b|cannot find (?:module|package)/i.test(String(text ?? ""));
 
 // ── managed install ─────────────────────────────────────────────────────────
 
@@ -220,7 +258,7 @@ async function getRunner() {
   // Cold: install once (deduped across concurrent callers).
   if (!_installing) {
     _installing = (async () => { installSync("latest"); })()
-      .catch(e => { console.error(`${PRODUCT} ccusage: install failed:`, e?.message ?? e); })
+      .catch(e => { note("install failed", e); })
       .finally(() => { _installing = null; });
   }
   await _installing;
@@ -231,13 +269,52 @@ async function getRunner() {
 
 // ── invocation ──────────────────────────────────────────────────────────────
 
-// Run ccusage with the given args, resolve raw stdout.
-async function runCcusage(args) {
-  const runner = await getRunner();
-  // Neither branch gets a shell. The managed install is `node <entry> …`, which
-  // never needed one; the npx fallback is routed through spawnSpec instead —
-  // see npxSpec, and note that `args` here ends in whatever /api/ccusage was
-  // asked for.
+// At most one repair per process, so a package that is simply unrunnable —
+// reinstalled and still broken — cannot put this into a loop of npm installs.
+let _repairedThisRun = false;
+
+/**
+ * Throw away a managed install that resolves but cannot run, so the next
+ * attempt builds a new one.
+ *
+ * This is the only genuinely permanent failure in this module, and it is the
+ * one a broken npm creates: `npm install` that dies partway leaves a
+ * package.json and an entry file on disk, resolveEntry answers "installed", and
+ * getRunner then hands back that entry FOREVER. Nothing re-checks it —
+ * maybeBackgroundUpdate only reinstalls when the registry has a newer version,
+ * so even a repaired npm never repaired the install. Every run failed
+ * identically, the modal said "try again", and the only thing that actually
+ * worked was deleting ~/.agents-deck/ccusage by hand, which nothing in the
+ * product tells anyone to do.
+ *
+ * Only the managed branch qualifies: the npx fallback's failures are npm's own
+ * and none of this deck's business to delete anything over.
+ *
+ * Not done under AGENTS_DECK_NO_INSTALL=1. That variable is a promise not to
+ * fetch, and removing the only copy on a machine that cannot replace it would
+ * turn a broken feature into an absent one.
+ */
+function discardDamagedInstall(runner, err) {
+  if (_repairedThisRun || runner.kind !== "node" || installsDisabled()) return false;
+  if (!cannotLoadModule(err?.message)) return false;
+  _repairedThisRun = true;
+  try {
+    rmSync(PKG_DIR, { recursive: true, force: true });
+  } catch {
+    // Windows holds a lock on a file inside a directory being removed more
+    // readily than POSIX does, and a half-removed install is still a resolvable
+    // one. Say the repair did not happen so the caller reports the real failure
+    // rather than retrying into the same broken entry point.
+    return false;
+  }
+  return !resolveEntry();
+}
+
+// One attempt with one runner. Neither branch gets a shell. The managed install
+// is `node <entry> …`, which never needed one; the npx fallback is routed
+// through spawnSpec instead — see npxSpec, and note that `args` here ends in
+// whatever /api/ccusage was asked for.
+function runOnce(runner, args) {
   const { file, args: full, opts } = runner.kind === "node"
     ? { file: process.execPath, args: [runner.entry, ...args], opts: {} }
     : fallbackSpec(args);
@@ -260,6 +337,21 @@ async function runCcusage(args) {
       else reject(new Error(err.trim() || `ccusage exited ${code}`));
     });
   });
+}
+
+// Run ccusage with the given args, resolve raw stdout. One retry, and only for
+// the one failure that is otherwise permanent — see discardDamagedInstall. The
+// second getRunner() is what rebuilds the install, or falls through to npx when
+// npm cannot.
+async function runCcusage(args) {
+  const runner = await getRunner();
+  try {
+    return await runOnce(runner, args);
+  } catch (err) {
+    if (!discardDamagedInstall(runner, err)) throw err;
+    note("managed install was unusable, rebuilding it", err);
+    return runOnce(await getRunner(), args);
+  }
 }
 
 // ccusage prints the JSON object somewhere in stdout; slice first { to last }.
@@ -311,9 +403,12 @@ export async function fetchCcusageDaily({ since, until, force = false } = {}) {
       fetchedAt: now,
     };
   } catch (err) {
-    console.error(`${PRODUCT} ccusage: fetch failed:`, err?.message ?? err);
+    note("fetch failed", err);
     // Anything untagged got here from the child itself — a non-zero exit, or a
     // spawn that never started one — which is exactly what run_failed means.
+    // `error` keeps the child's WHOLE output, stack trace and all: it is the
+    // modal's hover title, which is where the raw bytes are meant to live, and
+    // it is what somebody pastes into an issue. Only the terminal gets a line.
     result = {
       ok: false,
       reason: err?.reason ?? "run_failed",
@@ -355,7 +450,7 @@ export function primeCcusage() {
   }
   if (!_installing) {
     _installing = (async () => { installSync("latest"); })()
-      .catch(e => { console.error(`${PRODUCT} ccusage: install failed:`, e?.message ?? e); })
+      .catch(e => { note("install failed", e); })
       .finally(() => { _installing = null; });
   }
   return { state: "installing" };
