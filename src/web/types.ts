@@ -104,9 +104,25 @@ export interface ContextBreakdown {
   systemReminders: number;
   /** Tokens loaded into the model on the most recent assistant turn —
    *  the actual current context size. Sum-across-calls double-counts the
-   *  cached prefix every turn, so we read the LAST usage block instead. */
+   *  cached prefix every turn, so we read the LAST usage block instead.
+   *
+   *  Claude: the last usage block in the transcript, input + cache_read +
+   *  cache_creation. Codex: `last_token_usage.total_tokens` off the newest
+   *  `token_count` record, which is the CLI's own count rather than an
+   *  estimate — see the mapper in index.mjs for why that field and not
+   *  `input_tokens` beside it (#399). */
   currentContextTokens: number;
-  claudeMdFiles: Array<{ path: string; bytes: number }>;
+  /** The memory files this session loaded, nearest-first from cwd outwards.
+   *
+   *  BOTH ECOSYSTEMS, WHICH IS WHY IT IS NOT CALLED `claudeMdFiles` ANY MORE.
+   *  It held CLAUDE.md paths and only ever could: the sole producer walked for
+   *  CC's filenames, and the Codex path never reached it. Codex reads AGENTS.md
+   *  and does not read CLAUDE.md at all — verified against every rollout under
+   *  this machine's CODEX_HOME, where `AGENTS.md` appears on 9 lines across 5 of
+   *  the 8 files and `CLAUDE.md` on none — so the field now carries whichever of
+   *  the two the session's own CLI loads, and ContextModal titles the section
+   *  from `provider` rather than asserting one name at both. */
+  memoryFiles: Array<{ path: string; bytes: number }>;
 }
 
 export interface AgentNodeData {
@@ -138,9 +154,21 @@ export interface AgentNodeData {
    *  `provider` field on first event; defaults to "claude" for back-compat
    *  with replay events written before multi-provider support. */
   provider?: Provider;
-  /** Codex emits the actual model context window in session_meta
-   *  (model_context_window). When present, takes precedence over the static
-   *  table in pricing.ts. */
+  /** The context window the CLI itself reports, which takes precedence over the
+   *  static table in pricing.ts when present.
+   *
+   *  NOT from `session_meta`, as this said until #399 went looking: that record
+   *  does carry a `context_window` key, but it holds `{ window_id }` — the id of
+   *  the terminal window — and no token count at all. The number comes from
+   *  `event_msg/task_started` and from every `event_msg/token_count`, which is
+   *  why a session now has it from its first usage record rather than from its
+   *  next turn.
+   *
+   *  It is a property of the model and does not move: 258,400 on all 236
+   *  records that carry it across the rollouts sampled here, two CLI versions
+   *  and two models, changing mid-session in none of them. "Live" means the CLI
+   *  said it rather than the deck guessed it — and the guess for the same model
+   *  is 1,050,000, so the difference is the whole readout. */
   contextWindow?: number;
   /** Codex-only: `approval_policy` off the newest `turn_context` in the rollout
    *  — "never", "on-request", "on-failure", "untrusted". Only the root carries
@@ -190,10 +218,17 @@ export interface AgentNodeData {
    *  it there is no way to tell a reaped root from a genuinely finished one, and
    *  a transcript scan landing after a real `Stop` would un-finish the session. */
   reaped?: boolean;
-  /** Server-derived structural breakdown of what's in the context window.
-   *  Approximation: server reads the transcript JSONL + scans cwd for
-   *  CLAUDE.md and emits a synthetic ContextObserved event. Only the root
-   *  agent carries this — subagent context isn't separately observable. */
+  /** Server-derived breakdown of what's in the context window. Only the root
+   *  agent carries this — subagent context isn't separately observable.
+   *
+   *  How much of it is filled in depends on the provider, and the modal says so
+   *  rather than printing the gaps as zeroes. Claude: an approximation, from a
+   *  regex scan of the transcript JSONL plus a cwd walk for CLAUDE.md. Codex:
+   *  `currentContextTokens` is the CLI's own figure and exact, `memoryFiles`
+   *  comes from a cwd walk for AGENTS.md, and the five composition counts are
+   *  not populated at all — the rollout watcher skips a pre-existing session's
+   *  history, so counting from the moment the deck attached would be five
+   *  confident numbers that are all short (#399). */
   context?: ContextBreakdown;
 }
 
@@ -250,5 +285,11 @@ export interface HookPayload {
    *  rollout watcher and spread onto every payload it emits — see
    *  `AgentNodeData.approvalPolicy`. */
   approval_policy?: string;
+  /** Codex-only: how much of the context window is occupied right now, taken
+   *  from `token_count.info.last_token_usage.total_tokens` and carried on the
+   *  `UsageObserved` the same record produces. It rides along rather than
+   *  arriving as its own event because it is measured by the same record at the
+   *  same instant as the usage totals beside it (#399). */
+  context_tokens?: number;
   [key: string]: any;
 }

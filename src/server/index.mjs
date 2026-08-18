@@ -10,7 +10,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { claudeConfigDir } from "./claude-dir.mjs";
-import { CODEX_SESSIONS_DIR, STOP, walkRolloutDays } from "./codex-dir.mjs";
+import { CODEX_HOME, CODEX_SESSIONS_DIR, STOP, walkRolloutDays } from "./codex-dir.mjs";
 import { PRODUCT } from "./brand.mjs";
 import { invokedName, renameNotice } from "./invoked-as.mjs";
 import { codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
@@ -550,38 +550,79 @@ export function ccProjectSlug(cwd) {
   return `${slug.slice(0, CC_SLUG_MAX)}-${Math.abs(ccPathHash(abs)).toString(36)}`;
 }
 
-async function scanClaudeMdFiles(cwd) {
-  if (!cwd || typeof cwd !== "string") return [];
+/**
+ * Candidate memory-file paths on the walk from `cwd` up to the filesystem root.
+ *
+ * Both CLIs load their memory file the same way — nearest-first from the
+ * working directory outwards — and differ only in what the file is CALLED and
+ * in what else they add on top, so the walk is written once here and the two
+ * scanners below supply their own names. `rels` is a list of paths RELATIVE to
+ * each directory on the walk rather than bare filenames, because CC also honours
+ * `.claude/CLAUDE.md` at every level and Codex does not.
+ *
+ * Sixteen levels is the same depth this has always used: deep enough for any
+ * real checkout, shallow enough that a cwd on a network mount cannot turn one
+ * context read into an unbounded number of stat() calls.
+ *
+ * Returns paths without touching the disk. Statting them is collectMemoryFiles'
+ * job, so a caller that wants to add its own paths — a user-global file, a
+ * per-project memory directory — can splice them into one ordered list and get
+ * a single de-duplicated, existence-checked answer back.
+ */
+function memoryWalkPaths(cwd, rels) {
+  const out = [];
+  let dir = resolve(cwd);
+  for (let depth = 0; depth < 16; depth++) {
+    for (const rel of rels) out.push(join(dir, rel));
+    const parent = pdirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return out;
+}
+
+/**
+ * Which of `paths` are real, non-empty files, in the order given and with
+ * duplicates dropped.
+ *
+ * A zero-byte file is skipped on purpose: it contributes nothing to the model's
+ * context, and listing it in the modal would have the reader looking for the
+ * bytes it claims to cost. A path that cannot be stat()ed is simply absent —
+ * this runs against a tree another process is editing, and a permissions error
+ * on one candidate is no reason to lose the other fifteen.
+ */
+async function collectMemoryFiles(paths) {
   const found = [];
   const seen = new Set();
-  const home = homedir();
-  const push = async (p) => {
-    if (seen.has(p)) return;
+  for (const p of paths) {
+    if (seen.has(p)) continue;
     seen.add(p);
     try {
       const s = await stat(p);
       if (s.isFile() && s.size > 0) found.push({ path: p, bytes: s.size });
     } catch {}
-  };
-  // Walk up from cwd to filesystem root. At each dir, check for the
-  // canonical CC memory filenames plus CLAUDE.local.md (user-private).
-  let dir = resolve(cwd);
-  for (let depth = 0; depth < 16; depth++) {
-    for (const rel of [
-      "CLAUDE.md",
-      "CLAUDE.local.md",
-      join(".claude", "CLAUDE.md"),
-      join(".claude", "CLAUDE.local.md"),
-    ]) {
-      await push(join(dir, rel));
-    }
-    const parent = pdirname(dir);
-    if (parent === dir) break;
-    dir = parent;
   }
+  return found;
+}
+
+/** The memory files a CLAUDE session has in scope. Exported alongside its Codex
+ *  counterpart below so a test can check the pair together — the two must agree
+ *  on the walk and disagree on the filename, and only one of them showing up in
+ *  a test is how they would drift. */
+export async function scanClaudeMdFiles(cwd) {
+  if (!cwd || typeof cwd !== "string") return [];
+  const home = homedir();
+  // Walk up from cwd to filesystem root, checking the canonical CC memory
+  // filenames plus CLAUDE.local.md (user-private) at each level.
+  const paths = memoryWalkPaths(cwd, [
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    join(".claude", "CLAUDE.md"),
+    join(".claude", "CLAUDE.local.md"),
+  ]);
   // User-global memory.
-  await push(join(home, ".claude", "CLAUDE.md"));
-  await push(join(home, ".claude", "CLAUDE.local.md"));
+  paths.push(join(home, ".claude", "CLAUDE.md"));
+  paths.push(join(home, ".claude", "CLAUDE.local.md"));
   // Per-project auto-memory: ~/.claude/projects/<slug>/memory/*.md
   // (plus MEMORY.md index). CC injects these into context for sessions
   // whose cwd matches the slug.
@@ -591,11 +632,54 @@ async function scanClaudeMdFiles(cwd) {
     try {
       const entries = await readdir(memDir);
       for (const f of entries) {
-        if (f.toLowerCase().endsWith(".md")) await push(join(memDir, f));
+        if (f.toLowerCase().endsWith(".md")) paths.push(join(memDir, f));
       }
     } catch {}
   }
-  return found;
+  return collectMemoryFiles(paths);
+}
+
+/**
+ * The memory files a CODEX session has in scope: AGENTS.md, not CLAUDE.md.
+ *
+ * WHY THIS FUNCTION EXISTS AT ALL (#399). The context modal's third section was
+ * fed by scanClaudeMdFiles for every session regardless of provider, so the
+ * moment the donut became reachable for Codex the modal would have told a Codex
+ * user "No CLAUDE.md files found on the path from cwd to ~/.claude" — naming a
+ * file and a directory Codex does not read. Before this, `AGENTS.md` did not
+ * appear anywhere in this repository.
+ *
+ * That Codex reads it is not an assumption. Sampled every rollout under this
+ * machine's CODEX_HOME (structural search, no record content printed): the
+ * literal string `AGENTS.md` appears on 9 lines across 5 of the 8 files — in the
+ * `response_item/message` role=user preamble Codex prepends to a turn, in a
+ * role=developer message, and in a `world_state` record — while `CLAUDE.md`
+ * appears on zero lines in any of them.
+ *
+ * WHY THE FILESYSTEM AND NOT THE ROLLOUT. The rollout does name the files, but
+ * only inside message TEXT, and reading the text of a user's conversation to
+ * find a filename is not a trade this deck makes anywhere else — the Claude side
+ * has always answered the same question by walking the filesystem, and the two
+ * halves of one modal section should be derived the same way or the reader
+ * cannot compare them.
+ *
+ * CODEX_HOME comes from codex-dir.mjs like every other Codex path in the
+ * process (#375), so a relocated Codex home is honoured here without this
+ * module growing a sixth spelling of the rule.
+ *
+ * Exported for the tests, like readContextFromTranscript beside it: the rule for
+ * which files a session has in scope is worth pinning directly, rather than
+ * through a watcher, a temp home and a 1.5s poll.
+ */
+export async function scanAgentsMdFiles(cwd) {
+  if (!cwd || typeof cwd !== "string") return [];
+  // Codex has no `.codex/AGENTS.md` per-directory convention to mirror CC's
+  // `.claude/CLAUDE.md`, so the per-level list is the single filename.
+  const paths = memoryWalkPaths(cwd, ["AGENTS.md"]);
+  // The user-global instructions file, which Codex loads for every session
+  // whatever the cwd — the counterpart of ~/.claude/CLAUDE.md.
+  paths.push(join(CODEX_HOME, "AGENTS.md"));
+  return collectMemoryFiles(paths);
 }
 
 function maybeResolveContext(payload) {
@@ -611,19 +695,74 @@ function maybeResolveContext(payload) {
   lastContextReadAt.set(sid, now);
   pendingContextReads.add(sid);
   Promise.all([readContextFromTranscript(tp), scanClaudeMdFiles(cwd)])
-    .then(([breakdown, claudeMdFiles]) => {
-      if (!breakdown && (!claudeMdFiles || claudeMdFiles.length === 0)) return;
+    .then(([breakdown, memoryFiles]) => {
+      if (!breakdown && (!memoryFiles || memoryFiles.length === 0)) return;
       pushEvent({
         hook_event_name: "ContextObserved",
         session_id: sid,
         context: {
           ...(breakdown ?? {}),
-          claudeMdFiles: claudeMdFiles ?? [],
+          memoryFiles: memoryFiles ?? [],
         },
       }, "internal");
     })
     .catch(() => {})
     .finally(() => pendingContextReads.delete(sid));
+}
+
+// Throttle state for the Codex half of the same question. Separate maps rather
+// than sharing maybeResolveContext's, because the two run on different triggers
+// — a hook payload there, a batch of appended rollout lines here — and one
+// session cannot be both.
+const lastCodexMemoryReadAt = new Map();
+const pendingCodexMemoryReads = new Set();
+
+/**
+ * Emit the memory files a Codex session has in scope, throttled per session.
+ *
+ * WHY THIS IS NOT maybeResolveContext (#399). That function early-returns
+ * without `payload.transcript_path`, a field only Claude Code sends, and it
+ * would scan for CLAUDE.md if it got that far. It is also unreachable from here
+ * on a second count: pushEvent gates all of its enrichment on `source ===
+ * "hook"`, and the Codex rollout watcher emits with source "codex" because it is
+ * not a hook stream at all. So this is called from the watcher's own scan loop,
+ * next to the lazy root, rather than off the back of an event.
+ *
+ * There is no structural breakdown alongside the file list, and that is the
+ * honest answer rather than a gap: the counts the Claude side reports —
+ * user/assistant messages, tool uses, tool results, system-reminders — come from
+ * a regex scan of a transcript this deck has read from byte zero, and the
+ * watcher deliberately SKIPS a pre-existing session's history at startup
+ * (`state.offset = st.size`). Counting from the moment the deck attached would
+ * produce five confident numbers that are all short by however much of the
+ * session happened first, on a panel whose whole purpose is to say what is in
+ * the window. ContextModal says so in the slot those counts would have used;
+ * see codex-approval.ts for the same move on a different unanswerable question.
+ */
+function maybeResolveCodexMemory(sid, cwd) {
+  if (!sid || !cwd) return;
+  if (pendingCodexMemoryReads.has(sid)) return;
+  const now = Date.now();
+  const last = lastCodexMemoryReadAt.get(sid) ?? 0;
+  if (now - last < CONTEXT_READ_THROTTLE_MS) return;
+  lastCodexMemoryReadAt.set(sid, now);
+  pendingCodexMemoryReads.add(sid);
+  scanAgentsMdFiles(cwd)
+    .then(memoryFiles => {
+      // Nothing found is not a fact worth an event: the reducer merges a
+      // ContextObserved into whatever the session already had, and an empty list
+      // would only ever overwrite a real one with nothing. A repo that grows its
+      // first AGENTS.md mid-session is picked up by the next throttled pass.
+      if (!memoryFiles.length) return;
+      pushEvent({
+        hook_event_name: "ContextObserved",
+        session_id: sid,
+        provider: "codex",
+        context: { memoryFiles },
+      }, "internal");
+    })
+    .catch(() => {})
+    .finally(() => pendingCodexMemoryReads.delete(sid));
 }
 
 // ─── Codex transcript enrichment ──────────────────────────────────────────
@@ -777,7 +916,9 @@ function maybeResolveCodex(payload) {
 //   response_item/function_call_output → PostToolUse / PostToolUseFailure,
 //                                        decided by the outcome line Codex
 //                                        prepends to the output (codexCallFailed)
-//   event_msg/token_count              → UsageObserved
+//   event_msg/token_count              → UsageObserved, and riding on it the
+//                                        session's live context occupancy and
+//                                        the CLI's own window (#399)
 //   event_msg/task_started (+window)   → ModelObserved (context window)
 //   event_msg/task_complete            → Stop (the turn finished)
 //   event_msg/turn_aborted             → Stop (the turn was interrupted)
@@ -970,8 +1111,68 @@ export function codexObjToPayload(obj, sid, cwd) {
     if (pl.type === "item_completed" && pl.item && pl.item.type === "UserMessage") {
       return { ...base, hook_event_name: "UserPromptSubmit", prompt: codexItemText(pl.item), model };
     }
-    if (pl.type === "token_count" && pl.info && pl.info.total_token_usage) {
-      return { ...base, hook_event_name: "UsageObserved", usage: pl.info.total_token_usage, model };
+    // Codex states THREE numbers on every `token_count` and this branch used to
+    // take one of them (#399). The other two are what the context donut is drawn
+    // from, so the deck rendered no context readout at all for the only provider
+    // that reports its window exactly.
+    //
+    // Measured across every rollout under this machine's CODEX_HOME — 178
+    // `token_count` records, 164 on Codex 0.144.5 and 14 on 0.147.0 — all 178
+    // carry `info.last_token_usage`, `info.total_token_usage` and
+    // `info.model_context_window`. Nothing here is a new read: the line is
+    // already parsed and the object already destructured.
+    //
+    //   total_token_usage    cumulative SPEND for the session. Every request's
+    //                        prompt summed, so it counts the cached prefix again
+    //                        on every turn and passes the context window many
+    //                        times over inside one session (5,238,700 against a
+    //                        258,400 window in the longest file here). Correct
+    //                        for cost, meaningless as an occupancy figure.
+    //
+    //   last_token_usage     the MOST RECENT request: `input_tokens` is the whole
+    //                        conversation Codex sent (it already contains the
+    //                        cached prefix — see billedInputTokens), plus that
+    //                        request's completion. `total_tokens` is exactly
+    //                        input + output on 177 of the 178 records.
+    //
+    //   model_context_window the CLI's own ceiling, 258,400 for gpt-5.6 against
+    //                        the 1,050,000 the static table guesses.
+    //
+    // WHY `last_token_usage.total_tokens` AND NOT `input_tokens`. The prompt-only
+    // figure is the closer analogue of the Claude side, which sums the last usage
+    // block's input + cache_read + cache_creation and leaves the completion out.
+    // The difference is one response — 20 to 2,288 tokens in this sample, under
+    // 1% of the window — and `total_tokens` wins on the case where they diverge
+    // for real: on `thread_rolled_back` (the user rewinding the conversation)
+    // Codex writes a `token_count` whose per-request components are all zero and
+    // whose `last_token_usage.total_tokens` is the RECOMPUTED context size —
+    // 47,355, down from 58,516 — while `total_token_usage` does not move at all,
+    // because no request was made. Codex is using that field as "tokens in the
+    // window", and reading `input_tokens` there would collapse the donut to 0%
+    // at precisely the moment the number changed most.
+    //
+    // The window rides along too. `task_started` below is the only other carrier
+    // and it fires once per turn, so a deck that attached mid-turn — the ordinary
+    // case, since the watcher skips a pre-existing session's history at startup —
+    // had to wait for the next turn before the donut could be scaled against
+    // anything but the wrong static default.
+    if (pl.type === "token_count" && pl.info) {
+      const info = pl.info;
+      const last = info.last_token_usage;
+      const contextTokens = last && typeof last.total_tokens === "number" ? last.total_tokens : undefined;
+      const window = typeof info.model_context_window === "number" ? info.model_context_window : undefined;
+      // A record that states none of the three says nothing, and emitting an
+      // event for it would put an empty envelope in the ring buffer and in the
+      // persisted log for every reader to skip forever.
+      if (!info.total_token_usage && contextTokens === undefined && window === undefined) return null;
+      return {
+        ...base,
+        hook_event_name: "UsageObserved",
+        usage: info.total_token_usage,
+        model,
+        model_context_window: window,
+        context_tokens: contextTokens,
+      };
     }
     if (pl.type === "task_started" && typeof pl.model_context_window === "number") {
       return { ...base, hook_event_name: "ModelObserved", model, model_context_window: pl.model_context_window };
@@ -1244,6 +1445,14 @@ async function codexScanOnce(firstRun) {
           emitCodexEvent(payload, persist);
         }
       }
+
+      // Once per batch of appended lines rather than once per line — the scan
+      // throttles itself per session, but the cheapest call is the one that is
+      // never made, and a batch can be hundreds of lines. Gated on the root
+      // existing so a session the deck has decided not to draw does not cost a
+      // directory walk, and repeated rather than done once at root creation so
+      // an AGENTS.md written after the session started is still found (#399).
+      if (state.rootEmitted) maybeResolveCodexMemory(state.sid, state.cwd);
     }
 
     // Rollout files fall out of the newest-2-days listing and never come back,
@@ -1308,6 +1517,7 @@ function forgetSession(sid) {
   lastContextReadAt.delete(sid);
   codexRolloutPathBySid.delete(sid);
   lastCodexUsageReadAt.delete(sid);
+  lastCodexMemoryReadAt.delete(sid);
   codexSessionModel.delete(sid);
   codexSessionApproval.delete(sid);
 }

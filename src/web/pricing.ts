@@ -380,7 +380,9 @@ const BIG_CONTEXT_PATTERNS: RegExp[] = [
 ];
 
 // Codex context-window defaults, used only until the live
-// `model_context_window` from the CLI's session_meta reaches the agent node.
+// `model_context_window` reaches the agent node — which comes from the rollout's
+// `task_started` and `token_count` records, not from `session_meta`, whose
+// `context_window` key holds a terminal window id and no token count (#399).
 //
 // These are the API's real windows. Note the Codex CLI reports something
 // smaller — 258,400 for the gpt-5.6 family, being 272,000 x 95% — because it
