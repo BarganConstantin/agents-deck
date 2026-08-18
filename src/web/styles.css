@@ -657,6 +657,124 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   position: relative;
   top: 1px;
 }
+
+/* ---------------- system meter ----------------
+   Machine CPU + memory, in the status strip. Two rows because the two metrics
+   have different dynamics: CPU gets a 60s sparkline because it spikes, memory
+   gets a level bar because it does not. See SystemMeter.tsx.
+
+   The numbers replace the graphic IN PLACE on hover rather than appearing
+   beside it. Expanding would shove every control to its right by ~30px on a
+   pointer that was only passing through, and this strip has no room to give:
+   it already carries five stats, the MCP dots and the blocked-session button
+   with no responsive collapse anywhere in the sheet. */
+.topbar .status .sysmeter {
+  display: inline-flex;
+  align-items: center;
+}
+/* Same separator the stats draw between themselves — this sits in that run and
+   should not look bolted onto the end of it. */
+.topbar .status .stat + .sysmeter::before {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 12px;
+  background: var(--line);
+  margin-right: 10px;
+  position: relative;
+  top: 1px;
+}
+.sysmeter .sm-box {
+  position: relative;
+  width: 36px;
+  height: 14px;
+  cursor: default;
+}
+.sysmeter .sm-graphic,
+.sysmeter .sm-read {
+  position: absolute;
+  inset: 0;
+  transition: opacity 140ms ease;
+}
+.sysmeter .sm-graphic {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.sysmeter .sm-spark { display: block; }
+.sysmeter .sm-ram {
+  display: block;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.sysmeter .sm-ram-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  /* scaleX, not width. The level is driven by a transform so the tween is
+     composited instead of relaying out the strip on every memory sample —
+     QuotaBar animates width and predates this, but a readout that ticks on its
+     own timer should not ask the topbar to reflow to do it.
+     Memory is resampled every 30s, so an instant jump would read as a glitch
+     rather than as a measurement. Long enough to be seen, short enough that the
+     bar is never lying about the current value for meaningfully long. */
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms ease;
+}
+.sysmeter .sm-ram-fill.warn { background: var(--warn); }
+
+/* The reading. Hidden until hover, and tabular so the two figures do not
+   shuffle sideways as they change. */
+.sysmeter .sm-read {
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+.sysmeter .sm-read b { font-weight: 600; }
+.sysmeter .sm-read i {
+  font-style: normal;
+  color: var(--muted);
+  opacity: 0.7;
+}
+.sysmeter:hover .sm-graphic { opacity: 0; }
+.sysmeter:hover .sm-read { opacity: 1; }
+
+/* Waiting for the first sample: the tracks are there, holding the slot, and
+   quieter than a live meter so an empty reading never competes for attention
+   with the numbers beside it. */
+.sysmeter.idle .sm-graphic { opacity: 0.45; }
+.sysmeter.idle:hover .sm-graphic { opacity: 0.45; }
+
+.sysmeter .sm-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sysmeter .sm-graphic,
+  .sysmeter .sm-read,
+  .sysmeter .sm-ram-fill {
+    transition: none;
+  }
+}
 .topbar .status .pill {
   display: inline-flex;
   align-items: center;
