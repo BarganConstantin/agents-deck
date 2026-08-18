@@ -13,6 +13,7 @@
 // transcript carries the split; costForUsage documents what happens to
 // tokens that reach us without one.
 
+import { bareModelId } from "./model-id";
 import type { TokenUsage } from "./types";
 
 export interface ModelRates {
@@ -242,21 +243,37 @@ const RATES: Array<{ match: RegExp; rates: ModelRates | ((now: number) => ModelR
  *  this question. The one thing this decides is which arithmetic
  *  `billedInputTokens` does below — Codex bills cache reads and writes on their
  *  own lines, Claude folds them into input — so it is a detail of the pricing
- *  model and is exercised through `billedInputTokens` on both providers. */
+ *  model and is exercised through `billedInputTokens` on both providers.
+ *
+ *  Deliberately NOT given the `bareModelId` strip the two tables got in #475.
+ *  The prefix it would remove is `anthropic.`, and the only ids carrying one
+ *  are Claude ids — Bedrock, Vertex and Mantle serve no OpenAI model, so no
+ *  `gpt-*` id ever arrives wearing it. Stripping first would change no answer
+ *  here, and leaving the question anchored at the raw id keeps this a test of
+ *  "did an OpenAI id arrive" rather than one more thing to keep in step. */
 function isCodexModel(modelId: string | undefined): boolean {
   if (!modelId) return false;
   return /^(?:gpt[-_]|codex[-_]|o\d)/i.test(modelId);
 }
 
 /** `now` is injectable so a dated rate can be exercised on both sides of its
- *  cutover; callers in the app leave it alone and get the wall clock. */
+ *  cutover; callers in the app leave it alone and get the wall clock.
+ *
+ *  The id is stripped of its provider namespace first (#475). Every row above
+ *  is `^`-anchored, and a Bedrock id arrives as
+ *  `us.anthropic.claude-opus-4-1-20250805-v1:0`, so `^claude` reached none of
+ *  them and every Claude model on Bedrock or Mantle priced out at `null` —
+ *  which is not a wrong number but no number at all, on every cost surface, for
+ *  the whole session. See model-id.ts for why this is a strip rather than
+ *  thirty looser patterns. A first-party or Vertex id is unchanged by it. */
 export function ratesForModel(
   modelId: string | undefined,
   now: number = Date.now(),
 ): ModelRates | null {
   if (!modelId) return null;
+  const bare = bareModelId(modelId);
   for (const r of RATES) {
-    if (r.match.test(modelId)) return typeof r.rates === "function" ? r.rates(now) : r.rates;
+    if (r.match.test(bare)) return typeof r.rates === "function" ? r.rates(now) : r.rates;
   }
   return null;
 }
@@ -412,8 +429,16 @@ const CODEX_CONTEXT_DEFAULTS: Array<{ match: RegExp; window: number }> = [
 
 export function contextWindowForModel(modelId: string | undefined): number {
   if (!modelId) return CONTEXT_WINDOW_DEFAULT;
-  for (const p of BIG_CONTEXT_PATTERNS) if (p.test(modelId)) return CONTEXT_WINDOW_BIG;
-  for (const e of CODEX_CONTEXT_DEFAULTS) if (e.match.test(modelId)) return e.window;
+  // Same strip as ratesForModel, and for the same reason: five of the six
+  // BIG_CONTEXT_PATTERNS are `^claude`-anchored, so without it a Bedrock Opus 5
+  // fell through to the 200K default and drew a context donut five times too
+  // full. CODEX_CONTEXT_DEFAULTS needs no such care — no third party serves
+  // OpenAI models to Claude Code, so a `gpt-*` id never carries this prefix —
+  // but it costs nothing to pass the same string to both, and a table that had
+  // to be told which half of the id to look at would be the thing that drifts.
+  const bare = bareModelId(modelId);
+  for (const p of BIG_CONTEXT_PATTERNS) if (p.test(bare)) return CONTEXT_WINDOW_BIG;
+  for (const e of CODEX_CONTEXT_DEFAULTS) if (e.match.test(bare)) return e.window;
   return CONTEXT_WINDOW_DEFAULT;
 }
 
