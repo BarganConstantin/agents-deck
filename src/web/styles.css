@@ -167,6 +167,90 @@
   --ctl-h: 30px;
 }
 
+/* The two dimmings, in their own block and in neither theme for the same reason
+   the geometry above is: an alpha is the same number on white as it is on black.
+
+   `.ap-manage-btn:disabled` already wrote the rule down in prose — "0.6, the
+   same dimming the ↻ and the two selects use for the moment a request is out" —
+   and eight rules were keeping to it while six were not: 0.5 on the two usage
+   modal buttons and on a disabled account row, 0.55 on the add-account field,
+   0.45 on the two "superseded" surfaces. The worst of it is inside one modal,
+   where `.uh-reload:disabled` at 0.5 sat beside a `.btn` at 0.6 with nothing
+   different to say — two controls dimmed by different amounts read as one of
+   them being more broken than the other, which is a claim neither was making.
+
+   --dim-off is one decision and therefore one token: "this control cannot be
+   operated right now." It covers `:disabled` and the two state classes that mean
+   the same thing without the attribute — `.ap-account.disabled` for an account
+   switched off in the store, `.v.checking` for the moment a version check is out
+   on the network. Every rule reading it is a control the pointer cannot act on,
+   and if that number ever moves it must move for all of them at once, which is
+   exactly what a token is for and what fourteen literals could not promise.
+
+   --dim-stale is deliberately NOT that token, at a deliberately different value.
+   `.uh-stale` and `.ap-share.expired` do not say "you cannot use this", they say
+   "this is no longer current" — a newer ccusage run is in flight for the range
+   you are looking at, a share link is past its expiry. Both are still readable,
+   still selectable, still true a moment ago. Folding them into --dim-off would
+   be the mistake this block is meant to prevent: it would make a later decision
+   about disabled controls silently restate itself about stale data. Naming them
+   apart is how the two stay free to differ, and the 0.45 they share is the value
+   they already had.
+
+   Not tokenised, on purpose, and all of them currently spell some value this
+   block also spells: `.ap-failure-x` and the two search-dim hovers rest at 0.6
+   and lift to 1 under the pointer, which is a quiet affordance rather than a
+   dead one; `.ap-dot`, `.ap-field::after`, `.ap-auto-now::after`, the accent
+   stripe and `.aa-mark-ring` are decoration with no state at all; `.rf-dim`,
+   `.rf-spotlit-out` and `.tool-burst.dim` are what a search does to what it did
+   not match, which is a third idiom with its own ladder. Those are coincidentally
+   equal numbers, not the same decision, and a token over them would be worse
+   than the literals they are. */
+:root {
+  --dim-off: 0.6;
+  --dim-stale: 0.45;
+}
+
+/* The type ladder: 9 · 10 · 11 · 12 · 13 · 14 · 16 · 18 · 22 · 26 · 34.
+   Eleven steps, and no font-size in this file may be anything else.
+
+   It is a comment and a test rather than eleven --fs-* tokens, and that is the
+   considered choice, not the lazy one. A token earns its keep when two rules
+   MUST move together — --panel-inset exists because a header and the rows under
+   it are one edge, --ctl-h because two button variants are one height. Nothing
+   here is like that. `.up-k` and `.ap-num` are both 10px and there is no reason
+   on earth they should have to change together; a --fs-small they both read
+   would invent that coupling and then quietly enforce it. What the sheet
+   actually needed was not indirection, it was a closed set, so the set is closed
+   by type-ladder.test.ts and every rule keeps its own literal.
+
+   Eighteen distinct sizes went in. Eight of them sat inside the 3.5px band from
+   9 to 12.5, stepping 1.042 to 1.056 — a 4-5% difference, which is under what a
+   reader can resolve, so those steps were not ranking anything, they were only
+   recording the order the rules were written in. Every value that was within 7%
+   of a neighbour collapsed into it, which is the whole of the rule:
+
+     9.5 → 9   10.5 → 10   11.5 → 11   12.5 → 12    (42 declarations)
+     15  → 14  (the third spelling of "modal title")
+     17  → 18  (the second spelling of "the heading this surface is named by")
+     8   → 9   (the one rule under the floor; a legibility call, not a step call)
+
+   The half-steps round DOWN, uniformly. Each sits exactly midway between two
+   live neighbours, so no reading of intent can break the tie honestly — the
+   0.5px was carrying no information in either direction. What does break it is
+   that text which grows can overflow a fixed-width panel and text which shrinks
+   cannot, and #369 and #380 each spent an issue on this sheet's horizontal
+   arithmetic. Nothing here was worth reopening it for.
+
+   What deliberately did NOT collapse: 11 → 12 is a 9% step, 12 → 13 is 8%, and
+   both are doing real work — `.agent-node` is 12px and `.agent-node .meta`,
+   `.sub` and `.time` are 11px, which is the node's own body-to-secondary
+   hierarchy. 22 · 26 · 34 are the three big money numbers on three surfaces of
+   very different size, 18% and 31% apart, which is a hierarchy a reader can
+   actually see. Flattening any of those would be a redesign; this issue was
+   about drift, and a step you can resolve is not drift. Express secondary rank
+   with --muted at one size before reaching for a twelfth. */
+
 /* The two transitions this deck writes from JS, declared here so that the
    cascade can still reach them.
 
@@ -421,7 +505,7 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
    this the click looks like it did nothing at all. */
 .topbar .brand button.v.checking {
   cursor: progress;
-  opacity: 0.6;
+  opacity: var(--dim-off);
 }
 /* 85%, not 34%: a third of --warn is 3.05:1 on this canvas and 1.81:1 on white,
    the amber equivalent of the --line edge above it. #325 found 65% enough for
@@ -488,9 +572,9 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   color: var(--ok);
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 11px;
 }
-.selected-ribbon .selected-rate { color: var(--muted); font-size: 10.5px; }
+.selected-ribbon .selected-rate { color: var(--muted); font-size: 10px; }
 .selected-ribbon .selected-extra {
   display: inline-flex;
   align-items: center;
@@ -498,7 +582,7 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   border-radius: 999px;
   background: var(--accent-dim);
   color: var(--text);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -612,7 +696,7 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   box-shadow: 0 0 4px rgba(0,0,0,0.25);
 }
 .topbar .status .mcp-legend .mcp-more {
-  font-size: 9.5px;
+  font-size: 9px;
   color: var(--muted);
   margin-left: 1px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -923,7 +1007,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   background: linear-gradient(90deg, rgba(252,165,165,0.12), transparent);
   border-bottom: 1px solid rgba(252,165,165,0.30);
   color: var(--err);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
   animation: fadeIn 200ms ease;
 }
@@ -951,7 +1035,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
      row is the one that asks the user to restart — the worst place in the app
      to make someone squint. Dark was fine either way. */
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
   animation: fadeIn 200ms ease;
 }
@@ -990,7 +1074,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .ver-banner .ver-cmd:active { transform: scale(0.97); }
 .ver-banner .ver-cmd code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 11px;
   /* Stated, not assumed: if the copy button ever fails, selecting this by hand
      is the fallback, and it must survive any future user-select:none above. */
   user-select: text;
@@ -1029,7 +1113,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   background: color-mix(in srgb, var(--warn) 16%, transparent);
   color: var(--warn);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: background 130ms, border-color 130ms;
@@ -1038,7 +1122,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   background: color-mix(in srgb, var(--warn) 26%, transparent);
   border-color: var(--warn);
 }
-.ver-banner .ver-act:disabled { opacity: 0.6; cursor: default; }
+.ver-banner .ver-act:disabled { opacity: var(--dim-off); cursor: default; }
 /* A failed install is not a warning, it is a failure, and the command beside it
    is now the only way forward — so it reads in the error colour. */
 .ver-banner .ver-sub.fail { color: var(--err); }
@@ -1055,7 +1139,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   background: none;
   color: var(--muted);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   cursor: pointer;
   transition: color 130ms, border-color 130ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
@@ -1334,7 +1418,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   border: 1px solid var(--line);
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text);
 }
 .detail .row {
@@ -1351,7 +1435,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .detail .row .v {
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 220px;
@@ -1588,7 +1672,12 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   gap: 12px;
   margin-bottom: 14px;
 }
-.ctx-modal-title { font-size: 15px; font-weight: 600; }
+/* 14px/600, the size the deck's other two modal titles are already set in —
+   `.uh-title` and `.modal-tool-name`. This one wrote 15px, and 15 against 14 is
+   a 7% step: below anything a reader can resolve, so it was not saying that this
+   modal outranks those, it was only the third spelling of one decision. It was
+   also the last live rule at 15px, so the size retires with it. */
+.ctx-modal-title { font-size: 14px; font-weight: 600; }
 .ctx-modal-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
 .ctx-modal-close {
   background: transparent;
@@ -1766,7 +1855,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   padding: 3px 7px;
   border: 1px solid transparent;
   border-radius: 6px;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   min-width: 0;
 }
@@ -1817,7 +1906,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   gap: 6px;
   margin-top: 7px;
   padding: 3px 7px;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   min-width: 0;
   color: var(--muted);
@@ -1887,7 +1976,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .tool-spark-label {
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1925,7 +2014,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .agent-node .meta .cost-meta .cost-rate {
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.02em;
 }
@@ -1946,7 +2035,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   justify-content: space-between;
   align-items: baseline;
 }
-.tokens-grid .k { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.tokens-grid .k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
 .tokens-grid b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .agent-node.synthetic {
@@ -1975,7 +2064,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   border: 1px solid var(--line);
   color: var(--accent);
   background: var(--bg-soft);
-  font-size: 10.5px;
+  font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-weight: 600;
 }
@@ -2085,7 +2174,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .cluster-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2373,7 +2462,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    of pure lateness, measured, and it is what made a sub's glow trail its
    primary's by 220ms on a tool that finished once. */
 .tool-burst.sub {
-  font-size: 10.5px;
+  font-size: 10px;
   padding: 4px 10px 4px 8px;
   opacity: 0.94;
   animation: bubble-spawn 220ms 110ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
@@ -2615,7 +2704,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .session-list .sl-live-count {
-  font-size: 10.5px;
+  font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--inflight);
@@ -2624,13 +2713,21 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 /* Beside the live count and ahead of it, since the two answer different
    questions and only one of them is asking you for something. */
 .session-list .sl-waiting-count {
-  font-size: 10.5px;
+  font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--warn);
   font-weight: 600;
 }
-.session-list .sl-close { width: 26px; height: 26px; font-size: 15px; }
+/* The font-size #380 found here never rendered and is gone. This button is
+   `class="btn icon-btn sl-close"`, and `button.btn.icon-btn` is (0,2,1) against
+   this rule's (0,2,0) — a tie on classes decided by the element name — so the
+   15px was always losing to the shared 14px. Deleted rather than made to win:
+   the deck has shipped this glyph at 14px for its whole life, 14px is what every
+   other icon button in the app is set in, and "restore a size no one has ever
+   seen" is a visual change dressed up as a cleanup. The width and height beside
+   it are dead by the same arithmetic; those are #383's sweep, not this issue's. */
+.session-list .sl-close { width: 26px; height: 26px; }
 
 /* The two numbers the row's inset is made of, declared where they are about
    and inherited by the row below — the panel-wide inset stays at :root, and
@@ -2772,7 +2869,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .session-list .sl-label {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2814,9 +2911,15 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   gap: 10px;
   min-width: 0;
 }
+/* 18px, joining `.empty-hero h2` rather than sitting 1px under it. Both are the
+   largest text on the surface they head and both are 600, and 17 against 18 is a
+   6% step — under what a reader can resolve, so the difference was not encoding
+   "a side panel is smaller than a splash screen", it was just a second number
+   for one job. The title already clips with an ellipsis, so a 1px lift spends
+   one character rather than any width. */
 .detail-hero .hero-title {
   margin: 0;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--text);
@@ -2829,7 +2932,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   flex-wrap: wrap;
@@ -2867,7 +2970,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   letter-spacing: -0.01em;
 }
 .detail-hero .hero-cost-label {
-  font-size: 10.5px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.10em;
   color: var(--muted);
@@ -2979,14 +3082,14 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .prompt-time {
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   margin-bottom: 4px;
 }
 .prompt-text {
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text);
   white-space: pre-wrap;
@@ -3026,7 +3129,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 .shortcuts .sc { display: contents; }
 .shortcuts .sc kbd {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--text);
   background: var(--bg-soft);
@@ -3142,7 +3245,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   gap: 8px;
 }
 .modal-section .err-tag {
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 4px;
@@ -3157,7 +3260,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-radius: 8px;
   background: var(--bg);
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .modal-section pre {
@@ -3206,7 +3309,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .session-summary .ss-hero-left { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .session-summary .ss-cost-label {
-  font-size: 10.5px;
+  font-size: 10px;
   letter-spacing: 0.10em;
   text-transform: uppercase;
   color: var(--muted);
@@ -3227,7 +3330,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px 16px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -3310,12 +3413,12 @@ button.tool.clickable:last-child { border-bottom: none; }
 .session-summary .ss-tt-count {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
 }
 
 .session-summary .ss-prompt {
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.55;
   color: var(--text);
   padding: 10px 12px;
@@ -3417,7 +3520,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   padding: 2px 7px;
   border-radius: 5px;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -3549,8 +3652,10 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-radius: 999px;
   background: rgba(240,171,252,0.12);
 }
+/* Same dead override as `.sl-close`: `class="btn icon-btn up-close"` puts
+   `button.btn.icon-btn` (0,2,1) over this rule's (0,1,0), so the 16px declared
+   here has never painted a pixel and the shared 14px has. Deleted. */
 .up-close {
-  font-size: 16px;
   line-height: 1;
   padding: 2px 6px;
   color: var(--muted);
@@ -3750,8 +3855,12 @@ button.tool.clickable:last-child { border-bottom: none; }
 
 /* ── quota bars ── */
 .up-quota-section { padding-top: 10px; border-top: none; }
+/* One #380 did not list, found by sweeping the same arithmetic over every
+   rendered class set rather than over the five selectors it happened to name.
+   This is `class="btn up-refresh-btn"` with no `icon-btn`, so the competition is
+   `button.btn` (0,1,1) against (0,1,0): the shared 12px wins and the 14px here
+   never rendered. Deleted, same reasoning as the two above. */
 .up-refresh-btn {
-  font-size: 14px;
   padding: 1px 7px;
   color: var(--muted);
   line-height: 1.4;
@@ -3867,7 +3976,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   color: var(--text);
   padding: 0 3px;
   border-radius: 3px;
-  font-size: 10.5px;
+  font-size: 10px;
 }
 .up-quota-loading { font-size: 11px; color: var(--text-dim); }
 .up-quota-sub { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
@@ -3905,10 +4014,10 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .uh-titlewrap { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
 .uh-title { font-size: 14px; font-weight: 600; }
-.uh-sub { font-size: 10.5px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.uh-sub { font-size: 10px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .uh-range { display: inline-flex; gap: 2px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
 .uh-range-btn {
-  font: inherit; font-size: 10.5px;
+  font: inherit; font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   padding: 2px 9px; border: none; border-radius: 999px;
   color: var(--muted); background: transparent; cursor: pointer;
@@ -3918,10 +4027,14 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-range-btn:hover { color: var(--text); }
 .uh-range-btn:active { transform: scale(0.97); }
 .uh-range-btn.on { background: var(--accent-dim); color: var(--text); }
-.uh-reload { width: 24px; height: 24px; font-size: 13px; padding: 0; }
+/* The other one #380's five missed. `class="btn icon-btn uh-reload"`, so
+   `button.btn.icon-btn` (0,2,1) beats this (0,1,0) and the ↻ has always drawn at
+   the shared 14px, never at 13. The width, height and padding here are dead the
+   same way and are left for #383. */
+.uh-reload { width: 24px; height: 24px; padding: 0; }
 /* A ccusage run is seconds long and the button is the only thing on the header
    that moves while it lasts, so it has to read as busy rather than as ignored. */
-.uh-reload:disabled { opacity: 0.5; cursor: default; }
+.uh-reload:disabled { opacity: var(--dim-off); cursor: default; }
 .uh-close {
   width: 24px; height: 24px; font-size: 16px; line-height: 1;
   border: none; background: transparent; color: var(--muted);
@@ -3937,11 +4050,13 @@ button.tool.clickable:last-child { border-bottom: none; }
 /* The recovery belongs where the failure is. The header's ↻ is on screen in
    every branch, but nothing there says it is the fix for what the box says. */
 .uh-retry { margin-top: 14px; }
-.uh-retry:disabled { opacity: 0.5; cursor: default; }
+.uh-retry:disabled { opacity: var(--dim-off); cursor: default; }
 
 /* Everything the selected range answered, dimmed while a newer run for that
-   same range is still going. */
-.uh-stale { opacity: 0.45; transition: opacity 120ms; }
+   same range is still going. --dim-stale rather than --dim-off: these numbers
+   are not unusable, they are one refresh out of date, and the reader is meant to
+   keep reading them until the new ones land. */
+.uh-stale { opacity: var(--dim-stale); transition: opacity 120ms; }
 
 .uh-totals {
   display: grid; grid-template-columns: repeat(4, 1fr);
@@ -3954,7 +4069,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .uh-stat-val { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .uh-stat-val.accent { color: var(--ok); }
-.uh-stat-label { font-size: 9.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.uh-stat-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 
 .uh-chart {
   display: flex; align-items: flex-end; gap: 1px;
@@ -3977,9 +4092,15 @@ button.tool.clickable:last-child { border-bottom: none; }
   transition: height 300ms ease;
 }
 .uh-bar-seg { width: 100%; }
+/* 9px, the sheet's floor, not the 8px this was alone in writing. It was the one
+   declaration in the file below the smallest size anything else is set in, and
+   an 8px monospace date under a chart is the label that says which bar you are
+   reading — so the exception was being spent on the one place a floor is for.
+   Nothing else moves: the label is absolutely positioned under the column and
+   already ellipsises, so a 1px lift changes what it can say, not where it sits. */
 .uh-bar-label {
   position: absolute; bottom: -15px;
-  font-size: 8px; color: var(--text-dim);
+  font-size: 9px; color: var(--text-dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap; transform: rotate(0deg);
   overflow: hidden; max-width: 100%; text-overflow: ellipsis;
@@ -4050,11 +4171,15 @@ button.tool.clickable:last-child { border-bottom: none; }
   letter-spacing: 0.02em;
 }
 .ap-header-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-.ap-refresh { padding: 1px 6px; font-size: 11px; }
+/* `class="btn ap-refresh"`, so `button.btn` (0,1,1) outranks this (0,1,0) and
+   the 11px that used to sit here never rendered — the ↻ has always been the
+   shared 12px. Deleted rather than promoted, for the reason spelled out at
+   `.sl-close`: making a rule render for the first time changes the picture. */
+.ap-refresh { padding: 1px 6px; }
 /* The one moment this button does nothing. A reload can ask claude-swap to
    collect over the network, so it is not instant, and without a dimmed state a
    click that landed looks exactly like a click that missed. */
-.ap-refresh:disabled { opacity: 0.6; cursor: default; }
+.ap-refresh:disabled { opacity: var(--dim-off); cursor: default; }
 
 .ap-account {
   padding: 9px var(--panel-inset) 8px;
@@ -4064,7 +4189,7 @@ button.tool.clickable:last-child { border-bottom: none; }
    before any text does — as a tint across the whole row rather than a colored
    stripe down its edge, which marks the boundary instead of the row. */
 .ap-account.active { background: color-mix(in srgb, var(--accent) 6%, transparent); }
-.ap-account.disabled { opacity: 0.5; }
+.ap-account.disabled { opacity: var(--dim-off); }
 
 .ap-account-head {
   display: flex;
@@ -4116,7 +4241,7 @@ button.tool.clickable:last-child { border-bottom: none; }
   white-space: nowrap;
 }
 .ap-email {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4125,7 +4250,8 @@ button.tool.clickable:last-child { border-bottom: none; }
   flex: 1;
 }
 .ap-badge-active { font-size: 10px; color: var(--accent); flex-shrink: 0; }
-.ap-switch { padding: 1px 7px; font-size: 10px; flex-shrink: 0; }
+/* Same dead 10px as `.ap-refresh` above, and gone for the same reason. */
+.ap-switch { padding: 1px 7px; flex-shrink: 0; }
 
 .ap-lane {
   display: grid;
@@ -4135,7 +4261,20 @@ button.tool.clickable:last-child { border-bottom: none; }
   gap: 2px 6px;
   margin-bottom: 3px;
 }
-.ap-lane-label { grid-area: label; font-size: 10px; color: var(--text-dim); }
+/* The two tiers swapped, because they were the wrong way round. The lane label
+   is the reading key for the row — "5h", "7d", the model name — and the reset
+   line under it is a footnote about when the window rolls over. They were
+   painted --text-dim and --muted respectively, and --text-dim is the WEAKER of
+   the two by construction (see the note on --text-dim in the dark palette), so
+   the 9px footnote was drawn 36% stronger than the 10px name it belongs to:
+   5.78:1 against 7.87:1 on white. In dark the two tokens share a value, so the
+   step does not exist there at all and 10px vs 9px was carrying the whole
+   separation on its own.
+   Swapping costs nothing in dark — both tiers are #7e828c, so both readings stay
+   4.70:1 — and in light it puts the stronger tier on the stronger line, which is
+   the order the tokens were built to express. It also raises the label rather
+   than lowering the footnote, so nothing on this row gets quieter. */
+.ap-lane-label { grid-area: label; font-size: 10px; color: var(--muted); }
 .ap-lane-track {
   grid-area: track;
   height: 4px;
@@ -4145,7 +4284,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 .ap-lane-fill { height: 100%; border-radius: 2px; }
 .ap-lane-pct { grid-area: pct; font-size: 10px; text-align: right; }
-.ap-lane-reset { grid-area: reset; font-size: 9px; color: var(--muted); }
+.ap-lane-reset { grid-area: reset; font-size: 9px; color: var(--text-dim); }
 .ap-lane-reset:empty { display: none; }
 
 .ap-meta {
@@ -4285,7 +4424,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 button.ap-auto-state { cursor: pointer; transition: border-color 120ms, color 120ms; }
 button.ap-auto-state:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 button.ap-auto-state:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
+button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
 .ap-auto-state.live {
   border-color: var(--accent);
   color: var(--accent);
@@ -4418,7 +4557,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    front of it. */
 .ap-manage .ap-field select { text-align: left; }
 .ap-field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.ap-field select:disabled { cursor: default; opacity: 0.6; }
+.ap-field select:disabled { cursor: default; opacity: var(--dim-off); }
 .ap-field:has(select:hover:not(:disabled))::after { color: var(--accent); opacity: 1; }
 
 .ap-auto-foot {
@@ -4450,7 +4589,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   text-underline-offset: 2px;
 }
 .ap-rotate:hover:not(:disabled) { color: var(--accent); }
-.ap-rotate:disabled { cursor: default; opacity: 0.6; }
+.ap-rotate:disabled { cursor: default; opacity: var(--dim-off); }
 
 .ap-footnote {
   margin: 0;
@@ -4617,8 +4756,13 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 /* No hover rule of its own: `button.btn:hover` outranks `.ap-add:hover` on
    specificity anyway, and now that the shared rule draws the accent rather than
    --accent-dim, the local one only restated a line it could never win. */
+/* The 16px here was dead too — `class="btn ap-add"`, and `button.btn` (0,1,1)
+   beats (0,1,0), exactly the specificity the comment above already conceded for
+   the hover rule. It is also the one of the seven that should stay dead on its
+   own merits: 16px would make "+" the loudest glyph in a 288px panel, which is
+   the argument `.ap-failure-x` makes against sizing a control like a control
+   when it lives inside 10px text. */
 .ap-add {
-  font-size: 16px;
   line-height: 1;
   padding: 2px 8px 4px;
   color: var(--accent);
@@ -4727,7 +4871,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   background: var(--ctl-fill);
   color: var(--text);
   font: inherit;
-  font-size: 10.5px;
+  font-size: 10px;
   cursor: pointer;
   transition: border-color 120ms, color 120ms, background 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
@@ -4737,11 +4881,14 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 .ap-manage-btn:active:not(:disabled) { transform: scale(0.97); }
-/* 0.6, the same dimming the ↻ and the two selects use for the moment a request
-   is out. At 0.45 this was the panel's only long-lived disabled control and it
-   sat at 1.98:1; nothing here is disabled at rest any more, so the value can
-   match the idiom instead of hedging against a resting state. */
-.ap-manage-btn:disabled { opacity: 0.6; cursor: default; }
+/* The same dimming the ↻ and the two selects use for the moment a request is
+   out. At 0.45 this was the panel's only long-lived disabled control and it sat
+   at 1.98:1; nothing here is disabled at rest any more, so the value can match
+   the idiom instead of hedging against a resting state. This comment is where
+   #379 found that idiom stated and nowhere declared, which is how --dim-off came
+   to exist — the number it argued for now lives at :root and this rule reads it
+   along with the thirteen others that were meant to agree with it. */
+.ap-manage-btn:disabled { opacity: var(--dim-off); cursor: default; }
 /* 30% put the destructive control's boundary at 1.96:1 dark / 1.71:1 light —
    the report called this the only control in the block that met 3:1, and it
    did not: only its LABEL did, at 9.54:1, which is exactly why it out-drew
@@ -4769,7 +4916,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
   background: var(--bg-soft);
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9.5px;
+  font-size: 9px;
   line-height: 1.4;
   user-select: all;
 }
@@ -4804,7 +4951,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .aa-step h4 {
   margin: 0;
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -4844,7 +4991,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 }
 .aa-field input::placeholder { color: var(--text-dim); }
 .aa-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.aa-field input:disabled { opacity: 0.55; }
+.aa-field input:disabled { opacity: var(--dim-off); }
 
 /* ── add-account: the primer and the success state ──────────────────────────
    Adding an account happens a handful of times in a deck's life, which is the
@@ -5041,7 +5188,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 }
 /* Past its expiry the blob is inert — not hidden, because the countdown next to
    it has to stay legible enough to explain why. */
-.ap-share.expired .ap-share-blob { opacity: 0.45; }
+.ap-share.expired .ap-share-blob { opacity: var(--dim-stale); }
 /* The warning belongs to what the text IS, not to the timer beside it. The
    countdown says when another deck stops accepting the share; it is not a lock
    winding down, and colouring it as the loudest thing in the block was the UI
@@ -5088,7 +5235,7 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
    do about it. The empty state is a flex column, which would otherwise stretch
    a button across the whole panel and make it read as a banner. */
 .ap-empty .ap-fix { align-self: flex-start; margin: 5px 0 0; }
-.ap-empty .ap-fix:disabled { opacity: 0.6; cursor: default; }
+.ap-empty .ap-fix:disabled { opacity: var(--dim-off); cursor: default; }
 
 /* ── reduced motion, where it is not the canvas and not a press ───────────── */
 /*

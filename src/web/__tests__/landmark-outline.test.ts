@@ -281,9 +281,18 @@ describe("promoting the headings changed no pixels (#381)", () => {
   it("styles the detail panel's h2 without catching the agent's name in it", () => {
     // `.detail-hero .hero-title` is an <h2> too, and it is a title rather than
     // a caption. A bare `.detail h2` would set it in 11px uppercase grey.
+    //
+    // The hero title was pinned at 17px here; #379 moved it to 18px, joining
+    // `.empty-hero h2` rather than sitting one pixel under it. What this test is
+    // guarding is unchanged and is the reason the number is still asserted at
+    // all: the two selectors must not converge. The child combinator on
+    // `.detail > h2` is what keeps the caption rule off the agent's name, and it
+    // would still be doing that if the title were any size — so the assertion
+    // below is that the title is a title, several steps clear of the 11px
+    // caption, not that it is one particular number.
     expect(decl(".detail > h2", "font-size")).toBe("11px");
     expect(decl(".detail > h2", "text-transform")).toBe("uppercase");
-    expect(decl(".detail-hero .hero-title", "font-size")).toBe("17px");
+    expect(decl(".detail-hero .hero-title", "font-size")).toBe("18px");
     expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/(^|[,\s])\.detail h2\b/);
   });
 
