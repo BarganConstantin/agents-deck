@@ -21,6 +21,7 @@ import SessionSummary from "./components/SessionSummary";
 import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
 import UsagePanel from "./components/UsagePanel";
+import SystemMeter from "./components/SystemMeter";
 import AccountsPanel from "./components/AccountsPanel";
 import { autoRestartStep, restartEndedInFailure, restartLandingStep, upgradeFailureId } from "./restart";
 import { isBrowserChord, isTypingTarget, ownsKeystroke, type FocusTarget } from "./shortcuts";
@@ -2480,6 +2481,11 @@ function Inner() {
             <span className="stat" title={sessionsCountTitle(providers)}><span className="count">{sessionCount}</span><span className="lbl">sessions</span></span>
             <span className="stat" title="Total agents (root + subagents)"><span className="count">{agentCount}</span><span className="lbl">agents</span></span>
             <span className="stat" title={eventsCountTitle(providers)}><span className="count">{stateRef.current.totalEvents}</span><span className="lbl">events</span></span>
+            {/* Machine state, not session state — the only readout in this strip
+                that is not about agents. Renders nothing until the server holds
+                two CPU samples, so it never occupies the row with a number it
+                has not measured. */}
+            <SystemMeter />
             {totalTokens.sum > 0 && (
               <span className="stat" title={`in:${totalTokens.inT.toLocaleString()}  out:${totalTokens.outT.toLocaleString()}  cache-r:${totalTokens.cacheR.toLocaleString()}  cache-c:${totalTokens.cacheC.toLocaleString()}`}>
                 <span className="count">{fmtTokens(totalTokens.sum)}</span><span className="lbl">tokens</span>
