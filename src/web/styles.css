@@ -2019,6 +2019,29 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
      back in. This keeps the canvas pannable everywhere except on labels. */
   pointer-events: none;
   z-index: 0;
+  /* The camera lives here now, as one transform, which is exactly how React
+     Flow carries the real nodes: a single `transform` on .react-flow__viewport,
+     rewritten every frame and eased by nothing. Before #353 this layer had no
+     camera at all and every child folded the viewport into its own left, top,
+     width and height instead — four properties .cluster-card eases over 320ms,
+     so a pan or a zoom put four eased layout properties through 60 rewrites a
+     second and the tinted box arrived a third of a second after the nodes it is
+     drawn around. One transform on the parent cannot drift from the one React
+     Flow writes to its own viewport, because both are the same three numbers —
+     x, y and zoom — applied once. On a live deck the two now read back as the
+     same matrix to three decimal places.
+
+     transform-origin has to be the top-left corner: everything underneath is
+     measured in layout coordinates from the canvas origin, the way React Flow
+     measures node positions, and the default 50% 50% would swing every box away
+     from its nodes at any zoom other than 1.
+
+     will-change names the one property the camera still touches — the same
+     promotion .tool-burst-wrap got in #259 for the same reason. Nothing here
+     may ever be given a `transition`: a transition on this transform would
+     re-create the whole defect one level up, and this time for the labels too. */
+  transform-origin: 0 0;
+  will-change: transform;
 }
 /* --session-hue is the only thing SessionClusters still sets on these two: the
    fallback exists so a card that somehow renders without one paints a colour
@@ -2031,6 +2054,24 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   border-radius: 16px;
   border: 1px solid hsl(var(--session-hue, 200) 65% var(--session-rim-l) / 0.32);
   background: hsl(var(--session-hue, 200) 70% 50% / 0.04);
+  /* All four are kept, and all four are now worth keeping, because since #353
+     they are layout coordinates rather than screen coordinates: the camera is
+     applied once by .session-clusters above and never reaches these numbers, so
+     the only thing that can change one of them is the layout changing — a
+     session gaining a node, losing one, or being pushed aside by a neighbour
+     that grew. That is the move this easing was written for. It is also the one
+     move the box cannot make on its own account: SessionClusters reads each
+     node's FINAL position out of the React Flow store the frame the layout
+     changes, while the nodes themselves are still easing their transform over
+     the 320ms .react-flow__node gives them, so without a matching 320ms on the
+     same curve the box would snap to the new bounding box a third of a second
+     ahead of the cards inside it. Deleting these four would have cured a lag by
+     introducing a lead. The curve and the duration are .react-flow__node's, on
+     purpose — the box and its nodes are one movement or they are two.
+
+     The drag case is the exception and it is answered by
+     .canvas-wrap.dragging-any below, next to the identical answer the nodes
+     get, because a gesture that follows the cursor must not ease at all. */
   transition: opacity 200ms ease, left 320ms cubic-bezier(0.22,1,0.36,1),
               top 320ms cubic-bezier(0.22,1,0.36,1),
               width 320ms cubic-bezier(0.22,1,0.36,1),
@@ -2041,12 +2082,6 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
      an individual node still hits the node. */
   pointer-events: auto;
   cursor: grab;
-}
-/* While being dragged, the box must track the moving nodes frame-for-frame —
-   the 320ms position easing would otherwise lag behind. */
-.cluster-card.dragging {
-  transition: opacity 200ms ease;
-  cursor: grabbing;
 }
 .cluster-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -4365,6 +4400,27 @@ button.ap-auto-state:disabled { cursor: default; opacity: 0.6; }
 .canvas-wrap.dragging-any .react-flow__node,
 .canvas-wrap.dragging-any .react-flow__node.react-flow__node-sessionGroup {
   transition: none;
+}
+
+/* The tinted box drawn around a session gets the same answer for the same
+   reason: dragging a session moves its members through state, so the box's
+   bounds are rewritten once per pointer move, and the 320ms it eases them over
+   is 320ms of the box trailing the cursor — measured at 78px behind on a
+   twelve-move drag (#353).
+   `.cluster-card.dragging` used to say this and never once said it to anything:
+   SessionClusters renders `className="cluster-card"` as a literal string, so
+   the class the rule waited for is added by nobody, and a live deck reports
+   `"cluster-card"` on every card on every frame of every drag. The flag on the
+   pane is the one React actually sets, for every gesture, which is why the
+   nodes above are already answered by it. The cursor half of the dead rule went
+   with it rather than moving here: hit-testing every point over a card on a
+   live deck returns the session-group handle, an agent node, a tool bubble or
+   the pane and never the card, so a cursor declared on the card is a cursor
+   nobody can produce.
+   The fade stays. Opacity is not travel, and it is what a card entering or
+   leaving the canvas is made of. */
+.canvas-wrap.dragging-any .cluster-card {
+  transition: opacity 200ms ease;
 }
 
 /* ── reduced motion, on the canvas itself ─────────────────────────────────── */

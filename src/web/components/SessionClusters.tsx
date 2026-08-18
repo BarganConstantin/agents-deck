@@ -134,8 +134,26 @@ export default function SessionClusters() {
     } catch {}
   };
 
+  // The camera, applied once to the layer, instead of folded into every number
+  // underneath it. This is the same transform React Flow writes to
+  // .react-flow__viewport to carry the real nodes, built from the same three
+  // viewport values, so the decorative layer and the nodes it decorates move as
+  // one thing rather than as two things that agree most of the time.
+  //
+  // Before #353 every box below composed the camera into its own left, top,
+  // width and height — and .cluster-card eases all four over 320ms, so a pan
+  // rewrote four eased layout properties sixty times a second and the box
+  // trailed its own nodes by up to 94px on a pan and 1014px of width on a zoom.
+  // Moving the camera up here is what makes those four honest: see the note on
+  // boxStyle.
+  //
+  // transformOrigin lives in the sheet with the rest of the layer's geometry.
+  const cameraStyle: React.CSSProperties = {
+    transform: `translate(${x}px, ${y}px) scale(${zoom})`,
+  };
+
   return (
-    <div className="session-clusters">
+    <div className="session-clusters" style={cameraStyle}>
       {clusters.map(c => {
         const hue = sessionHue(c.sessionId);
         // Only the hue. The four colours these two elements used to carry —
@@ -145,19 +163,41 @@ export default function SessionClusters() {
         // 1.21:1 on white across the hue circle. The hue is the half this
         // component actually knows (it is a hash of the session id); the half
         // that depends on the theme belongs to the sheet, and is there now.
+        //
+        // Layout coordinates, straight out of clusterBounds, with no camera in
+        // them. clusterBounds already works in the same space React Flow keeps
+        // node positions in, so these four change when — and only when — the
+        // layout changes, which is the single event .cluster-card's 320ms
+        // easing was written for.
+        //
+        // They read `c.x * zoom + x`, `c.y * zoom + y`, `c.w * zoom` and
+        // `c.h * zoom` before #353. Folding the camera in is what made that
+        // easing fire on every pan and zoom frame as well, and once it was
+        // folded in no rule in the sheet could tell a camera move from a layout
+        // move ever again, because by then they were the same number.
         const boxStyle: React.CSSProperties = {
           position: "absolute",
-          left: c.x * zoom + x,
-          top: c.y * zoom + y,
-          width: c.w * zoom,
-          height: c.h * zoom,
+          left: c.x,
+          top: c.y,
+          width: c.w,
+          height: c.h,
           "--session-hue": hue,
         } as React.CSSProperties;
+        // The label is the one child that must not scale with the camera: it is
+        // text, and a session name drawn at 0.2× is a smudge. It used to sit in
+        // screen space and take `scale(min(1, zoom))` to shrink with a zoom-out
+        // while never growing past its natural size on a zoom-in. It sits in
+        // layout space now like the box, so the layer's own scale(zoom) has to
+        // be divided back out to leave exactly that same size on screen.
+        //
+        // `|| 1` guards a zoom of zero, which would make this Infinity and put
+        // the label nowhere. React Flow clamps to minZoom (0.2 on this canvas)
+        // and never hands one out, so this is a fallback rather than a case.
         const labelStyle: React.CSSProperties = {
           position: "absolute",
-          left: c.x * zoom + x + 16 * zoom,
-          top: (c.y - LABEL_LIFT) * zoom + y,
-          transform: `scale(${Math.min(1, zoom)})`,
+          left: c.x + 16,
+          top: c.y - LABEL_LIFT,
+          transform: `scale(${Math.min(1, zoom) / (zoom || 1)})`,
           transformOrigin: "left top",
           "--session-hue": hue,
         } as React.CSSProperties;
