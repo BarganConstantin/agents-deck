@@ -9,8 +9,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import { dieOfSignal } from "../src/server/supervisor.mjs";
 import {
-  CURSOR_HIDE, CURSOR_SHOW, colorProfile, fit, glyphs, labelColumn, link, motionOK, palette,
-  pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK,
+  CURSOR_HIDE, CURSOR_SHOW, colorProfile, fit, glyphs, labelColumn, link, motionOK, oneLine,
+  palette, pulseText, spinnerFrames, statusLine, supportsHyperlinks, termColumns, unicodeOK,
   unregisteredDetail, wordmark,
 } from "../src/server/term.mjs";
 import { PRODUCT } from "../src/server/brand.mjs";
@@ -101,7 +101,7 @@ const { installHooks, keepDiscovery, removeDiscovery, hasCodexInstalled } =
 // the watcher tails, and the watcher lives in that module. Recomputing the path
 // here is how the banner came to print ~/.codex/sessions on machines whose
 // sessions are somewhere else entirely — see the row further down.
-const { startServer, hookToken, releaseRestart, CODEX_SESSIONS_DIR, canonicalWorkspace } =
+const { startServer, hookToken, releaseRestart, markDeckReady, CODEX_SESSIONS_DIR, canonicalWorkspace } =
   await import(pathToFileURL(join(PKG_ROOT, "src/server/index.mjs")).href);
 
 // Resolved here rather than left as typed, for the reason the events log above
@@ -445,31 +445,115 @@ let restarting = false;
 const UPGRADE_ANSWER_MS = 150_000;
 let upgradeTimer = null;
 
+// Whether the rest of this file has finished running.
+//
+// The server below starts accepting connections from inside startServer, before
+// that call has returned — so /api/restart is reachable for the whole of the
+// boot that follows it: the port report to the supervisor, the discovery file
+// and its first fsynced write, and on a cold start the browser spawn. A restart
+// landing in that window used to reach `shutdown` before the binding holding it
+// was initialised and die of a ReferenceError, having already set the latch
+// above, with nothing left to clear it — after which every restart from every
+// tab was answered "ok" and did nothing, for the life of the process (#448).
+//
+// So an ask that arrives too early is held rather than run: the window is
+// bounded and short, the user asked for something this deck can genuinely give
+// a second later, and refusing outright would put back the same silence in a
+// politer form. BOOT_RESTART_MS is the outer bound, for the reason
+// UPGRADE_ANSWER_MS above is one: a boot that has not finished in ten seconds is
+// itself the fault, and the restart is the answer to it rather than a casualty
+// of it.
+let booted = false;
+let heldRestart = null;
+let bootTimer = null;
+const BOOT_RESTART_MS = 10_000;
+
 const requestRestart = (mode) => {
   if (restarting) return;
   restarting = true;
-  // "npx" means the newer code is not on this disk at all, so it has to be
-  // fetched — and this process keeps serving while that happens. Exiting first
-  // is what made every failed upgrade an outage: the SSE stream dropped, hook
-  // events fired into the gap were lost outright (hook/hook.js is
-  // fire-and-forget with a 1s timeout and no retry), and the canvas came back
-  // with whatever was in flight stuck until the stale sweeper reaped it — all
-  // of it paid before anyone knew whether npm could even resolve the version.
-  // Nothing is torn down here now; the supervisor answers when it knows.
-  if (mode === "npx") {
-    upgradeTimer = setTimeout(() => abandonUpgrade("no answer from the supervisor"), UPGRADE_ANSWER_MS);
-    upgradeTimer.unref?.();
-    // Armed before the ask, not after: a send that throws is a supervisor that
-    // can no longer answer, and the deck has to come back out of the latch on
-    // its own rather than wait out an answer that cannot arrive.
-    try { process.send({ type: "upgrade" }); }
-    catch (err) { abandonUpgrade(err?.message ?? "the supervisor is no longer listening"); }
+  if (!booted) {
+    heldRestart = { mode };
+    bootTimer = setTimeout(() => { bootTimer = null; runHeldRestart(); }, BOOT_RESTART_MS);
+    bootTimer.unref?.();
+    // Said out loud for the same reason abandonUpgrade below is: the tab has
+    // already been told its restart was accepted, and a second of nothing
+    // happening on this terminal is otherwise indistinguishable from the bug
+    // this replaces.
+    write(`\n  ${P.warn}${G.restart}${P.reset}  ${P.muted}restart queued ${G.dash} still starting up${P.reset}\n`);
     return;
   }
-  const to = restartTarget();
-  write(`\n  ${P.warn}${G.restart}${P.reset}  ${P.muted}restarting${to ? ` ${G.arrow} v${to}` : ""}${G.ellipsis}${P.reset}\n`);
-  shutdown(RESTART_CODE);
+  beginRestart(mode);
 };
+
+// The restart itself, once there is a booted deck to end. Split out of
+// requestRestart so the held ask above can re-enter it without tripping the
+// latch it is already holding.
+//
+// Everything here runs inside one try: the whole point of #448 is that a throw
+// on this path is not merely a failed restart but a permanent one, because the
+// latch it leaves behind outlives it. There is no line in here worth dying for.
+function beginRestart(mode) {
+  try {
+    // "npx" means the newer code is not on this disk at all, so it has to be
+    // fetched — and this process keeps serving while that happens. Exiting first
+    // is what made every failed upgrade an outage: the SSE stream dropped, hook
+    // events fired into the gap were lost outright (hook/hook.js is
+    // fire-and-forget with a 1s timeout and no retry), and the canvas came back
+    // with whatever was in flight stuck until the stale sweeper reaped it — all
+    // of it paid before anyone knew whether npm could even resolve the version.
+    // Nothing is torn down here now; the supervisor answers when it knows.
+    if (mode === "npx") {
+      upgradeTimer = setTimeout(() => abandonUpgrade("no answer from the supervisor"), UPGRADE_ANSWER_MS);
+      upgradeTimer.unref?.();
+      // Armed before the ask, not after: a send that throws is a supervisor that
+      // can no longer answer, and the deck has to come back out of the latch on
+      // its own rather than wait out an answer that cannot arrive.
+      try { process.send({ type: "upgrade" }); }
+      catch (err) { abandonUpgrade(err?.message ?? "the supervisor is no longer listening"); }
+      return;
+    }
+    const to = restartTarget();
+    write(`\n  ${P.warn}${G.restart}${P.reset}  ${P.muted}restarting${to ? ` ${G.arrow} v${to}` : ""}${G.ellipsis}${P.reset}\n`);
+    shutdown(RESTART_CODE);
+  } catch (err) {
+    abandonRestart(err);
+  }
+}
+
+// The ask that was waiting for the boot to finish, now that it has. Safe to
+// call when nothing is waiting, which is every ordinary boot.
+function runHeldRestart() {
+  if (!heldRestart) return;
+  const { mode } = heldRestart;
+  heldRestart = null;
+  clearTimeout(bootTimer);
+  bootTimer = null;
+  beginRestart(mode);
+}
+
+// A restart that could not be started, said out loud and then let go of.
+//
+// Both halves of the latch have to come down — this file's and the server's —
+// because a latch nothing clears is precisely how one failed request turned
+// into a deck that refused every restart afterwards while answering "ok" to
+// each one (#448). The reason is folded onto one line by oneLine: the terminal
+// under this is repainted every 800ms by the pulse, and a stack written into
+// that is a stack nobody can read (#432).
+//
+// A declaration rather than a const, like `shutdown` below and for the same
+// reason: this is the handler for a binding that was not there yet, and it must
+// not be capable of becoming the next one.
+function abandonRestart(err) {
+  clearTimeout(bootTimer);
+  bootTimer = null;
+  heldRestart = null;
+  restarting = false;
+  releaseRestart();
+  write(
+    `\n  ${P.err}${G.fail}${P.reset}  ${P.muted}restart failed ${G.dash} still on ${P.reset}v${PKG_VERSION}\n` +
+    `     ${P.muted}${oneLine(err?.stack ?? err, Math.max(20, cols() - 6), G.ellipsis)}${P.reset}\n`,
+  );
+}
 
 // The upgrade did not happen and this deck is still the deck. Said out loud
 // because the terminal has just printed that a fetch was starting, and left
@@ -508,13 +592,24 @@ function restartTarget() {
   catch { return null; }
 }
 
+// The three things `shutdown` has to tear down, named before the boot that
+// fills them in rather than by it. From the line below onwards this process is
+// answering HTTP, and /api/restart can therefore reach `shutdown` at any moment
+// after it — including moments at which none of these exist yet. `let … = null`
+// is what makes that a question shutdown can ask instead of a ReferenceError it
+// dies of; the boot queue in requestRestart is what makes it a question it
+// almost never has to ask. See #448.
+let server = null;
+let discovery = null;
+let discoveryFile = null;
+
 const starting = startServer({
   port, persist, workspace, codex: wantCodex, claude: wantClaude,
   // Withheld when nothing is supervising us: without a parent, exiting is just
   // exiting, and /api/restart answers 501 so the UI hides the control.
   onRestart: SUPERVISED ? requestRestart : null,
 });
-const server = await (RESPAWN ? starting : step(`starting server${G.ellipsis}`, starting)).catch(err => {
+server = await (RESPAWN ? starting : step(`starting server${G.ellipsis}`, starting)).catch(err => {
   // stderr, not a row: a deck that could not bind is not a status line, and
   // whatever launched it reads this stream.
   console.error(`${PRODUCT}: server failed: ${err.message}`);
@@ -564,7 +659,7 @@ if (RESPAWN) {
 // rollout files this deck tails itself, which a --no-codex deck must never be
 // elected to record. See writesCodexLog in src/server/log-writer.mjs.
 let registered = null;
-const discovery = keepDiscovery({
+discovery = keepDiscovery({
   port: realPort,
   workspace,
   token: hookToken(),
@@ -577,7 +672,7 @@ const discovery = keepDiscovery({
     else if (!first) reportReregistered(state);
   },
 });
-const discoveryFile = discovery.file;
+discoveryFile = discovery.file;
 // Now, not in five seconds: nothing should reach the pulse line below without
 // the deck knowing whether the hooks can see it.
 await discovery.check();
@@ -612,33 +707,78 @@ if (MOTION) {
   }, 800).unref();
 }
 
-const shutdown = async (code = 0) => {
+// Boot is over. Everything `shutdown` tears down exists, so a restart can be
+// run rather than held — and the server is told, so /api/restart stops
+// describing a deck that is still assembling itself. This line is exactly where
+// the window opened at the top of this file closes; see requestRestart.
+booted = true;
+markDeckReady();
+runHeldRestart();
+
+/**
+ * A declaration, not the `const` arrow this was for eight months.
+ *
+ * The difference is the whole of #448: a const is in its temporal dead zone
+ * until the line declaring it runs, and every line above — the port report, the
+ * discovery file, the browser spawn — executes with the server already
+ * accepting connections. A restart arriving in that window called this and got
+ * `ReferenceError: Cannot access 'shutdown' before initialization`, and the
+ * latch it had already set is what made that permanent. A declaration is
+ * hoisted, so from the first instruction of this module there is a function
+ * here to call.
+ *
+ * Hoisting alone would only have moved the fault one line down, onto `server`,
+ * `discovery` and `discoveryFile` — which is why those are `let … = null` above
+ * and asked about rather than assumed here. Between them, this is callable at
+ * any instant of this process's life and cannot end in a throw for the caller
+ * to lose.
+ */
+async function shutdown(code = 0) {
   // Also set as exitCode, not only passed to exit(): if the event loop empties
   // on its own before either timer runs, Node would otherwise exit 0 and the
   // supervisor would take that as "done" instead of "bring me back".
   process.exitCode = code;
-  // Before anything that can take time: a Ctrl+C the user has to watch for a
-  // second and a half is a second and a half without a cursor.
-  showCursor();
-  if (tty && code !== RESTART_CODE && code !== UPGRADE_CODE) {
-    write(`\n\n  ${P.warn}${G.stop}  shutting down${G.ellipsis}${P.reset}\n`);
+  // Nothing inside a shutdown is worth staying alive for, and this one is
+  // called from three places that cannot handle a rejection — a signal handler,
+  // an IPC message handler, and a restart. An unhandled one there ends the
+  // process on Node's terms rather than ours, which is to say with the wrong
+  // exit code and therefore, half the time, without the supervisor bringing the
+  // deck back.
+  try {
+    // Before anything that can take time: a Ctrl+C the user has to watch for a
+    // second and a half is a second and a half without a cursor.
+    showCursor();
+    if (tty && code !== RESTART_CODE && code !== UPGRADE_CODE) {
+      write(`\n\n  ${P.warn}${G.stop}  shutting down${G.ellipsis}${P.reset}\n`);
+    }
+    // Stopped first, always: a tick landing after the unlink would re-register a
+    // deck that is on its way out, and leave the file behind for the hooks to
+    // find once nothing is listening.
+    //
+    // Guarded on its own, because a discovery file this process cannot remove is
+    // a nuisance the next boot's stale sweep clears up — worth carrying on to
+    // the orderly close below rather than skipping to the abrupt one.
+    try {
+      discovery?.stop();
+      if (discoveryFile) await removeDiscovery(discoveryFile);
+    } catch { /* the sweep at the next boot gets it */ }
+    // No server yet means nothing to drain and nothing to hand the port over to,
+    // so the exit is the whole of the shutdown.
+    if (!server) return process.exit(code);
+    server.close(() => process.exit(code));
+    // SSE connections never end by themselves, so close() alone would sit out the
+    // full 1500ms fallback on every restart. Hanging them up is safe — the stream
+    // sets retry: 1500 and replays from Last-Event-ID, so each tab reconnects and
+    // catches up without being told anything.
+    try { server.closeAllConnections?.(); } catch { /* Node < 18.2 */ }
+    setTimeout(() => process.exit(code), 1500).unref();
+  } catch {
+    process.exit(code);
   }
-  // Stopped first, always: a tick landing after the unlink would re-register a
-  // deck that is on its way out, and leave the file behind for the hooks to
-  // find once nothing is listening.
-  discovery.stop();
-  await removeDiscovery(discoveryFile);
-  server.close(() => process.exit(code));
-  // SSE connections never end by themselves, so close() alone would sit out the
-  // full 1500ms fallback on every restart. Hanging them up is safe — the stream
-  // sets retry: 1500 and replays from Last-Event-ID, so each tab reconnects and
-  // catches up without being told anything.
-  try { server.closeAllConnections?.(); } catch { /* Node < 18.2 */ }
-  setTimeout(() => process.exit(code), 1500).unref();
-};
+}
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
-process.on("beforeExit", () => { discovery.stop(); removeDiscovery(discoveryFile); });
+process.on("beforeExit", () => { discovery?.stop(); if (discoveryFile) removeDiscovery(discoveryFile); });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
