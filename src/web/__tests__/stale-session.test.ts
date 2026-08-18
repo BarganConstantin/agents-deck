@@ -316,6 +316,12 @@ describe("what the sweep takes with it, and what it leaves", () => {
     // Only the root is flagged: a subagent that was mid-flight when the session
     // went quiet is genuinely over, and SubagentStart is what brings one back.
     expect(sub.reaped).toBeFalsy();
+    // #442: and its key goes off the attribution stack with it. This assertion
+    // was the one missing here, which is why the sweep shipped settling the node
+    // while still pointing every later no-agent_id event at it — the human's
+    // next prompt drawn on a card that finished two hours ago. The consequences
+    // are pinned in full in reaped-session-stack.test.ts.
+    expect(state.activeSubagentStack.get(SESSION)).toBeUndefined();
   });
 
   it("keeps an errored node's error rather than flattening it to done", () => {
