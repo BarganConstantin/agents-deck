@@ -62,7 +62,7 @@ function saveOpen(open: boolean): void {
 
 interface Memory { total: number; available: number; usedPct: number }
 interface Swap { total: number; used: number }
-interface Proc { pid: number; cpu: number; mem: number; name: string }
+interface Proc { pid: number; cpu: number | null; mem: number; name: string }
 interface Snapshot {
   ok: boolean;
   cpu: number | null;
@@ -378,9 +378,12 @@ function SystemPanel({ sys, usageOpen, onClose }: { sys: Snapshot; usageOpen: bo
             <tbody>
               {procs.map(p => (
                 <tr key={p.pid}>
-                  {/* A process can exceed 100%: that is it using more than one
-                      core, which is information rather than an error. */}
-                  <td className="sd-num">{p.cpu.toFixed(0)}</td>
+                  {/* A process can exceed 100% on Unix: that is it using more
+                      than one core, which is information rather than an error.
+                      Null is the Windows first reading, where a percentage does
+                      not exist yet because it takes two samples to make one —
+                      a dash, never a zero, which would rank it as idle. */}
+                  <td className="sd-num">{p.cpu == null ? "—" : p.cpu.toFixed(0)}</td>
                   <td className="sd-num sd-dim">{p.mem.toFixed(1)}</td>
                   <td className="sd-proc-name" title={`pid ${p.pid}`}>{p.name}</td>
                 </tr>
