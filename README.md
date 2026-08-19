@@ -1,3 +1,5 @@
+
+
 <div align="center">
 
 # ccdeck
@@ -52,7 +54,7 @@ One canvas. No tabs. No kanban.
 npx ccdeck          # or: npx agents-deck · npx agent-dag — same deck
 ```
 
-Opens **http://127.0.0.1:4317** and registers the Claude Code hook on first run. Start any Claude Code or Codex session and the graph fills in live. `Ctrl+C` stops it.
+Opens **http://127.0.0.1:4317** (or a random port in 4318–4400 if that is taken) and registers the Claude Code hook on first run. Start any Claude Code or Codex session and the graph fills in live. `Ctrl+C` stops it.
 
 No config file. No account. No telemetry — nothing about your sessions is reported anywhere.
 
