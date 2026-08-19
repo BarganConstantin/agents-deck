@@ -1,6 +1,7 @@
 import React from "react";
 import { useReactFlow, useStore, useViewport, type ReactFlowState } from "reactflow";
 import { sessionHue } from "../reducer";
+import { sessionDisplay } from "../session-display";
 import type { AgentNodeData } from "../types";
 
 /**
@@ -17,8 +18,10 @@ import type { AgentNodeData } from "../types";
 export interface ClusterHeader {
   /** Workspace basename. Always present, always drawn first. */
   label: string;
-  /** The session name, truncated to NAME_COLUMNS. Absent when there is none —
-   *  a Codex session, or a Claude one too young to have been named. */
+  /** What Claude Code calls the session — its `agent-name` when it has one and
+   *  its `ai-title` when it does not, the same choice the card makes, truncated
+   *  to NAME_COLUMNS. Absent when there is neither: a Codex session, or a Claude
+   *  one too young to have been named. */
   name?: string;
   /** Four characters of the session id. Present ONLY when another cluster
    *  carries the same workspace label; a name never replaces it. */
@@ -166,12 +169,28 @@ export const SEP = " · ";
  * that. It is also why the cap is not tied to the cluster width: at 276px the
  * budget would be 17 columns, shorter than every name measured here, and a cap
  * that fires every time is not a cap.
+ *
+ * The field carries `ai-title` sentences now as well as `agent-name` slugs, and
+ * the number survives that unchanged — checked rather than assumed. It is
+ * derived from where the CARD ellipsises, which is a fact about a 240px node
+ * and says nothing about which record filled it, and the bound it buys is a
+ * bound on the OUTPUT: 32 columns draw the same 350.7px header whatever went in,
+ * so the longest title measured here (64 code points, "Explore hotkey and global
+ * search features in VCRM Angular portal") lands on the same overhang as the
+ * 53-character name above. What did change is how often it fires — 4 of the 10
+ * distinct names here exceed 32 columns, against 198 of the 299 distinct titles,
+ * so the cap went from a guard to the ordinary path.
  */
 export const NAME_COLUMNS = 32;
 
 /** Code points a monospace font draws two columns wide: CJK, Hangul, kana and
  *  the fullwidth forms. Counting them as one would let a 32-character name
- *  draw 64 columns, which puts the bound above out by a factor of two. */
+ *  draw 64 columns, which puts the bound above out by a factor of two.
+ *
+ *  Hypothetical for names, real for titles: the sweep of every transcript here
+ *  turns up `日本語への翻訳とエージェント並列実行` as an ai-title — 18 code
+ *  points that draw 36 columns, over the cap on a string a naive count calls
+ *  comfortably under it. */
 const WIDE = /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
 
 function columns(ch: string): number {
@@ -181,11 +200,22 @@ function columns(ch: string): number {
 /**
  * A name cut to NAME_COLUMNS, ellipsis included in the count.
  *
- * Walks code points rather than UTF-16 units: the names measured here are not
- * all kebab ASCII — one of them ends in U+2442 — and slicing a string in the
+ * Walks code points rather than UTF-16 units, because slicing a string in the
  * middle of a surrogate pair renders a replacement box, which looks like data
- * loss rather than truncation. Trailing separators are walked off before the
- * ellipsis so a cut never reads as a hyphen the name itself contains.
+ * loss rather than truncation.
+ *
+ * #520 justified that with "one of them ends in U+2442", which is not a reason:
+ * U+2442 is in the BMP and one UTF-16 unit wide, so a naive slice would have
+ * survived it. Re-swept over all 309 distinct names and titles on this machine,
+ * NOT ONE carries a surrogate pair — 15 carry a non-ASCII code point and every
+ * one of those is BMP too. The walk stays because the field is free text that
+ * already contains Romanian, Japanese and a dingbat, and an emoji in it is a
+ * matter of time; it is insurance, and the honest note is that nothing here has
+ * yet exercised it.
+ *
+ * Trailing separators are walked off before the ellipsis so a cut never reads
+ * as a hyphen the name itself contains — which matters more now than it did,
+ * since a sentence cut mid-way lands on a space far more often than a slug does.
  */
 export function truncateName(name: string, budget = NAME_COLUMNS): string {
   const chars = [...name];
@@ -249,9 +279,20 @@ function rootLabel(d: AgentNodeData): string | undefined {
   return d.label;
 }
 
+/**
+ * The header reads the SAME field the card does — the name when the session has
+ * one, the title when it does not — via the one function that decides it.
+ *
+ * Not `d.sessionName` alone, which is what #521 shipped. On the transcripts
+ * under ~/.claude/projects here that field is present on 0.2% of sessions and
+ * the title on 4.1%, so a header keyed on the name alone was blank for
+ * essentially every deck. The cap above survives the change unaltered: it is
+ * derived from where the CARD ellipsises, which is a fact about a 240px node
+ * and not about which record filled it.
+ */
 function rootName(d: AgentNodeData): string | undefined {
   if (d.kind !== "root") return undefined;
-  return d.sessionName;
+  return sessionDisplay(d.sessionName, d.sessionTitle).face;
 }
 
 export default function SessionClusters() {
