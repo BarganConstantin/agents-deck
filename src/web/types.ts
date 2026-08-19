@@ -159,6 +159,23 @@ export interface AgentNodeData {
   cwd?: string;
   cwdBasename?: string;
   firstPrompt?: string;
+  /** The name Claude Code gave this session, from the transcript's `agent-name`
+   *  records — e.g. "account-management-oauth-flow". Session root only, and
+   *  Claude only: a Codex rollout carries no such record, so the field stays
+   *  undefined there and the card renders exactly what it always did.
+   *
+   *  It is a description, not an address. It is rewritten as the session moves
+   *  and two sessions may well share one, which is why it is shown NEXT TO the
+   *  session id rather than in place of it. */
+  sessionName?: string;
+  /** The session's `ai-title` — a sentence, e.g. "Inspect repository to
+   *  understand current state". Tooltip only: it does not fit a 260px card.
+   *
+   *  Often EQUAL to `sessionName` rather than a longer form of it. CC overwrites
+   *  the title with the slug once a session has a name — measured at 353 of 685
+   *  records in one transcript here — so anything rendering both has to drop
+   *  this one when they match, or the tooltip just repeats the card. */
+  sessionTitle?: string;
   prompts: PromptEntry[];
   toolCount: number;
   /** When true, we synthesised this node because a child arrived before any
@@ -336,6 +353,12 @@ export interface HookPayload {
   /** Stamped by hook.js when forwarding. Lets the reducer branch without
    *  re-sniffing payload shape. */
   provider?: Provider;
+  /** Claude-only, on the synthetic `SessionNamed`: the session's `agent-name`
+   *  and `ai-title` as the transcript cursor last folded them. Either may be
+   *  null on a session that has one record but not the other; an absent field
+   *  means the scan has nothing to say, never that the name was cleared. */
+  sessionName?: string | null;
+  sessionTitle?: string | null;
   /** Codex-only: per-turn identifier for tool-call attribution. */
   turn_id?: string;
   /** Codex-only: emitted by sessions/<sid>/event_msg/task_started events,

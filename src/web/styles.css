@@ -2390,6 +2390,29 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   text-overflow: ellipsis;
 }
 
+/* The name Claude Code gave the session, under the meta row.
+
+   11px monospace is .sub's own type, not a new step — the type ladder holds at
+   eleven sizes and a name does not earn a twelfth. Hierarchy comes from colour
+   instead: --text where .sub takes --muted, because this row is content the user
+   reads to tell two sessions apart, where the row above it is chrome. That is
+   also why it sits below .sub rather than inside it — sharing that row would
+   have put a 29-character slug in front of the model chip, and .sub ellipsises
+   at the container, so the chip would have been the part that vanished.
+
+   Monospace matches the slug it renders: CC names sessions in kebab-case, and
+   the tabular feel of a mono face makes two similar names easier to tell apart
+   at a glance than a proportional one does. */
+.agent-node .session-name {
+  margin-top: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Tool-rate sparkline — tools-per-second over the last 60s. Most recent
    bucket is on the right; brighter for the live one. */
 .tool-spark-row {

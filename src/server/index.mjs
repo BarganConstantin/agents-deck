@@ -215,6 +215,8 @@ function newTranscriptState() {
     rootModel: null,
     lastModel: null,    // last claude-* model on any line, sidechain included
     subagentModels: {},
+    aiTitle: null,      // newest "ai-title" entry, the session's sentence title
+    agentName: null,    // newest "agent-name" entry, the session's short name
     usage: {
       input_tokens: 0, output_tokens: 0,
       cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
@@ -237,11 +239,74 @@ async function readByteRange(path, from, to) {
   }
 }
 
+// ─── Session naming ──────────────────────────────────────────────────────
+// CC writes two whole-line records that name the session, and nothing else in
+// the transcript carries either fact:
+//
+//   {"type":"ai-title","aiTitle":"Inspect repository to understand current state","sessionId":"…"}
+//   {"type":"agent-name","agentName":"account-management-oauth-flow","sessionId":"…"}
+//
+// Both are re-emitted on roughly every turn rather than only when they change.
+// Measured on the two largest transcripts on this machine: 685 `ai-title`
+// entries carrying 2 DISTINCT values (46.4 MB session) and 406 carrying 1
+// (19.6 MB session). So "the last one wins" is right, but the value is nearly
+// always the value we already had — which is why the emit below is gated on a
+// change rather than fired per pass.
+//
+// `aiTitle` is NOT reliably the sentence it looks like. In the 46.4 MB session
+// the first 332 entries read "Inspect repository to understand current state"
+// and every one of the last 353 reads "account-management-oauth-flow" —
+// byte-identical to `agentName`, and 353 is exactly the `agent-name` count. CC
+// overwrites the title with the slug once a session has a name. The client
+// therefore has to treat "title equals name" as "no title", or the tooltip
+// would repeat the card.
+const AI_TITLE_MARK = '"ai-title"';
+const AGENT_NAME_MARK = '"agent-name"';
+
+/** Fold one line's naming records into `out`. Last value wins. Pure: `out` is
+ *  the only thing written, and a line that is not one of the two records — or
+ *  is a truncated fragment of one — leaves it untouched. */
+function foldSessionNamingLine(out, line) {
+  if (!line) return;
+  const hasTitle = line.includes(AI_TITLE_MARK);
+  const hasName = line.includes(AGENT_NAME_MARK);
+  if (!hasTitle && !hasName) return;
+  let obj = null;
+  try { obj = JSON.parse(line); } catch { return; }
+  if (!obj || typeof obj !== "object") return;
+  if (obj.type === "ai-title" && typeof obj.aiTitle === "string" && obj.aiTitle) {
+    out.aiTitle = obj.aiTitle;
+  } else if (obj.type === "agent-name" && typeof obj.agentName === "string" && obj.agentName) {
+    out.agentName = obj.agentName;
+  }
+}
+
+/**
+ * The session naming carried by a chunk of transcript text, newest wins.
+ *
+ * Pure and text-in, so the suite can pin the parsing against a handful of lines
+ * instead of a 46 MB fixture. Returns `{aiTitle: null, agentName: null}` for a
+ * chunk holding neither — a young session, or a stretch of the file that is all
+ * tool output — and the caller keeps whatever it already knew rather than
+ * clearing a name it has already shown.
+ */
+export function readSessionNaming(text) {
+  const out = { aiTitle: null, agentName: null };
+  if (!text || typeof text !== "string") return out;
+  for (const line of text.split("\n")) foldSessionNamingLine(out, line);
+  return out;
+}
+
 /** Fold one transcript line into the running state. Every fact the three
  *  scanners need lives on a single line, so line-at-a-time folding sees
  *  exactly what a whole-file pass would. */
 function foldTranscriptLine(state, line) {
   if (!line) return;
+
+  // Rides the scan that is already reading these bytes for the model, the usage
+  // totals and the context counts, so naming costs no read of its own — see the
+  // block above `maybeResolveSessionName` for why that beat a tail read.
+  foldSessionNamingLine(state, line);
 
   // Model. Only a line that mentions a model can change it, and parsing the
   // rest is what made the full rescan expensive.
@@ -511,6 +576,79 @@ function maybeResolveUsage(payload) {
     })
     .catch(() => {})
     .finally(() => pendingUsageReads.delete(sid));
+}
+
+// ─── Session-name enrichment ─────────────────────────────────────────────
+// WHY THIS IS NOT A TAIL READ. The obvious shape for "get the newest naming
+// record out of a 46 MB file" is to read the last N KB and parse backwards, and
+// it is the wrong shape here for two reasons, one of them measured.
+//
+// The measured one: the density is not uniform, so no N is safe. Back-scanning
+// from an arbitrary point in the 46.4 MB transcript to the nearest `ai-title`
+// costs p50 38 KB but p95 227 KB, p99 511 KB and 723 KB worst case, because a
+// single line in that file reaches 710 KB — one big tool result evicts every
+// naming record from any window you picked. A 256 KB tail covers 95.9% of
+// positions, 512 KB covers 99.1%, and the last percent still needs a megabyte.
+//
+// The structural one: it would be a second reader of bytes this process is
+// already reading. `scanTranscript` keeps a per-path CURSOR and folds each
+// appended line exactly once, for the model, the usage totals and the context
+// counts alike. Folding two more fields into that pass (see
+// `foldSessionNamingLine`) costs no read at all, sees every record rather than
+// a window of them, and cannot be defeated by a 710 KB line.
+//
+// That also settles the trigger. With a tail read the trigger IS the cost
+// control, so you have to pick a boundary and `Stop` is the honest one. With a
+// cursor the bytes are read once whoever asks, so the trigger only decides how
+// LATE the name appears — and gating on `Stop` would hold a name the scan
+// already has until the turn ends, for a saving of zero. So this runs off any
+// hook event like its three neighbours, throttled per session, and the throttle
+// matches MODEL_READ_THROTTLE_MS so the two passes coincide and share one
+// in-flight scan.
+//
+// The emit is what is actually kept rare, and it is gated on a CHANGE: with 685
+// records carrying 2 distinct values, a per-pass emit would be ~683 events
+// saying nothing. Sessions that never get named emit nothing at all.
+const nameBySession = new Map();        // sid -> `${agentName} ${aiTitle}`
+const lastNameReadAt = new Map();       // sid -> ms timestamp
+const pendingNameReads = new Set();     // sid currently being read
+
+/** The naming the cursor has folded so far, or null when the scan has nothing.
+ *  Exported beside readContextFromTranscript for the same reason: the rule is
+ *  worth pinning directly rather than through a live server. */
+export async function readSessionNamingFromTranscript(path) {
+  const state = await scanTranscript(path);
+  if (!state) return null;
+  if (!state.agentName && !state.aiTitle) return null;
+  return { agentName: state.agentName, aiTitle: state.aiTitle };
+}
+
+function maybeResolveSessionName(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const sid = payload.session_id;
+  const tp = payload.transcript_path;
+  if (!sid || !tp) return;
+  if (pendingNameReads.has(sid)) return;
+  const now = Date.now();
+  const last = lastNameReadAt.get(sid) ?? 0;
+  if (now - last < MODEL_READ_THROTTLE_MS) return;
+  lastNameReadAt.set(sid, now);
+  pendingNameReads.add(sid);
+  readSessionNamingFromTranscript(tp)
+    .then(naming => {
+      if (!naming) return;
+      const sig = `${naming.agentName ?? ""} ${naming.aiTitle ?? ""}`;
+      if (nameBySession.get(sid) === sig) return;
+      nameBySession.set(sid, sig);
+      pushEvent({
+        hook_event_name: "SessionNamed",
+        session_id: sid,
+        sessionName: naming.agentName ?? null,
+        sessionTitle: naming.aiTitle ?? null,
+      }, "internal");
+    })
+    .catch(() => {})
+    .finally(() => pendingNameReads.delete(sid));
 }
 
 // ─── Context enrichment ──────────────────────────────────────────────────
@@ -1890,6 +2028,7 @@ function pushEvent(raw, source, opts = {}) {
       maybeResolveModel(raw);
       maybeResolveUsage(raw);
       maybeResolveContext(raw);
+      maybeResolveSessionName(raw);
     }
   }
 

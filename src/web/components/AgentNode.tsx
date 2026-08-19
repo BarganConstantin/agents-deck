@@ -82,6 +82,16 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
   const hue = sessionHue(data.sessionId);
   const currentContextTokens = data.context?.currentContextTokens ?? 0;
   const hasContextSignal = data.kind === "root" && currentContextTokens > 0;
+  // The sentence Claude Code titles the session with, in the tooltip the card
+  // already had. It reads like "Inspect repository to understand current state"
+  // — far past what 260px of card can show, which is the whole reason it is
+  // here and not on the face of the card. The cwd stays the first line because
+  // that is what this tooltip has always answered. A Codex card, and a Claude
+  // one whose transcript has no title record yet, get the cwd alone exactly as
+  // before rather than a second line that says nothing.
+  const cardTooltip = data.sessionTitle
+    ? (data.cwd ? `${data.cwd}\n${data.sessionTitle}` : data.sessionTitle)
+    : data.cwd;
 
   return (
     // --accent itself is built in styles.css from this hue: the token that
@@ -94,7 +104,7 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
       <div className="head">
         <div className="title">
           <StatePill state={data.state} />
-          <span className="label" title={data.cwd}>{data.label}</span>
+          <span className="label" title={cardTooltip}>{data.label}</span>
           {data.synthetic && <span className="synth-tag" title="No SessionStart captured — synthesised">?</span>}
         </div>
         <div className="head-right">
@@ -139,6 +149,30 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
             ? <span className="model-chip" title="OpenAI Codex — no model reported yet">Codex</span>
             : null}
       </div>
+
+      {/* The name Claude Code gives the session, on a row of its own for the
+          reason the row below restates: the header is full at 260px, and the
+          meta row above would have to ellipsis the model chip away to fit a
+          slug that runs to 29 characters.
+
+          Root only. The agent-name records name a SESSION; a subagent has none
+          of its own, and copying the parent name onto every child would print
+          the same string five times on one canvas.
+
+          It does NOT replace the id. The name is rewritten as the session moves
+          and two sessions can hold the same one, so it is a description, not an
+          address — the short id in the cluster header stays the thing that
+          still means this node in five minutes. Mutable fact on the card,
+          stable one on the frame around it.
+
+          Claude only, and ABSENT rather than empty: a Codex rollout carries no
+          such record, so this row does not render there at all and a Codex card
+          keeps exactly the shape it has today. */}
+      {data.kind === "root" && data.sessionName && (
+        <div className="session-name" title={data.sessionTitle ?? data.sessionName}>
+          {data.sessionName}
+        </div>
+      )}
 
       {/* A row of its own rather than a chip in the title. The card is 260px
           wide and the header already spends it on the state pill, the workspace

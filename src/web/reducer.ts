@@ -980,6 +980,11 @@ function waitingKind(notificationType: unknown): WaitingBlock["kind"] | null {
  *  decides whether that movement is also evidence the HUMAN moved. */
 const WAITING_KEEPERS = new Set([
   "Notification", "ModelObserved", "ContextObserved", "UsageObserved",
+  // Same story, fourth scanner: SessionNamed comes off the transcript cursor,
+  // not off session traffic. A session parked on a permission prompt is exactly
+  // when the deck has time to notice its name, and clearing the badge there
+  // would hide the one thing the card is trying to say.
+  "SessionNamed",
 ]);
 
 /**
@@ -1281,6 +1286,37 @@ export function applyEvent(state: GraphState, env: HookEnvelope): GraphState {
           currentContextTokens: num("currentContextTokens", prev.currentContextTokens),
           memoryFiles: (files ?? prev.memoryFiles) as Array<{ path: string; bytes: number }>,
         };
+      }
+    }
+    return state;
+  }
+
+  // SessionNamed carries the name Claude Code gave the session, off the same
+  // transcript cursor the three *Observed scans ride. Session root only — the
+  // records name a session and say nothing about any subagent inside it.
+  //
+  // ADDITIVE, like ContextObserved and for the same reason: the server sends
+  // whichever of the two fields the transcript has, and a session that has an
+  // `agent-name` but no `ai-title` yet must not have its name wiped by the pass
+  // that reports the title as null. An absent field means "nothing to say".
+  //
+  // The title is dropped when it merely repeats the name. CC overwrites
+  // `aiTitle` with the slug once a session is named, so on a named session the
+  // two are usually byte-identical, and a tooltip that echoes the label is worse
+  // than no tooltip: it looks like a bug. Comparison is trimmed and
+  // case-insensitive because the two records are written by different code paths
+  // and only agree exactly by convention.
+  if (name === "SessionNamed") {
+    const root = state.agents.get(sessionId);
+    if (root) {
+      const named = typeof p.sessionName === "string" ? p.sessionName.trim() : "";
+      const titled = typeof p.sessionTitle === "string" ? p.sessionTitle.trim() : "";
+      if (named) root.sessionName = named;
+      if (titled) root.sessionTitle = titled;
+      const shown = root.sessionName ?? "";
+      if (root.sessionTitle && shown
+          && root.sessionTitle.toLowerCase() === shown.toLowerCase()) {
+        root.sessionTitle = undefined;
       }
     }
     return state;
