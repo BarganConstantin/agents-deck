@@ -1,6 +1,6 @@
 {
   "name": "agents-deck",
-  "version": "1.36.2",
+  "version": "1.36.3",
   "description": "Live deck of Claude Code and Codex agents — watch tool calls, token spend and every Claude Code subagent on one calm canvas. Also available as npx ccdeck and npx agent-dag.",
   "type": "module",
   "bin": {
