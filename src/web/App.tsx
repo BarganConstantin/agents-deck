@@ -1006,6 +1006,11 @@ function Inner() {
 
   // One left column, two things that want it. Opening either evicts the other
   // rather than fighting over the same grid slot.
+  //
+  // Still two, and still both callers' problem, even though only one of them
+  // has a button left: the session list is reached from L alone now, and the
+  // eviction is what stops that key from stacking it under an open accounts
+  // panel in the same slot.
   const toggleSessionList = useCallback(() => {
     setSessionListOpen(open => {
       if (!open) setAccountsPanelOpen(false);
@@ -2102,6 +2107,22 @@ function Inner() {
       if (e.key === "c" || e.key === "C") requestClear("shortcut");
       if (e.key === "r" || e.key === "R") handleRelayout();
       if (e.key === "f" || e.key === "F") handleFit();
+      // The only way in, now that the topbar's ☰ is gone — and a genuine
+      // toggle, so the same key that opened the sidebar closes it again. The
+      // panel's own ‹ is the second way out and calls the same setter; Escape
+      // is not and never was one, because the session list is an <aside> beside
+      // the canvas rather than a modal, so it registers no dismisser with
+      // modalStack (see modal-dismiss.ts). The shortcuts sheet below still
+      // lists L, which is where the feature is discoverable from now.
+      //
+      // What removing the button cost the accessibility tree: aria-expanded on
+      // that ☰ was the only place the panel's open/closed state was reported,
+      // and nothing replaces it. It was never read on THIS path — a key pressed
+      // while focus is elsewhere changes a button's state silently — so what is
+      // actually lost is the ability to tab to a control and ask. The panel
+      // itself is still announced when it is open: it is a named complementary
+      // landmark ("Sessions") that the rotor lists, and its close button is the
+      // first control in it.
       if (e.key === "l" || e.key === "L") toggleSessionList();
       if (e.key === "h" || e.key === "H") setUsageHistoryOpen(o => !o);
       if (e.key === "u" || e.key === "U") setUsagePanelOpen(o => !o);
@@ -2501,9 +2522,11 @@ function Inner() {
               AccountsPanel spells out: an IDREF that resolves to nothing is a
               dangling pointer rather than a relationship, and closed is exactly
               when there is nothing to point at.
-              The `primary` class is gone from all five of these. The state is
+              The `primary` class is gone from all four of these. The state is
               the ARIA attribute now and the stylesheet reads it there, so the
-              pixels and the accessibility tree cannot drift apart. */}
+              pixels and the accessibility tree cannot drift apart. #370 counted
+              five; the session list's button has since been removed from the
+              row and the rule is unchanged for the four that are left. */}
           <button
             className="btn icon-btn"
             onClick={() => setUsagePanelOpen(o => !o)}
@@ -2589,15 +2612,11 @@ function Inner() {
             </svg>
           </button>
           )}
-          {/* And the third, sharing the left slot with accounts. */}
-          <button
-            className="btn icon-btn"
-            onClick={toggleSessionList}
-            title={`${sessionListOpen ? "Hide" : "Show"} session list (L)`}
-            aria-label="Toggle session list"
-            aria-expanded={sessionListOpen}
-            aria-controls={sessionListOpen ? "session-list" : undefined}
-          >☰</button>
+          {/* The session list's ☰ used to sit here, sharing the left slot with
+              accounts. The panel is untouched — it is still mounted by
+              `sessionListOpen`, still toggled by L, still closed by its own ‹ —
+              and only the topbar control is gone. What that costs is written
+              down at the L handler, which is now the only way in. */}
           {/* The odd one out, and deliberately given neither aria-pressed nor
               aria-expanded. What this opens is a modal — role="dialog"
               aria-modal="true" behind a full-screen scrim, with the focus trap

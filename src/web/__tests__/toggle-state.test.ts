@@ -2,6 +2,12 @@
 // whether they were on in two channels, both of them hue at nearly the same
 // luminance — and four of the five told assistive tech nothing at all.
 //
+// Four of them now. The session list's ☰ has since been removed from the row —
+// the panel stays and L is the only way to it — and the last block below is
+// what that removal left behind: the rule about disclosure toggles, asked of the
+// two that are left, and the rule that a feature whose control is gone must
+// still have a way in and a way out.
+//
 // The visual half, measured against BOTH ends of the topbar gradient rather
 // than one of them, because a 30px button centred in a 52px bar is read against
 // the whole of it:
@@ -314,7 +320,7 @@ describe("the on state, as the sheet draws it now", () => {
   });
 });
 
-describe("what each of the five toggles announces", () => {
+describe("what each of the four toggles announces", () => {
   /** The attributes of the <button> whose aria-label is exactly this. */
   function button(label: string): string {
     const at = app.indexOf(`aria-label="${label}"`);
@@ -323,13 +329,14 @@ describe("what each of the five toggles announces", () => {
     return app.slice(open, app.indexOf(">", at) + 1);
   }
 
-  it("gives the three panel toggles aria-expanded, bound to the panel's own state", () => {
+  it("gives the two panel toggles aria-expanded, bound to the panel's own state", () => {
     // Disclosures: each shows a region that follows the button in the DOM and
     // takes no focus with it. Not aria-pressed — the button is not a setting
     // that stays on, it reports whether the thing it points at is on screen.
+    // Three until the session list's ☰ was removed; the rule is about what a
+    // disclosure toggle owes, not about how many of them the row carries.
     expect(button("Toggle usage panel")).toMatch(/aria-expanded=\{usagePanelOpen\}/);
     expect(button("Toggle accounts panel")).toMatch(/aria-expanded=\{accountsPanelOpen\}/);
-    expect(button("Toggle session list")).toMatch(/aria-expanded=\{sessionListOpen\}/);
   });
 
   it("points each one at a real element, and only while that element exists", () => {
@@ -339,7 +346,6 @@ describe("what each of the five toggles announces", () => {
     const pairs: Array<[string, string, string]> = [
       ["Toggle usage panel", "usagePanelOpen", "usage-panel"],
       ["Toggle accounts panel", "accountsPanelOpen", "accounts-panel"],
-      ["Toggle session list", "sessionListOpen", "session-list"],
     ];
     for (const [label, state, id] of pairs) {
       expect(button(label), label)
@@ -347,10 +353,54 @@ describe("what each of the five toggles announces", () => {
     }
     expect(usagePanel).toMatch(/id="usage-panel"/);
     expect(accountsPanel).toMatch(/id="accounts-panel"/);
-    expect(sessionList).toMatch(/id="session-list"/);
+    // `id="session-list"` is not asserted here any more: with no toggle
+    // pointing at it there is no IDREF for this case to be about. It is still
+    // pinned, by landmark-outline.test.ts, as one of the three panels whose
+    // class, id and aria-label are the same shape (#381).
   });
 
-  it("keeps aria-pressed for the sound button, the only one of the five that is a setting", () => {
+  it("keeps no control at all for the session list, and no state to announce", () => {
+    // The removal, stated as the thing that must stay true. Both halves: the
+    // button is gone from the markup, and so is the ☰ it was drawn as — a
+    // second control reusing the glyph would fail this rather than sneak in.
+    expect(app).not.toMatch(/aria-label="Toggle session list"/);
+    expect(app).not.toContain("☰");
+    // And the finding that comes with it, written down rather than papered
+    // over: aria-expanded on that button was the only report of this panel's
+    // open state anywhere in the deck, and nothing replaces it. What the panel
+    // still has is a name, as a complementary landmark the rotor lists.
+    expect(sessionList).toMatch(/<aside className="session-list" id="session-list" aria-label="Sessions">/);
+    // Enumerated rather than asked of `sessionListOpen` alone, so a control
+    // that came back under another state name would fail here too.
+    const expandeds = [...app.matchAll(/aria-expanded=\{(\w+)\}/g)].map(m => m[1]).sort();
+    expect(expandeds).toEqual(["accountsPanelOpen", "usagePanelOpen"]);
+    expect(app).not.toMatch(/aria-controls=\{sessionListOpen/);
+  });
+
+  it("leaves the session list a way in and a way out, which is what the button was", () => {
+    // The failure this case exists for is a panel that opens and cannot be
+    // closed. Three claims, and the feature needs all three:
+    //   L reaches the toggle,
+    //   the toggle really inverts — a setter that only ever opened would be a
+    //     trap now that nothing else can shut it,
+    //   and the panel's own ‹ still calls the close.
+    expect(app).toMatch(/if \(e\.key === "l" \|\| e\.key === "L"\) toggleSessionList\(\);/);
+    const body = app.slice(app.indexOf("const toggleSessionList"), app.indexOf("const toggleAccountsPanel"));
+    expect(body).toMatch(/setSessionListOpen\(open => \{[\s\S]*?return !open;/);
+    expect(app).toMatch(/\{sessionListOpen && \(\s*<SessionList/);
+    expect(app).toMatch(/onClose=\{\(\) => setSessionListOpen\(false\)\}/);
+    expect(sessionList).toMatch(/className="btn icon-btn sl-close" onClick=\{onClose\}/);
+    // Escape is not a third way out and never was: this is an <aside> beside
+    // the canvas, not a modal, so it registers no dismisser with modalStack and
+    // the key falls through to clearing the canvas selection. Pinned so the
+    // sentence above stays checkable.
+    expect(sessionList).not.toMatch(/useModalDismiss|modalStack/);
+    // Which leaves the shortcuts sheet as the only place the feature is
+    // discoverable from, so it is load-bearing now rather than a reminder.
+    expect(app).toMatch(/<kbd>L<\/kbd><span>session list<\/span>/);
+  });
+
+  it("keeps aria-pressed for the sound button, the only one of them that is a setting", () => {
     // It installs or removes a Stop hook on disk. Nothing appears when it goes
     // on, so there is no region for aria-expanded to be about.
     // The label names the CLI since #394 — the button is drawn only where

@@ -1,7 +1,9 @@
 // Left sidebar listing every session on the canvas. Click a row to
 // fit-view to that session and select its root agent. State dot + label
 // + model chip + cost + tool count gives a fast scan of what's running.
-// Toggle visibility via the L key or the topbar button (see App.tsx).
+// Toggle visibility with the L key (see App.tsx). The topbar's ☰ used to open
+// it too and has been removed; L is the way in, and the ‹ below and L itself
+// are the two ways out.
 import React, { useMemo } from "react";
 import { isAlarming } from "../ambient-counts";
 import { costForUsage, fmtCost } from "../pricing";
@@ -117,7 +119,12 @@ export default function SessionList({ state, now, selectedIds, onSelect, onClose
   const waitingCount = rows.filter(r => isAlarming(r.waiting)).length;
 
   return (
-    // Named for the topbar toggle's aria-controls — see UsagePanel.
+    // The id outlived the aria-controls it was named for: the topbar toggle
+    // that pointed at it is gone. It stays because it is the shape #381 pins
+    // for all three panels — `className` and `id` the same word, plus the
+    // aria-label that makes the rotor's complementary entries tellable apart —
+    // and that is now this panel's only announcement, since nothing reports its
+    // open state any more.
     <aside className="session-list" id="session-list" aria-label="Sessions">
       <div className="sl-header">
         {/* h2, under the topbar's h1 — the level every panel title sits at
