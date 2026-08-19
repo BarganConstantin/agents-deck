@@ -446,17 +446,6 @@ async function reportStartup(jobs) {
   }
 }
 
-// Everything above is once-per-session setup — hook install, tool probes,
-// registry lookups, and the banner it now runs underneath. A respawn is the
-// same session continuing, so it skips the lot and prints one line instead.
-// This is the difference between a restart that feels instant and one that
-// makes you wonder whether it worked.
-if (!RESPAWN) {
-  const jobs = startupWork();
-  await printBanner();
-  await reportStartup(jobs);
-}
-
 // Asking the supervisor to bring us back. It is the only party that can, and
 // only after this process is gone — which is precisely what keeps the
 // replacement from racing this listener onto a random fallback port.
@@ -472,20 +461,22 @@ let upgradeTimer = null;
 //
 // The server below starts accepting connections from inside startServer, before
 // that call has returned — so /api/restart is reachable for the whole of the
-// boot that follows it: the port report to the supervisor, the discovery file
-// and its first fsynced write, and on a cold start the browser spawn. A restart
-// landing in that window used to reach `shutdown` before the binding holding it
-// was initialised and die of a ReferenceError, having already set the latch
-// above, with nothing left to clear it — after which every restart from every
-// tab was answered "ok" and did nothing, for the life of the process (#448).
+// boot that follows it: the startup report, the port report to the supervisor,
+// the discovery file and its first fsynced write, and on a cold start the
+// browser spawn. A restart landing in that window used to reach `shutdown`
+// before the binding holding it was initialised and die of a ReferenceError,
+// having already set the latch above, with nothing left to clear it — after
+// which every restart from every tab was answered "ok" and did nothing, for the
+// life of the process (#448).
 //
-// So an ask that arrives too early is held rather than run: the window is
-// bounded and short, the user asked for something this deck can genuinely give
-// a second later, and refusing outright would put back the same silence in a
-// politer form. BOOT_RESTART_MS is the outer bound, for the reason
-// UPGRADE_ANSWER_MS above is one: a boot that has not finished in ten seconds is
-// itself the fault, and the restart is the answer to it rather than a casualty
-// of it.
+// So an ask that arrives too early is held rather than run: the user asked for
+// something this deck can genuinely give a moment later, and refusing outright
+// would put back the same silence in a politer form. BOOT_RESTART_MS is the
+// outer bound, for the reason UPGRADE_ANSWER_MS above is one — and since #483
+// moved the listen in front of the report, it is a bound that gets used: a boot
+// waiting out a real `uv tool install` is minutes long, and the restart is the
+// right answer to it rather than a casualty of it. Ten seconds in, the ask is
+// run; the respawn skips the report entirely and is up in about a second.
 let booted = false;
 let heldRestart = null;
 let bootTimer = null;
@@ -626,18 +617,69 @@ let server = null;
 let discovery = null;
 let discoveryFile = null;
 
+// The listen, begun HERE and awaited below the startup report rather than after
+// it. The report is a narration; the port is the product, and it was queued
+// behind three tool probes for no reason but the order these two statements
+// were written in (#483).
+//
+// What that cost: `reportStartup` awaits `ensureCswap`, which on a machine with
+// no Python tooling runs a real `uv tool install` under a 180-second timeout. So
+// the deck printed its rows and then refused every connection until that install
+// was over — on a first run, which is the one boot a new user judges the tool by.
+// #476 stopped that job blocking the event loop; the socket was shut either way,
+// because the bind had not been attempted yet.
+//
+// Nothing in the report has to finish before the socket opens, and the window
+// this opens is narrow on purpose — the discovery file and the browser are both
+// still written after the report, so the only callers who can arrive inside it
+// are a tab left open by an earlier deck and the user's own curl:
+//
+//   • the event log is replayed and the sequence counter primed INSIDE
+//     startServer, before it binds — so /events and /api/events answer from a
+//     full buffer from the first connection, not a growing one.
+//   • the hook install can only make hooks fire; a hook that fires early finds
+//     no discovery file and posts nowhere, exactly as it does today.
+//   • claude-swap: cswapBin memoizes only a lookup that WORKED, so a probe
+//     landing mid-install caches nothing and the next one asks again — see
+//     resetCswapBin's note. The accounts panel can report the tool missing for
+//     the second it is missing, and answers properly the moment it is not.
+//   • ccusage: getRunner awaits the very `_installing` promise primeCcusage
+//     started, so a request in this window joins that install rather than
+//     racing a second one.
+//
+// Settled into a tagged result rather than left bare, for the reason every job
+// in startupWork carries its own handler: this promise now lives across the
+// whole report, and a bind that fails in there with nothing attached to it is an
+// unhandledRejection — which Node answers by killing the process over a port it
+// could have named.
 const starting = startServer({
   port, persist, workspace, codex: wantCodex, claude: wantClaude,
   // Withheld when nothing is supervising us: without a parent, exiting is just
   // exiting, and /api/restart answers 501 so the UI hides the control.
   onRestart: SUPERVISED ? requestRestart : null,
-});
-server = await (RESPAWN ? starting : step(`starting server${G.ellipsis}`, starting)).catch(err => {
+}).then(s => ({ ok: true, s }), err => ({ ok: false, err }));
+
+// Once-per-session setup — hook install, tool probes, registry lookups, and the
+// banner it runs underneath. A respawn is the same session continuing, so it
+// skips the lot and prints one line instead. This is the difference between a
+// restart that feels instant and one that makes you wonder whether it worked.
+if (!RESPAWN) {
+  const jobs = startupWork();
+  await printBanner();
+  await reportStartup(jobs);
+}
+
+// Usually settled long ago by the time we get here, which is the point: `step`
+// paints nothing for a promise that has already resolved, so the spinner this
+// used to show is simply gone from the boots that were slow enough to need one.
+const bound = await (RESPAWN ? starting : step(`starting server${G.ellipsis}`, starting));
+if (!bound.ok) {
   // stderr, not a row: a deck that could not bind is not a status line, and
   // whatever launched it reads this stream.
-  console.error(`${PRODUCT}: server failed: ${err.message}`);
+  console.error(`${PRODUCT}: server failed: ${bound.err.message}`);
   process.exit(1);
-});
+}
+server = bound.s;
 const addr = server.address();
 const realPort = typeof addr === "object" && addr ? addr.port : port;
 const url = `http://127.0.0.1:${realPort}`;
@@ -749,13 +791,13 @@ runHeldRestart();
  * A declaration, not the `const` arrow this was for eight months.
  *
  * The difference is the whole of #448: a const is in its temporal dead zone
- * until the line declaring it runs, and every line above — the port report, the
- * discovery file, the browser spawn — executes with the server already
- * accepting connections. A restart arriving in that window called this and got
- * `ReferenceError: Cannot access 'shutdown' before initialization`, and the
- * latch it had already set is what made that permanent. A declaration is
- * hoisted, so from the first instruction of this module there is a function
- * here to call.
+ * until the line declaring it runs, and every line above — the startup report,
+ * the port report, the discovery file, the browser spawn — executes with the
+ * server already accepting connections. A restart arriving in that window
+ * called this and got `ReferenceError: Cannot access 'shutdown' before
+ * initialization`, and the latch it had already set is what made that
+ * permanent. A declaration is hoisted, so from the first instruction of this
+ * module there is a function here to call.
  *
  * Hoisting alone would only have moved the fault one line down, onto `server`,
  * `discovery` and `discoveryFile` — which is why those are `let … = null` above
