@@ -2667,6 +2667,27 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   /* Don't transition transform — it's used inline for viewport scale. */
   transition: box-shadow 120ms ease, filter 120ms ease;
 }
+/* The session name, between the workspace and the short id inside the same
+   pill. Same family, same size, same hue, same --session-label-l — this is
+   deliberately NOT a second text tier. The header carries two kinds of field,
+   an address (the workspace, and the four id characters that appear when two
+   sessions share it) and a description (this), and the thing that separates
+   them here is CASE: the address is drawn uppercase by .cluster-label above and
+   the name is handed back its own. A colour or an opacity would have had to
+   clear 4.5:1 again at every one of 360 hues in both themes to say what case
+   says for nothing, and the light theme has 0.07 of a point of headroom over AA
+   to spend (--session-label-l 26%, 4.57:1 worst hue). Case also survives what a
+   tier would not: half the session names measured on this machine are sentences
+   rather than kebab slugs, and a sentence uppercased beside a workspace is one
+   unreadable run.
+
+   0.02em rather than the 0.08em above, because tracking that opens uppercase
+   loosens lowercase, and it buys back 1.7px per ten characters of a field that
+   is already the widest thing in the pill. */
+.cluster-label-name {
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
 .cluster-label:hover {
   filter: brightness(1.25);
   box-shadow: 0 4px 14px rgba(0,0,0,0.45), 0 0 0 1px currentColor;

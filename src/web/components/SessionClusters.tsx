@@ -3,9 +3,33 @@ import { useReactFlow, useStore, useViewport, type ReactFlowState } from "reactf
 import { sessionHue } from "../reducer";
 import type { AgentNodeData } from "../types";
 
-export interface Cluster {
-  sessionId: string;
+/**
+ * The three fields a cluster header draws, kept apart rather than joined into
+ * one string, because they are not three things of one kind.
+ *
+ * `label` and `shortId` are the session ADDRESS: the workspace it runs in and,
+ * when two sessions share that workspace, four characters of its id. `name` is
+ * a DESCRIPTION — Claude Code rewrites it as the conversation moves and two
+ * sessions may hold the same one, which is exactly why it cannot take the id
+ * over. The sheet draws the two address fields uppercase and the name in its
+ * own case, and it can only do that if they arrive here separately.
+ */
+export interface ClusterHeader {
+  /** Workspace basename. Always present, always drawn first. */
   label: string;
+  /** The session name, truncated to NAME_COLUMNS. Absent when there is none —
+   *  a Codex session, or a Claude one too young to have been named. */
+  name?: string;
+  /** Four characters of the session id. Present ONLY when another cluster
+   *  carries the same workspace label; a name never replaces it. */
+  shortId?: string;
+  /** The same three fields on one line with nothing truncated — the tooltip,
+   *  which is where a cut name is recovered. */
+  fullLabel: string;
+}
+
+export interface Cluster extends ClusterHeader {
+  sessionId: string;
   x: number; y: number; w: number; h: number;
 }
 
@@ -42,7 +66,7 @@ function selectClusters(s: ReactFlowState): Cluster[] {
  * bug came from, not the arithmetic.
  */
 export function clusterBounds(nodes: Iterable<ClusterNode>): Cluster[] {
-  const bySession = new Map<string, { minX: number; minY: number; maxX: number; maxY: number; label: string }>();
+  const bySession = new Map<string, { minX: number; minY: number; maxX: number; maxY: number; label: string; name?: string }>();
   for (const n of nodes) {
     // Only agent cards define a session's bounds. The invisible per-session
     // drag handle is a React Flow node like any other and its data carries the
@@ -68,13 +92,22 @@ export function clusterBounds(nodes: Iterable<ClusterNode>): Cluster[] {
     const y2 = y1 + n.height;
     const existing = bySession.get(d.sessionId);
     if (!existing) {
-      bySession.set(d.sessionId, { minX: x1, minY: y1, maxX: x2, maxY: y2, label: rootLabel(d) ?? d.sessionId });
+      bySession.set(d.sessionId, {
+        minX: x1, minY: y1, maxX: x2, maxY: y2,
+        label: rootLabel(d) ?? d.sessionId,
+        name: rootName(d),
+      });
     } else {
       existing.minX = Math.min(existing.minX, x1);
       existing.minY = Math.min(existing.minY, y1);
       existing.maxX = Math.max(existing.maxX, x2);
       existing.maxY = Math.max(existing.maxY, y2);
       if (d.kind === "root") existing.label = rootLabel(d) ?? existing.label;
+      // Same rule as the label, and for the same reason: only the session root
+      // speaks for the session. A subagent carries no sessionName at all, so
+      // reading one off whichever node arrived first would leave the header
+      // waiting on iteration order for a field the root has had all along.
+      if (d.kind === "root") existing.name = rootName(d);
     }
   }
 
@@ -89,10 +122,9 @@ export function clusterBounds(nodes: Iterable<ClusterNode>): Cluster[] {
   const out: Cluster[] = [];
   for (const [sessionId, b] of bySession) {
     const needsSuffix = (labelCounts.get(b.label) ?? 0) > 1;
-    const label = needsSuffix ? `${b.label} · ${shortId(sessionId)}` : b.label;
     out.push({
       sessionId,
-      label,
+      ...clusterHeader(b.label, b.name, sessionId, needsSuffix),
       x: b.minX - PAD,
       y: b.minY - PAD - HEADER_H,
       w: b.maxX - b.minX + PAD * 2,
@@ -100,6 +132,109 @@ export function clusterBounds(nodes: Iterable<ClusterNode>): Cluster[] {
     });
   }
   return out;
+}
+
+/** The separator between two header fields. One glyph for all of them — see
+ *  the note on clusterHeader for why the fields are told apart by case. */
+export const SEP = " · ";
+
+/**
+ * The most of a session name the header draws, in monospace columns.
+ *
+ * Measured, not picked. The card beside it already shows the name, and shows
+ * it at 11px in a 240px node whose 12/16px padding leaves 210px of text —
+ * 31.7 columns of a 6.62px advance before the ellipsis on `.session-name`
+ * fires.
+ * A header showing MORE than the card would put the only copy of a tail in a
+ * tooltip; at 32 it never does, and both surfaces cut at the same word.
+ *
+ * What it is worth, measured in a browser against this sheet rather than
+ * estimated: the longest agentName in the transcripts on this machine is 53
+ * characters, "Refactor mailbox controller request response handling", and it
+ * draws a 481.3px header. Capped, the same header is 350.7px. The narrowest
+ * cluster there is — one 240px card plus PAD on both sides — is 276px wide and
+ * the pill starts 16px inside it, so the overhang goes from 221.3px to 90.7px.
+ * layout.ts leaves a full card width, 240px, of clear canvas between two
+ * session columns, so a capped header stays inside that gutter and cannot
+ * reach the box next door. An uncapped one could.
+ *
+ * The overhang itself is not new and is not the name: the pill is
+ * `white-space: nowrap` in a layer that clips nothing, so it has always run
+ * past the box it labels rather than wrapping, clipping or widening it — a
+ * long workspace basename alone overhangs a one-card cluster by 21.2px today.
+ * What the name changes is the magnitude, and the cap is the whole answer to
+ * that. It is also why the cap is not tied to the cluster width: at 276px the
+ * budget would be 17 columns, shorter than every name measured here, and a cap
+ * that fires every time is not a cap.
+ */
+export const NAME_COLUMNS = 32;
+
+/** Code points a monospace font draws two columns wide: CJK, Hangul, kana and
+ *  the fullwidth forms. Counting them as one would let a 32-character name
+ *  draw 64 columns, which puts the bound above out by a factor of two. */
+const WIDE = /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+
+function columns(ch: string): number {
+  return WIDE.test(ch) ? 2 : 1;
+}
+
+/**
+ * A name cut to NAME_COLUMNS, ellipsis included in the count.
+ *
+ * Walks code points rather than UTF-16 units: the names measured here are not
+ * all kebab ASCII — one of them ends in U+2442 — and slicing a string in the
+ * middle of a surrogate pair renders a replacement box, which looks like data
+ * loss rather than truncation. Trailing separators are walked off before the
+ * ellipsis so a cut never reads as a hyphen the name itself contains.
+ */
+export function truncateName(name: string, budget = NAME_COLUMNS): string {
+  const chars = [...name];
+  let total = 0;
+  for (const ch of chars) total += columns(ch);
+  if (total <= budget) return name;
+  const kept: string[] = [];
+  let used = 0;
+  for (const ch of chars) {
+    const w = columns(ch);
+    if (used + w > budget - 1) break;
+    kept.push(ch);
+    used += w;
+  }
+  while (kept.length && /[\s\-_.:/]/.test(kept[kept.length - 1])) kept.pop();
+  return `${kept.join("")}…`;
+}
+
+/**
+ * The header, as three fields rather than as one string.
+ *
+ * Pure, and separately testable, because there are four shapes it has to draw
+ * deliberately and only one of them is the common case:
+ *
+ *     VCRM-CORE
+ *     VCRM-CORE · account-management-oauth-flow
+ *     VCRM-CORE · 4EFA
+ *     VCRM-CORE · account-management-oauth-flow · 4EFA
+ *
+ * The id keeps the condition it has always had — it appears when a second
+ * cluster carries the same workspace label, and not otherwise. A name does not
+ * earn it and does not excuse it: two sessions in one workspace can be named
+ * the same thing, so the name cannot do the job the id is there to do.
+ */
+export function clusterHeader(
+  workspace: string,
+  name: string | undefined,
+  sessionId: string,
+  collides: boolean,
+): ClusterHeader {
+  const named = name?.trim() ?? "";
+  const id = collides ? shortId(sessionId) : undefined;
+  const fields = [workspace, named || undefined, id].filter(Boolean) as string[];
+  return {
+    label: workspace,
+    name: named ? truncateName(named) : undefined,
+    shortId: id,
+    fullLabel: fields.join(SEP),
+  };
 }
 
 function shortId(sessionId: string): string {
@@ -112,6 +247,11 @@ function shortId(sessionId: string): string {
 function rootLabel(d: AgentNodeData): string | undefined {
   if (d.kind !== "root") return undefined;
   return d.label;
+}
+
+function rootName(d: AgentNodeData): string | undefined {
+  if (d.kind !== "root") return undefined;
+  return d.sessionName;
 }
 
 export default function SessionClusters() {
@@ -201,6 +341,25 @@ export default function SessionClusters() {
           transformOrigin: "left top",
           "--session-hue": hue,
         } as React.CSSProperties;
+        // Three fields, one pill, and only the middle one in a span of its own.
+        // The separators stay the same glyph on purpose: what differs between
+        // these fields is their KIND, not their rank, and the sheet says so by
+        // leaving the name in its own case while the workspace and the id are
+        // drawn uppercase. Two glyphs would have added a second rhythm without
+        // saying which of its neighbours it binds to.
+        //
+        // The pill is content-width and transitions neither width nor left, so
+        // a rename repaints one edge with no easing anywhere. The four eased
+        // properties on .cluster-card are the node bounds above and no name
+        // reaches them.
+        //
+        // The tooltip carries the whole thing untruncated, on the line above
+        // the sentence rather than after another separator: with three fields
+        // now joined by the same glyph, a fourth would have read as a fourth
+        // field. The label is not a drag surface — the gesture belongs to the
+        // sessionGroup node behind the cards, and this button sits above the
+        // handle by LABEL_LIFT precisely so a click reaches it — so a title
+        // here has no drag to fight.
         return (
           <React.Fragment key={c.sessionId}>
             <div className="cluster-card" style={boxStyle} aria-hidden />
@@ -208,9 +367,13 @@ export default function SessionClusters() {
               type="button"
               className="cluster-label"
               style={labelStyle}
-              title={`Fit view to ${c.label} · drag the wrapper to move the whole session`}
+              title={`Fit view to ${c.fullLabel}\ndrag the wrapper to move the whole session`}
               onClick={() => focusSession(c.sessionId)}
-            >{c.label}</button>
+            >
+              {c.label}
+              {c.name ? <>{SEP}<span className="cluster-label-name">{c.name}</span></> : null}
+              {c.shortId ? SEP + c.shortId : null}
+            </button>
           </React.Fragment>
         );
       })}
@@ -225,6 +388,13 @@ function shallowEqualClusters(a: Cluster[], b: Cluster[]): boolean {
     if (
       x.sessionId !== y.sessionId ||
       x.label !== y.label ||
+      // Both halves of the name. Two different names can truncate to the same
+      // shown text, and only fullLabel would notice — that is the string the
+      // tooltip serves, so skipping it would hold a stale one behind a header
+      // that had already settled.
+      x.name !== y.name ||
+      x.shortId !== y.shortId ||
+      x.fullLabel !== y.fullLabel ||
       x.x !== y.x || x.y !== y.y ||
       x.w !== y.w || x.h !== y.h
     ) return false;
