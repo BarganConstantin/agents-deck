@@ -158,10 +158,14 @@
    line box came to — 31.4px, which is deterministic rather than
    platform-dependent (the sheet's line-height is unitless, so it is 17.4px on
    every OS) but is nevertheless 1.4px taller than the icon button beside it.
-   The topbar carries five icon buttons between two text buttons, so that step
-   repeated across the bar four times: tops at y=9.8 against y=10.49. Both
-   variants derive from this number now, so there is no arithmetic left that
-   could produce a second one. */
+   The topbar carried five icon buttons between two text buttons when this was
+   written, so that step repeated across the bar four times: tops at y=9.8
+   against y=10.49. It carries five icon buttons and ONE text button now — Pause
+   — laid out in three runs, and Re-layout and Clear have gone to the canvas's
+   own control stack; the sole remaining boundary of that kind is Pause
+   against `$`. The step is worth just as much at one crossing as at four, and
+   the two variants still derive from this number, so there is no arithmetic
+   left that could produce a second one. */
 :root {
   --panel-inset: 14px;
   --ctl-h: 30px;
@@ -439,15 +443,44 @@ button:focus-visible { outline-offset: 1px; }
 
 /* ---------------- topbar ---------------- */
 
+/* Four distances in this bar and one meaning each, so a gap is readable as a
+   claim about what is on either side of it:
+
+     8px   control to control      .action-run
+     14px  readout to readout      .topbar .status — unchanged
+     18px  run to run              .topbar .actions
+     24px  role to role            .topbar, .topbar .readout
+
+   Every one of them was already somewhere in this sheet; what was missing was
+   the largest. The bar used to run 14px between the last number and the first
+   button and 8px between two buttons — a 1.75x step, under 16px, doing the work
+   of a group boundary while `.stat + .stat::before` drew a literal 1px rule
+   between tokens and cost. So the bar's own spacing said the break between two
+   readouts was bigger than the break between watching and acting.
+   `justify-content: space-between` stays: the gaps are the floor between
+   neighbours, and the free space still goes to the middle. */
 .topbar {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 24px;
   padding: 0 18px;
   background: var(--topbar-grad);
   border-bottom: 1px solid var(--line);
   user-select: none;
+}
+/* Everything the deck is telling you, in one group, on the LEFT. Not centred:
+   a centred group's x-position is a function of both its neighbours' widths, so
+   the `live` pill would slide sideways every time the token count or the cost
+   gained a digit — and the one light on this bar that has to be noticed cannot
+   be the one that moves. On the left, everything ahead of it (a 14px logo, a
+   wordmark of a fixed string, a version chip that grows by at most a warning
+   dot) has bounded width, which makes the pill an anchor. */
+.topbar .readout {
+  display: flex;
+  align-items: center;
+  gap: 24px;
 }
 .topbar .brand {
   font-weight: 600;
@@ -550,8 +583,25 @@ button:focus-visible { outline-offset: 1px; }
   box-shadow: 0 0 7px var(--warn);
   animation: pulse 2.4s infinite;
 }
+/* The three runs of controls, and the distance between runs rather than between
+   buttons — the 8px that used to be this rule's gap now lives on .action-run,
+   one step down, where it says "these two are the same kind of thing".
+   `flex: none` is the deliberate half. Every flex item shrinks by default, so
+   under compression the bar used to take width from whatever gave first, which
+   included the controls. It never should: a readout that has been squeezed off
+   the bar can be read again from a panel, while a control that has been squeezed
+   off is the only way to reach the thing it opens. The readouts give first now,
+   and the controls do not give at all. */
 .topbar .actions {
-  display: flex; gap: 8px; align-items: center;
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex: none;
+}
+.topbar .action-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Selected-agent ribbon — context chip that follows you across the canvas
@@ -562,7 +612,6 @@ button:focus-visible { outline-offset: 1px; }
   align-items: center;
   gap: 8px;
   padding: 4px 6px 4px 10px;
-  margin: 0 12px 0 4px;
   /* Not --ctl-fill, which is mixed from the foreground and therefore drags the
      bed toward it: --muted on 7% of --text is 4.05:1 in dark, and the rate and
      the cost inside this chip are --muted and --ok. A control whose own words
@@ -575,7 +624,17 @@ button:focus-visible { outline-offset: 1px; }
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  max-width: 380px;
+  /* Against the bar rather than at a literal (#508). The flat 380px plus the
+     `margin: 0 12px 0 4px` this rule used to carry cost 396px the instant an
+     agent was selected, on a bar whose worst-case control cluster was 1016px —
+     so a 1440px laptop with a paused deck, a held queue and a blocked session
+     was 148px over and four controls were the wrong height. The margin is gone
+     (the topbar's own 24px role gap does that job now) and the cap follows the
+     viewport, which moves worst-case-plus-ribbon collision from ~1588px to
+     ~1350px. It is the largest width lever in this bar and it is not a media
+     query: the label's ellipsis was already doing the right thing at every
+     width, it was only ever given too much room to do it in. */
+  max-width: min(380px, 26vw);
   min-width: 0;
   transition: border-color 120ms, background 120ms,
               transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
@@ -599,13 +658,21 @@ button:focus-visible { outline-offset: 1px; }
   min-width: 0;
   flex: 0 1 auto;
 }
+/* The same declaration the label above already had, and for the same reason
+   (#508). The label shrank correctly; its siblings did not. `.selected-cost` is
+   a plain flex item at the default `min-width: auto`, so once the label had
+   ellipsed away all its slack the cost reached its own min-content and broke
+   `$4.10` off ` · $0.31/min` — which put a 41.88px chip in a 52px bar whose
+   every other control is 30px, at every viewport from 1152 to 3000, as soon as
+   an agent's name passed about 22 characters. */
 .selected-ribbon .selected-cost {
   color: var(--ok);
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
+  white-space: nowrap;
 }
-.selected-ribbon .selected-rate { color: var(--muted); font-size: 10px; }
+.selected-ribbon .selected-rate { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .selected-ribbon .selected-extra {
   display: inline-flex;
   align-items: center;
@@ -632,10 +699,15 @@ button:focus-visible { outline-offset: 1px; }
 }
 .selected-ribbon .selected-close:hover { background: var(--line); color: var(--text); }
 .selected-ribbon .selected-close:active { transform: scale(0.94); }
+/* 14px between readouts, unchanged — it was never the wrong number. What was
+   wrong is that it also had to serve as the seam between the readouts and the
+   controls, via a `margin-right: 6px` that made that boundary 14px too. Both
+   distances saying the same thing is what made the strip's own 1px `.stat`
+   rules look like the larger break. The margin is gone; .readout's 24px and
+   .topbar's 24px carry the two boundaries this strip actually has. */
 .topbar .status {
   color: var(--muted);
   font-size: 12px;
-  margin-right: 6px;
   display: inline-flex;
   align-items: center;
   gap: 14px;
@@ -665,13 +737,18 @@ button:focus-visible { outline-offset: 1px; }
 
    The numbers replace the graphic IN PLACE on hover rather than appearing
    beside it. Expanding would shove every control to its right by ~30px on a
-   pointer that was only passing through. The row has room it did not have when
-   this was written — it carried five stats then, and the sessions, agents and
-   events counters and the MCP legend have since been removed, leaving tokens,
-   cost and the blocked-session button — but the rule is not about room: a readout
-   that reflows its neighbours because a pointer crossed it is a moving target,
-   and there is still no responsive collapse anywhere in this sheet to absorb
-   the shove. */
+   pointer that was only passing through. The row has more room than it had when
+   this was written and keeps finding more — it carried five stats then; the
+   sessions, agents and events counters and the MCP legend went, leaving tokens
+   and cost; and the run restructure took Re-layout and Clear off the bar and
+   pinned `.actions` at `flex: none`, handing every pixel of slack to this side.
+   None of that is why the rule exists. A readout that reflows its neighbours
+   because a pointer crossed it is a moving target at any width, and the extra
+   room has in fact made the shove worse rather than better: the meter now sits
+   inside `.readout`, the one group in the bar that is allowed to shrink, so a
+   hover that widened it would push against a group whose whole job is to give
+   way. There is still no responsive collapse anywhere in this sheet to absorb
+   it either. */
 .topbar .status .sysmeter-wrap { position: relative; display: inline-flex; align-items: center; }
 .topbar .status .sysmeter {
   display: inline-flex;
@@ -982,6 +1059,21 @@ button:focus-visible { outline-offset: 1px; }
   .sysdetail .sd-core-fill,
   .sysdetail .sd-fill { transition: none; }
 }
+/* The one thing on this bar that says whether the rest of it is true, so its
+   weight is 600 rather than the 400 it inherited from the strip. It was the
+   lightest text in the row and the row is a row of numbers.
+   The transition is 200ms, which is `.conn-banner`'s duration — the pill and
+   that banner report the same event from two places, and a state change that
+   arrives at two speeds reads as two events. Bare `ease` because every colour
+   channel in this sheet is bare `ease`; the custom curves are reserved for
+   transform. `background-color`, not `background`, so the shorthand cannot
+   quietly animate an image or a position. No `opacity`: going live → dead drops
+   `animation: pulse` at the same moment, and fading the alarm dot in over 200ms
+   is exactly the wrong thing to do with an alarm. No `transform`: it would move
+   the baseline of the whole strip.
+   No reduced-motion answer is owed. Colour is in this sheet's STILL set — a
+   cross-fade is the recommended alternative to motion, not the thing being
+   escaped from — and nothing here moves. */
 .topbar .status .pill {
   display: inline-flex;
   align-items: center;
@@ -991,19 +1083,45 @@ button:focus-visible { outline-offset: 1px; }
   background: var(--bg-soft);
   border: 1px solid var(--line);
   font-size: 11px;
+  font-weight: 600;
+  transition: color 200ms ease, background-color 200ms ease, border-color 200ms ease;
 }
-.topbar .status .pill.live { color: var(--ok); border-color: rgba(134,239,172,0.25); }
+.topbar .status .pill::before {
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+/* Live was the weakest-drawn of the three states, which is backwards for the
+   one that means "everything else on this bar is true": alone among them it
+   carried no fill at all, and its border alpha was 0.25 where the other two are
+   0.35. Both are now what the others already were. Measured in dark, the edge
+   goes from 1.82:1 / 1.90:1 against the two ends of the topbar gradient to
+   2.95:1 / 2.94:1 — which is where `.paused` has always sat (2.90:1 / 2.89:1).
+   The fill costs the word something and it is worth saying so: --ok was 13.45:1
+   on the bare --bg-soft bed and is 11.40:1 / 12.03:1 on the tint, still two and
+   a half times AA, and it buys the state a body instead of an outline.
+   Light is deliberately untouched, and the measurement is the argument rather
+   than a preference: the opaque #e8f2eb at the foot of this file is already as
+   deep as it can go, because --ok on it is 4.73:1, 0.23 over AA. There is no
+   fill available in that theme — the light bar's own gradient spans 1.13:1, so
+   anything quiet enough to sit inside it is invisible and anything loud enough
+   to be seen eats the word. In light, no pill can carry signal in its body;
+   the border and the dot are the whole of what it has. */
+.topbar .status .pill.live {
+  color: var(--ok);
+  border-color: rgba(134,239,172,0.35);
+  background: rgba(134,239,172,0.06);
+}
 .topbar .status .pill.live::before {
   content: ""; display: inline-block;
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
   background: var(--ok);
-  box-shadow: 0 0 6px var(--ok);
+  box-shadow: 0 0 8px var(--ok);
   animation: pulse 1.6s ease-in-out infinite;
 }
 /* Paused: connected, but the canvas is frozen. Amber and a still dot — the
    pulse is what "events are landing" means here, and under a pause none are.
-   Matches the Resume button's .btn.warn beside it, so the two read as one
-   state rather than two controls disagreeing. */
+   Matches the Resume button's .btn.warn, which is now at the far end of the bar
+   rather than next to it: the two bracket the row instead of sitting side by
+   side, so the shared hue is doing more work than it used to, not less. */
 .topbar .status .pill.paused {
   color: var(--warn);
   border-color: rgba(252,211,77,0.35);
@@ -1011,20 +1129,24 @@ button:focus-visible { outline-offset: 1px; }
 }
 .topbar .status .pill.paused::before {
   content: ""; display: inline-block;
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
   background: var(--warn);
-  box-shadow: 0 0 6px var(--warn);
+  box-shadow: 0 0 8px var(--warn);
 }
 .topbar .status .pill.dead {
   color: var(--err);
   border-color: rgba(252,165,165,0.35);
   background: rgba(252,165,165,0.06);
 }
+/* 7px and an 8px glow on all three, which is `.conn-banner .conn-dot` exactly.
+   That dot and this one report the same fact — whether the event stream is
+   alive — from the bar and from the banner that replaces the bar's answer, and
+   two marks for one fact should not be two sizes. */
 .topbar .status .pill.dead::before {
   content: ""; display: inline-block;
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
   background: var(--err);
-  box-shadow: 0 0 6px var(--err);
+  box-shadow: 0 0 8px var(--err);
 }
 .topbar .status .count {
   color: var(--text);
@@ -1036,20 +1158,31 @@ button:focus-visible { outline-offset: 1px; }
    beside it and behaves like every other button here: the --warn edge .btn.warn
    already uses (85% of the token, one value for both themes), the accent-free
    hover that adds contrast rather than taking it away, and the press this
-   codebase gives every custom control. It lives outside .status because that
-   span is a readout and this is a control, and because a control has no business
-   inside a live region — which .status was until #372 took the role off it, on
-   the grounds that a strip whose numbers move on every event is the last thing
-   in the topbar worth announcing. (The events counter that made that case is
-   itself gone from the row now; tokens and cost still move that way.) The
-   announcing this chip's own number deserves is done by a visually hidden
-   role="status" beside it, so the chip stays a plain button. */
+   codebase gives every custom control.
+   It lives OUTSIDE .status and INSIDE .readout, and that used to be one
+   sentence with two reasons in it. Half of it has expired. "A control has no
+   business inside a live region" was true of .status until #372 took the
+   role="status" off it, and has had nothing to point at since; the parenthesis
+   that propped it up — the events counter whose ticking made the case — is
+   itself gone from the row. What still does work is the other half, and it is a
+   claim about the strip rather than about ARIA: .status is a run of readouts
+   whose internal boundaries are drawn by `.stat + .stat::before`, so a button
+   dropped into it would either take one of those 1px rules or split the run in
+   two, and the row would be reporting a group boundary where there is only a
+   change of element.
+   Grouping the bar is what made the placement worth restating rather than
+   deleting: it gave the bar a group for observation, and this chip belongs in
+   that group rather than beside the controls. Being a button
+   is about what you can do with the number; being in .readout is about what the
+   number is. The announcing it deserves is still done by the visually hidden
+   role="status" beside it, so the chip stays a plain button.
+   The `margin-right: 6px` it used to carry is gone with .status's — .readout's
+   24px is the boundary now, and this chip is the last thing in that group. */
 .topbar .waiting-stat {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 3px 9px;
-  margin-right: 6px;
   border-radius: 999px;
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--warn) 85%, transparent);

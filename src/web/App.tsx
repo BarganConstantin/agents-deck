@@ -2282,118 +2282,96 @@ function Inner() {
           back in play (ownsKeystroke() leaves a <main> alone). */}
       <a className="skip-link" href="#canvas">Skip to the canvas</a>
       <header className="topbar">
-        <div className="brand">
-          <span className="logo" />
-          {/* The page's <h1>, and the wordmark that was already here rather
-              than a second copy of it hidden off screen (#381). The document
-              had no h1 at all, so its heading outline began at h3 and every
-              level below was a skip.
-              A visually-hidden heading was the other option and is the wrong
-              one HERE: the name it would carry is the word printed two pixels
-              to the right of it, so a screen reader would hear "ccdeck,
-              heading level 1" and then "ccdeck" again from the wordmark. A
-              hidden heading earns its keep when a region has no visible title;
-              this region has one, and marking up what is already on the page
-              is what 1.3.1 asks for. It is also the same string as the
-              document's <title>, from the same constant, so the tab, the
-              wordmark and the outline cannot drift.
-              The version chip stays a sibling and not a child: it is a button
-              whose accessible name is a whole sentence about npm, and inside
-              the heading that sentence would become part of the heading's
-              name. */}
-          <h1>{PRODUCT}</h1>
-          {/* The server's own version, not the bundle's — an upgrade replaces
-              dist/ too, so a reloaded page can show a number the running
-              process never had. Stale → the chip stays lit even after the
-              banner is dismissed, and clicking it brings the banner back. */}
-          {notice ? (
-            <button
-              type="button"
-              className="v stale"
-              onClick={toggleNotice}
-              /* The healthy branch below has carried an accessible name since it
-                 was written; this one did not, so its name was its text — the
-                 same bare version string, which made the chip that HAS news
-                 indistinguishable from the chip that has none. See
-                 versionNoticeLabel for the rest of the reasoning (#381). */
-              aria-label={versionNoticeLabel({ ...notice, open: noticeOpen })}
-              title={notice.kind === "restart"
-                ? `Running v${notice.from}; v${notice.to} is installed on disk. Restart to pick it up.`
-                : `Running v${notice.from}; v${notice.to} is on npm.`}
-            >
-              v{notice.from}
-              <span className="v-dot" aria-hidden />
-            </button>
-          ) : (
-            // Not decoration: "no banner" and "the check never ran" look the
-            // same from a chair, and on a machine that only ever runs
-            // `npx ccdeck` the difference is the whole feature. Clicking asks
-            // npm now, ahead of the poll — so it has to look like a control and
-            // say so out loud, which a dim version number does neither of.
-            (() => {
-              const copy = {
-                running: version?.running ?? __APP_VERSION__,
-                latest: version?.latest,
-                latestPending: version?.latestPending,
-                checkedAgo: version?.checkedAt ? shortAgo(now - version.checkedAt) : null,
-                checkDisabled: version?.checkDisabled,
-                checking: versionChecking,
-              };
-              return (
-                <button
-                  type="button"
-                  className={versionChecking ? "v checking" : "v"}
-                  onClick={() => loadVersion(true)}
-                  aria-busy={versionChecking || undefined}
-                  aria-label={versionChipLabel(copy)}
-                  title={versionChipTitle(copy)}
-                >
-                  v{copy.running}
-                </button>
-              );
-            })()
-          )}
-        </div>
-        {selected && (() => {
-          const c = costForUsage(selected.usage, selected.model);
-          const elapsedSec = Math.max(0, ((selected.endedAt ?? now) - selected.startedAt) / 1000);
-          const rate = selected.state === "active" ? fmtCostRate(c.total, elapsedSec) : null;
-          const extra = selectedIds.size - 1;
-          return (
-            <button
-              type="button"
-              className="selected-ribbon"
-              title={`Fit view to ${selected.label}`}
-              onClick={() => {
-                try {
-                  const node = nodes.find(n => n.id === selected.id);
-                  if (node) rf.fitView({ padding: 0.35, duration: 500, nodes: [node] });
-                  lastFitTimeRef.current = Date.now();
-                } catch {}
-              }}
-            >
-              <span className={`state-pill state-${selected.state}`}>
-                {selected.state === "active" ? "live" : selected.state}
-              </span>
-              <span className="selected-label">{selected.label}</span>
-              {c.total > 0 && <span className="selected-cost">{fmtCost(c.total)}{rate ? <span className="selected-rate"> · {rate}</span> : null}</span>}
-              {extra > 0 && <span className="selected-extra">+{extra}</span>}
-              {/* A mouse shortcut, not a control. It sits inside the ribbon's
-                  own <button>, so it can never be a button itself — nesting one
-                  is invalid, and it carried no tabIndex, which left a
-                  role="button" labelled "Deselect" that no keyboard could ever
-                  reach or operate. The keyboard has the same verb on Escape
-                  from anywhere on the page, so the honest markup is decoration
-                  with a click on it. */}
-              <span
-                aria-hidden
-                className="selected-close"
-                onClick={(e) => { e.stopPropagation(); clearSelection(); }}
-              >×</span>
-            </button>
-          );
-        })()}
-        <div className="actions">
+        {/* Three groups now, not two, and this is the observation one.
+            The bar used to be a brand and one flat run of eight controls with
+            the readout strip wedged in front of them, and the only thing
+            marking the seam between "what is happening" and "what I can do to
+            it" was `.status { margin-right: 6px }` — 14px against the 8px
+            between two buttons. A 1.75x step under 16px does not read as a
+            group boundary, while `.stat + .stat::before` draws a real 1px rule
+            between tokens and cost. So the bar said the break between two
+            numbers was larger than the break between the last number and the
+            first control, which is exactly backwards. The dividers were never
+            the defect; the large boundary having no mark at all was.
+            LEFT, not centred. A centred group's x-position is a function of
+            both neighbours' widths, so the `live` pill would slide sideways
+            every time the token count or the cost gained a digit — and a status
+            light that has to be noticed cannot be a moving target. Everything
+            ahead of it here (the logo, the wordmark, the version chip) has
+            bounded width, so on the left it is an anchor instead. */}
+        <div className="readout">
+          <div className="brand">
+            <span className="logo" />
+            {/* The page's <h1>, and the wordmark that was already here rather
+                than a second copy of it hidden off screen (#381). The document
+                had no h1 at all, so its heading outline began at h3 and every
+                level below was a skip.
+                A visually-hidden heading was the other option and is the wrong
+                one HERE: the name it would carry is the word printed two pixels
+                to the right of it, so a screen reader would hear "ccdeck,
+                heading level 1" and then "ccdeck" again from the wordmark. A
+                hidden heading earns its keep when a region has no visible title;
+                this region has one, and marking up what is already on the page
+                is what 1.3.1 asks for. It is also the same string as the
+                document's <title>, from the same constant, so the tab, the
+                wordmark and the outline cannot drift.
+                The version chip stays a sibling and not a child: it is a button
+                whose accessible name is a whole sentence about npm, and inside
+                the heading that sentence would become part of the heading's
+                name. */}
+            <h1>{PRODUCT}</h1>
+            {/* The server's own version, not the bundle's — an upgrade replaces
+                dist/ too, so a reloaded page can show a number the running
+                process never had. Stale → the chip stays lit even after the
+                banner is dismissed, and clicking it brings the banner back. */}
+            {notice ? (
+              <button
+                type="button"
+                className="v stale"
+                onClick={toggleNotice}
+                /* The healthy branch below has carried an accessible name since it
+                   was written; this one did not, so its name was its text — the
+                   same bare version string, which made the chip that HAS news
+                   indistinguishable from the chip that has none. See
+                   versionNoticeLabel for the rest of the reasoning (#381). */
+                aria-label={versionNoticeLabel({ ...notice, open: noticeOpen })}
+                title={notice.kind === "restart"
+                  ? `Running v${notice.from}; v${notice.to} is installed on disk. Restart to pick it up.`
+                  : `Running v${notice.from}; v${notice.to} is on npm.`}
+              >
+                v{notice.from}
+                <span className="v-dot" aria-hidden />
+              </button>
+            ) : (
+              // Not decoration: "no banner" and "the check never ran" look the
+              // same from a chair, and on a machine that only ever runs
+              // `npx ccdeck` the difference is the whole feature. Clicking asks
+              // npm now, ahead of the poll — so it has to look like a control and
+              // say so out loud, which a dim version number does neither of.
+              (() => {
+                const copy = {
+                  running: version?.running ?? __APP_VERSION__,
+                  latest: version?.latest,
+                  latestPending: version?.latestPending,
+                  checkedAgo: version?.checkedAt ? shortAgo(now - version.checkedAt) : null,
+                  checkDisabled: version?.checkDisabled,
+                  checking: versionChecking,
+                };
+                return (
+                  <button
+                    type="button"
+                    className={versionChecking ? "v checking" : "v"}
+                    onClick={() => loadVersion(true)}
+                    aria-busy={versionChecking || undefined}
+                    aria-label={versionChipLabel(copy)}
+                    title={versionChipTitle(copy)}
+                  >
+                    v{copy.running}
+                  </button>
+                );
+              })()
+            )}
+          </div>
           {/* NOT a live region, and #372 is the issue that took the
               `role="status"` off it. Nothing in this strip is a status
               *message*: it is a permanently visible readout the user can read
@@ -2481,15 +2459,26 @@ function Inner() {
               partial reading of it is exactly the failure the strip above was
               guilty of. */}
           <div className="vis-hidden" role="status" aria-atomic="true">{blockedSaid}</div>
-          {/* Outside the .status strip on purpose: that strip is a readout and
-              this is a control, the only number in the bar the user is meant to
-              act on — click goes to the session that has been stuck longest,
-              which is both the one the deck was left open for and the one the
-              region above names. It says nothing when nothing is blocked, and it
-              never speaks for Codex: those sessions emit no notification, so
-              counting them would turn "we have no signal" into "they are fine".
-              It carries no live region of its own; the div above is where the
-              speaking happens, for the mounting reason given there. */}
+          {/* Outside the .status strip and inside .readout, which are two
+              separate placements and only one of them still has the reason it
+              was given.
+              The half that expired: "a control has no business inside a live
+              region". .status was one when this was written and #372 took the
+              role off it, so that argument has had nothing to point at for a
+              while. The half that still does the work is the one about the
+              strip itself — .status is a run of readouts whose boundaries are
+              drawn by `.stat + .stat::before`, and a button dropped into that
+              run would either take one of those 1px rules or break the run in
+              two. Its group is the readout, because what it reports is
+              observation; its element is a button, because the number is the
+              only one in the bar the user is meant to act on. Click goes to the
+              session that has been stuck longest, which is both the one the
+              deck was left open for and the one the region above names.
+              It says nothing when nothing is blocked, and it never speaks for
+              Codex: those sessions emit no notification, so counting them would
+              turn "we have no signal" into "they are fine". It carries no live
+              region of its own; the div above is where the speaking happens,
+              for the mounting reason given there. */}
           {waitingSessions.length > 0 && (
             <button
               type="button"
@@ -2504,156 +2493,227 @@ function Inner() {
               <b>{waitingSessions.length}</b> waiting
             </button>
           )}
-          {(() => {
-            const btn = pauseButton({ paused, held: pauseRef.current.size });
-            return (
-              <button className={`btn ${paused ? "warn" : ""}`} onClick={togglePause} title={btn.title}>
-                {btn.label}
-              </button>
-            );
-          })()}
-          {/* aria-expanded, not aria-pressed. This shows and hides a region
-              that follows it in the DOM and it leaves focus exactly where it
-              was — the disclosure pattern, which is what the accounts panel's
-              ⋯ menu already models below. "Pressed" would claim the button is
-              a setting that stays on; what it actually reports is whether the
-              thing it points at is on screen.
-              aria-controls only while the panel is mounted, for the reason
-              AccountsPanel spells out: an IDREF that resolves to nothing is a
-              dangling pointer rather than a relationship, and closed is exactly
-              when there is nothing to point at.
-              The `primary` class is gone from all four of these. The state is
-              the ARIA attribute now and the stylesheet reads it there, so the
-              pixels and the accessibility tree cannot drift apart. #370 counted
-              five; the session list's button has since been removed from the
-              row and the rule is unchanged for the four that are left. */}
-          <button
-            className="btn icon-btn"
-            onClick={() => setUsagePanelOpen(o => !o)}
-            title={`${usagePanelOpen ? "Hide" : "Show"} usage panel (U)`}
-            aria-label="Toggle usage panel"
-            aria-expanded={usagePanelOpen}
-            aria-controls={usagePanelOpen ? "usage-panel" : undefined}
-          >$</button>
-          {/* The one genuine aria-pressed of the five, and it was already
-              carrying it. This installs or removes a Stop hook on disk: there
-              is no region it discloses and nothing on screen appears when it
-              goes on, so "expanded" would be a promise of content that does not
-              exist. A setting that is on or off is what "pressed" means.
-
-              Gone without Claude Code, by the same rule the accounts button
-              below states: this switch is one entry in Claude Code's
-              settings.json, so on a machine that has no Claude Code it is a
-              control whose only effect is to write a hook nothing will ever
-              execute. Where Claude Code IS here it stays, and the tooltip says
-              which turns it covers — see finishSoundTitle, which also records
-              the two ways of making Codex audible that were considered and why
-              neither is this fix (#394). */}
-          {providers.claude && soundOn !== null && (
+        </div>
+        {selected && (() => {
+          const c = costForUsage(selected.usage, selected.model);
+          const elapsedSec = Math.max(0, ((selected.endedAt ?? now) - selected.startedAt) / 1000);
+          const rate = selected.state === "active" ? fmtCostRate(c.total, elapsedSec) : null;
+          const extra = selectedIds.size - 1;
+          return (
+            <button
+              type="button"
+              className="selected-ribbon"
+              title={`Fit view to ${selected.label}`}
+              onClick={() => {
+                try {
+                  const node = nodes.find(n => n.id === selected.id);
+                  if (node) rf.fitView({ padding: 0.35, duration: 500, nodes: [node] });
+                  lastFitTimeRef.current = Date.now();
+                } catch {}
+              }}
+            >
+              <span className={`state-pill state-${selected.state}`}>
+                {selected.state === "active" ? "live" : selected.state}
+              </span>
+              <span className="selected-label">{selected.label}</span>
+              {c.total > 0 && <span className="selected-cost">{fmtCost(c.total)}{rate ? <span className="selected-rate"> · {rate}</span> : null}</span>}
+              {extra > 0 && <span className="selected-extra">+{extra}</span>}
+              {/* A mouse shortcut, not a control. It sits inside the ribbon's
+                  own <button>, so it can never be a button itself — nesting one
+                  is invalid, and it carried no tabIndex, which left a
+                  role="button" labelled "Deselect" that no keyboard could ever
+                  reach or operate. The keyboard has the same verb on Escape
+                  from anywhere on the page, so the honest markup is decoration
+                  with a click on it. */}
+              <span
+                aria-hidden
+                className="selected-close"
+                onClick={(e) => { e.stopPropagation(); clearSelection(); }}
+              >×</span>
+            </button>
+          );
+        })()}
+        <div className="actions">
+          {/* Three runs, 8px inside and 18px between, against the 24px that
+              separates this whole group from the readout: control to control,
+              run to run, role to role. Every one of those numbers was already
+              in the sheet.
+              The runs are Pause; the three disclosures ($ , accounts, history);
+              and the two persisted settings (sound, theme). Only one control
+              moved to get there — sound, from third to sixth. It is a setting
+              written to disk, not a panel that opens, so it never belonged in
+              the disclosure run; and taking it out drops the worst case from
+              three adjacent accent-filled buttons to two, since aria-pressed
+              and aria-expanded paint the same fill.
+              Re-layout and Clear are gone from here entirely. They are canvas
+              verbs and they are on the canvas now, in the React Flow control
+              stack beside Recenter — the same place `F` already had no topbar
+              button of its own. */}
+          <div className="action-run">
+            {(() => {
+              const btn = pauseButton({ paused, held: pauseRef.current.size });
+              return (
+                <button className={`btn ${paused ? "warn" : ""}`} onClick={togglePause} title={btn.title}>
+                  {btn.label}
+                </button>
+              );
+            })()}
+          </div>
+          <div className="action-run">
+            {/* aria-expanded, not aria-pressed. This shows and hides a region
+                that follows it in the DOM and it leaves focus exactly where it
+                was — the disclosure pattern, which is what the accounts panel's
+                ⋯ menu already models below. "Pressed" would claim the button is
+                a setting that stays on; what it actually reports is whether the
+                thing it points at is on screen.
+                aria-controls only while the panel is mounted, for the reason
+                AccountsPanel spells out: an IDREF that resolves to nothing is a
+                dangling pointer rather than a relationship, and closed is exactly
+                when there is nothing to point at.
+                The `primary` class is gone from all four of these. The state is
+                the ARIA attribute now and the stylesheet reads it there, so the
+                pixels and the accessibility tree cannot drift apart. #370 counted
+                five; the session list's button has since been removed from the
+                row and the rule is unchanged for the four that are left. */}
             <button
               className="btn icon-btn"
-              onClick={(e) => {
-                // Shift-click restores the user's own hooks. A modifier rather
-                // than another button: it is a one-off recovery, not a control
-                // that earns permanent space in the toolbar.
-                if (e.shiftKey && soundParked > 0) {
-                  setSoundBusy(true);
-                  fetch("/api/sound-hook", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "restore" }),
-                  }).then(() => fetch("/api/sound-hook"))
-                    .then(r => r.ok ? r.json() : null)
-                    .then(d => { if (d?.ok) { setSoundOn(d.enabled === true); setSoundParked(d.parked ?? 0); } })
-                    .catch(() => {})
-                    .finally(() => setSoundBusy(false));
-                  return;
-                }
-                toggleSound();
-              }}
-              disabled={soundBusy}
-              title={finishSoundTitle(providers, { on: soundOn, clash: soundClash, parked: soundParked })}
-              /* The name a screen reader announces, and it names the CLI too.
-                 `title` reaches assistive tech only as a description, which is
-                 announced later than the name and by no means everywhere — so
-                 the one qualification a Codex user needs cannot live only
-                 there. Static rather than derived from `providers` because the
-                 button does not render at all without Claude Code, which makes
-                 "Claude Code" true every time this string is read. */
-              aria-label="Toggle Claude Code finish sound"
-              aria-pressed={soundOn}
+              onClick={() => setUsagePanelOpen(o => !o)}
+              title={`${usagePanelOpen ? "Hide" : "Show"} usage panel (U)`}
+              aria-label="Toggle usage panel"
+              aria-expanded={usagePanelOpen}
+              aria-controls={usagePanelOpen ? "usage-panel" : undefined}
+            >$</button>
+            {/* Same disclosure as the usage panel — a sidebar that opens beside
+                the canvas and takes no focus with it.
+                Gone entirely without Claude Code, rather than present and inert.
+                A disabled control is a promise that something could be enabled;
+                there is no account to switch to on a machine whose only CLI is
+                Codex, which has exactly one logged-in account and no store. */}
+            {providers.claude && (
+            <button
+              className="btn icon-btn"
+              onClick={toggleAccountsPanel}
+              title={`${accountsPanelOpen ? "Hide" : "Show"} accounts (A)`}
+              aria-label="Toggle accounts panel"
+              aria-expanded={accountsPanelOpen}
+              aria-controls={accountsPanelOpen ? "accounts-panel" : undefined}
             >
-              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M3.2 5.2h2L7.8 3v8L5.2 8.8h-2z" />
-                {soundOn
-                  ? <><path d="M9.8 5.4a2.4 2.4 0 0 1 0 3.2" /><path d="M11.3 3.9a4.6 4.6 0 0 1 0 6.2" /></>
-                  : <><path d="M10 5.6l2.6 2.8" /><path d="M12.6 5.6L10 8.4" /></>}
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <circle cx="7" cy="4.6" r="2.4" />
+                <path d="M2.4 12c0-2.3 2.1-3.7 4.6-3.7s4.6 1.4 4.6 3.7" />
               </svg>
             </button>
-          )}
-          {/* Same disclosure as the usage panel — a sidebar that opens beside
-              the canvas and takes no focus with it.
-              Gone entirely without Claude Code, rather than present and inert.
-              A disabled control is a promise that something could be enabled;
-              there is no account to switch to on a machine whose only CLI is
-              Codex, which has exactly one logged-in account and no store. */}
-          {providers.claude && (
-          <button
-            className="btn icon-btn"
-            onClick={toggleAccountsPanel}
-            title={`${accountsPanelOpen ? "Hide" : "Show"} accounts (A)`}
-            aria-label="Toggle accounts panel"
-            aria-expanded={accountsPanelOpen}
-            aria-controls={accountsPanelOpen ? "accounts-panel" : undefined}
-          >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <circle cx="7" cy="4.6" r="2.4" />
-              <path d="M2.4 12c0-2.3 2.1-3.7 4.6-3.7s4.6 1.4 4.6 3.7" />
-            </svg>
-          </button>
-          )}
-          {/* The session list's ☰ used to sit here, sharing the left slot with
-              accounts. The panel is untouched — it is still mounted by
-              `sessionListOpen`, still toggled by L, still closed by its own ‹ —
-              and only the topbar control is gone. What that costs is written
-              down at the L handler, which is now the only way in. */}
-          {/* The odd one out, and deliberately given neither aria-pressed nor
-              aria-expanded. What this opens is a modal — role="dialog"
-              aria-modal="true" behind a full-screen scrim, with the focus trap
-              #371 added — so while it is open this button cannot be clicked,
-              cannot be tabbed to, and aria-modal has removed the whole topbar
-              from the accessibility tree. A state whose `true` no reader can
-              ever reach is worse than no state: it would be a value announced
-              only in the one case it is not needed. The label already says
-              "Open" rather than "Toggle"; aria-haspopup is the part that was
-              missing, and it says what kind of thing opens. */}
-          <button
-            className="btn icon-btn"
-            onClick={() => setUsageHistoryOpen(o => !o)}
-            title="Usage history — ccusage (H)"
-            aria-label="Open usage history"
-            aria-haspopup="dialog"
-          >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
-              <line x1="3" y1="11.5" x2="3" y2="7" />
-              <line x1="7" y1="11.5" x2="7" y2="3" />
-              <line x1="11" y1="11.5" x2="11" y2="8.5" />
-            </svg>
-          </button>
-          <button className="btn" onClick={handleRelayout} title="Auto-arrange — clear pins (R)">Re-layout</button>
-          <button
-            className="btn"
-            onClick={() => requestClear("button")}
-            title="Clear the canvas and the server's event log — asks first (C)"
-          >Clear</button>
-          <button
-            className="btn icon-btn"
-            onClick={() => setTheme(t => (t === "dark" ? "light" : "dark"))}
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode (T)`}
-            aria-label="Toggle theme"
-          >
-            {theme === "dark" ? "☀" : "☾"}
-          </button>
+            )}
+            {/* The session list's ☰ used to sit here, sharing the left slot with
+                accounts. The panel is untouched — it is still mounted by
+                `sessionListOpen`, still toggled by L, still closed by its own ‹ —
+                and only the topbar control is gone. What that costs is written
+                down at the L handler, which is now the only way in. */}
+            {/* The odd one out, and deliberately given neither aria-pressed nor
+                aria-expanded. What this opens is a modal — role="dialog"
+                aria-modal="true" behind a full-screen scrim, with the focus trap
+                #371 added — so while it is open this button cannot be clicked,
+                cannot be tabbed to, and aria-modal has removed the whole topbar
+                from the accessibility tree. A state whose `true` no reader can
+                ever reach is worse than no state: it would be a value announced
+                only in the one case it is not needed. The label already says
+                "Open" rather than "Toggle"; aria-haspopup is the part that was
+                missing, and it says what kind of thing opens. */}
+            <button
+              className="btn icon-btn"
+              onClick={() => setUsageHistoryOpen(o => !o)}
+              title="Usage history — ccusage (H)"
+              aria-label="Open usage history"
+              aria-haspopup="dialog"
+            >
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+                <line x1="3" y1="11.5" x2="3" y2="7" />
+                <line x1="7" y1="11.5" x2="7" y2="3" />
+                <line x1="11" y1="11.5" x2="11" y2="8.5" />
+              </svg>
+            </button>
+          </div>
+          <div className="action-run">
+            {/* The one genuine aria-pressed of the five, and it was already
+                carrying it. This installs or removes a Stop hook on disk: there
+                is no region it discloses and nothing on screen appears when it
+                goes on, so "expanded" would be a promise of content that does not
+                exist. A setting that is on or off is what "pressed" means.
+
+                Gone without Claude Code, by the same rule the accounts button
+                in the run above states: this switch is one entry in Claude Code's
+                settings.json, so on a machine that has no Claude Code it is a
+                control whose only effect is to write a hook nothing will ever
+                execute. Where Claude Code IS here it stays, and the tooltip says
+                which turns it covers — see finishSoundTitle, which also records
+                the two ways of making Codex audible that were considered and why
+                neither is this fix (#394). */}
+            {providers.claude && soundOn !== null && (
+              <button
+                className="btn icon-btn"
+                onClick={(e) => {
+                  // Shift-click restores the hooks the user wrote. A modifier
+                  // rather than another button: it is a one-off recovery, not a
+                  // control that earns permanent space in the toolbar.
+                  //
+                  // Written without an apostrophe, and that is not a style
+                  // choice. control-edges.test.ts identifies a control by
+                  // scanning from `<button` to the `>` that closes the tag,
+                  // counting braces and tracking quotes — and a lone apostrophe
+                  // in a line comment inside a JSX brace opens a string that
+                  // nothing in the tag ever closes. The scan then spends its
+                  // whole 4000-character budget past the end of this button and
+                  // harvests every className it passes as though each one
+                  // belonged to this control. That was harmless while the button
+                  // sat third in a flat row of eight; grouping the bar into runs
+                  // moved it to the end, which brought the connection banner and
+                  // the version banner inside the window and had the sweep
+                  // demand an accessible edge from two things that are not
+                  // controls at all.
+                  if (e.shiftKey && soundParked > 0) {
+                    setSoundBusy(true);
+                    fetch("/api/sound-hook", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "restore" }),
+                    }).then(() => fetch("/api/sound-hook"))
+                      .then(r => r.ok ? r.json() : null)
+                      .then(d => { if (d?.ok) { setSoundOn(d.enabled === true); setSoundParked(d.parked ?? 0); } })
+                      .catch(() => {})
+                      .finally(() => setSoundBusy(false));
+                    return;
+                  }
+                  toggleSound();
+                }}
+                disabled={soundBusy}
+                title={finishSoundTitle(providers, { on: soundOn, clash: soundClash, parked: soundParked })}
+                /* The name a screen reader announces, and it names the CLI too.
+                   `title` reaches assistive tech only as a description, which is
+                   announced later than the name and by no means everywhere — so
+                   the one qualification a Codex user needs cannot live only
+                   there. Static rather than derived from `providers` because the
+                   button does not render at all without Claude Code, which makes
+                   "Claude Code" true every time this string is read. */
+                aria-label="Toggle Claude Code finish sound"
+                aria-pressed={soundOn}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M3.2 5.2h2L7.8 3v8L5.2 8.8h-2z" />
+                  {soundOn
+                    ? <><path d="M9.8 5.4a2.4 2.4 0 0 1 0 3.2" /><path d="M11.3 3.9a4.6 4.6 0 0 1 0 6.2" /></>
+                    : <><path d="M10 5.6l2.6 2.8" /><path d="M12.6 5.6L10 8.4" /></>}
+                </svg>
+              </button>
+            )}
+            <button
+              className="btn icon-btn"
+              onClick={() => setTheme(t => (t === "dark" ? "light" : "dark"))}
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode (T)`}
+              aria-label="Toggle theme"
+            >
+              {theme === "dark" ? "☀" : "☾"}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -3060,6 +3120,53 @@ function Inner() {
               <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
                 <circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" strokeWidth="2" />
                 <path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
+              </svg>
+            </ControlButton>
+            {/* Down from the topbar. Both of these are canvas verbs —
+                they rearrange or empty the thing this stack is attached to —
+                and the crosshair above was already the proof that a command
+                belongs here and not only a zoom control. `F` fits the view and
+                has never had a topbar button either; `R` and `C` are the same
+                shape of shortcut and now have the same kind of home.
+                The titles are the strings the two buttons carried in the bar,
+                unchanged, so the shortcut letters and the sentence a user
+                already knows survive the move. What they gain is aria-label:
+                up there each was its own name, printed on it; here the glyph
+                is the whole button, and a glyph has no accessible name. */}
+            <ControlButton
+              onClick={handleRelayout}
+              title="Auto-arrange — clear pins (R)"
+              aria-label="Re-arrange the canvas"
+            >
+              {/* three-node hierarchy — one parent over two children */}
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
+                <rect x="8.5" y="2" width="7" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="2" />
+                <rect x="1.5" y="17" width="7" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="2" />
+                <rect x="15.5" y="17" width="7" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="2" />
+                <path d="M12 7v6.5M5 17v-3.5h14V17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              </svg>
+            </ControlButton>
+            {/* No danger colour at rest, and no word either. `button.btn.danger`
+                is the confirm half of the Clear dialog and stays there: this
+                button destroys nothing, it opens a question, and colouring the
+                question the same as the answer would leave the deck with two
+                red controls of which only one is irreversible.
+                A trash can rather than a broom. At 14px a broom is a diagonal
+                line with fringe on the end and reads as almost anything; the
+                can is the one glyph nobody has to be taught. The word "Clear"
+                is not lost — it is the dialog's own heading, one click away,
+                which is where the user reads it when it matters. */}
+            <ControlButton
+              onClick={() => requestClear("button")}
+              title="Clear the canvas and the server's event log — asks first (C)"
+              aria-label="Clear the canvas"
+            >
+              {/* trash can — lid, handle, tapered body, two inner strokes */}
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
+                <path d="M4 6.2h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
+                <path d="M9 6.2V4.4a1.6 1.6 0 0 1 1.6-1.6h2.8a1.6 1.6 0 0 1 1.6 1.6v1.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                <path d="M17.4 6.4 16.7 20a2 2 0 0 1-2 1.9H9.3a2 2 0 0 1-2-1.9L6.6 6.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                <path d="M10.3 10.6v6.8M13.7 10.6v6.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
               </svg>
             </ControlButton>
           </Controls>
