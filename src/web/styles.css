@@ -3437,6 +3437,24 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 }
 .cat-chip .cat-emoji { font-size: 12px; line-height: 1; }
 .cat-chip .cat-count { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* The server an MCP chip is counting, when every one of its calls went to the
+   same one (#489). It is the half of that answer a colour cannot give: the tint
+   beside it is per-server, and a reader who does not receive hue gets the whole
+   distinction from these words instead. Secondary to the count, so --muted and
+   no font-size of its own — it reads at the chip's 11px.
+
+   Capped and clipped because the string is outside data. An ad-hoc MCP server's
+   segment is often a uuid, and this chip sits in a 360px panel that scrolls on
+   both axes; #369 is the issue where an uncapped name inside a fixed panel
+   carried the rest of the row off the edge. A length, not a percentage — the
+   ellipsis has to land at the same place whatever else is in the strip. */
+.cat-chip .cat-server {
+  color: var(--muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cat-chip.cat-file  { border-color: rgba(125,211,252,0.40); }
 .cat-chip.cat-shell { border-color: rgba(252,211,77,0.40); }
 .cat-chip.cat-web   { border-color: rgba(103,232,249,0.40); }
@@ -3451,6 +3469,17 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    fell back to the plain `--line` border, so the same category read as two
    different things depending on which surface you were looking at. */
 .cat-chip.cat-other { border-color: rgba(148,163,184,0.40); }
+/* An MCP chip counting ONE server wears that server's own accent, the way its
+   bubbles do (#489) — the same hue from the same hash, at the same 65% and the
+   same --mcp-dot-l tier `.tool-burst.cat-mcp.mcp-hue` composes, taken down to
+   the 40% every chip border in this block carries. So the rule the seven
+   literals above follow — the chip borrows its bubble's accent — holds for the
+   eighth in the one case where its bubbles have a single accent to lend.
+   Two servers under one chip have no shared accent and App.tsx does not set the
+   class, which leaves the generic teal above: a count across identities is not
+   any one of them. Both classes are in the selector so this outranks
+   `.cat-chip.cat-mcp` rather than tying with it, exactly as the bubble's does. */
+.cat-chip.cat-mcp.mcp-hue { border-color: hsl(var(--mcp-hue, 170) 65% var(--mcp-dot-l) / 0.40); }
 
 /* ---------------- prompt history ---------------- */
 

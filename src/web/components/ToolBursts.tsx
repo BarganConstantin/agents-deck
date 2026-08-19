@@ -467,8 +467,15 @@ function parseMcpName(toolName: string): McpParse | null {
   return { server: rest.slice(0, idx), method: rest.slice(idx + 2) };
 }
 
-/** Stable hash → 0..359 hue for unknown MCP servers. */
-function hashHue(s: string): number {
+/** Stable hash → 0..359 hue for unknown MCP servers.
+ *
+ *  Exported because the topbar's MCP legend needs the same number for the same
+ *  server — App.tsx wrote the djb2 out a second time under a comment saying
+ *  "same hash ToolBursts uses", which is the shape #374 spent a whole issue
+ *  removing: a copy is only correct until one side is edited. One dot in that
+ *  legend and one bubble on the canvas name the same server, so they resolve
+ *  the hue through one function. */
+export function hashHue(s: string): number {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
   return Math.abs(h) % 360;
@@ -535,6 +542,52 @@ function primaryDisplayFor(toolName: string): PrimaryDisplay {
   const codexLabel = Object.hasOwn(CODEX_PRIMARY_LABEL, toolName) ? CODEX_PRIMARY_LABEL[toolName] : "";
   if (codexLabel) return { emoji: emojiFor(toolName), label: codexLabel };
   return { emoji: emojiFor(toolName), label: toolName };
+}
+
+/**
+ * Who an agent's MCP category chip is counting, when it is counting one server
+ * — and null when it is not (#489).
+ *
+ * THE DEFECT. A bubble on the canvas gives an unrecognised MCP server its own
+ * hue, so two servers on screen are two colours; the chip in the detail panel
+ * gave every MCP call the same generic teal whichever server it counted. One
+ * category, two visual identities, which is the shape #383 fixed for `other` a
+ * round earlier — except that this time the surfaces disagree about how much
+ * they distinguish rather than whether they tint at all.
+ *
+ * WHY IT IS NOT A COPY OF THE BUBBLE'S RULE. The chip is a COUNT ACROSS
+ * SERVERS. Three servers under one chip have no single hue between them, so
+ * there is nothing for a mechanical copy to paint. What the chip CAN do is the
+ * case where the count is one server's: then the chip and every bubble it
+ * counts are describing the same thing, and the chip may wear what they wear.
+ *
+ * So this returns `primaryDisplayFor`'s own answer for one of those calls —
+ * the same label and the same `hue` the bubbles were given, produced by the
+ * function that gave it to them rather than by a second implementation of the
+ * mapping. A `hue` of undefined is not a gap: it is what a server MCP_SERVERS
+ * has a row for gets, which is exactly when the bubble wears the base
+ * --cat-accent instead of a hashed one, so the chip stays teal precisely when
+ * its bubbles do. Two servers, or none, and there is no one identity to show —
+ * null, and the chip is the plain category chip it has always been.
+ *
+ * The hue is never the only thing this decides. `label` is drawn on the chip as
+ * words, because a per-server colour that a dichromat reader cannot see is a
+ * distinction that, for them, is not being made at all (1.4.1).
+ */
+export function mcpChipIdentity(toolNames: Iterable<string>): PrimaryDisplay | null {
+  let server: string | null = null;
+  let sample = "";
+  for (const name of toolNames) {
+    const parsed = parseMcpName(name);
+    if (!parsed) continue;
+    // `mcp__` with nothing after it names no server. There would be no words to
+    // draw, which leaves a hue carrying the distinction on its own — the one
+    // arrangement this function exists to avoid.
+    if (!parsed.server) return null;
+    if (server === null) { server = parsed.server; sample = name; }
+    else if (parsed.server !== server) return null;
+  }
+  return server === null ? null : primaryDisplayFor(sample);
 }
 
 type Status = "inflight" | "done" | "err";
