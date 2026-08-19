@@ -13,6 +13,12 @@
 // continuous speech about nothing, which is how a page teaches its user to
 // switch the screen reader off.
 //
+// The sessions, agents and events counters in that utterance were later removed
+// from the strip outright. `totalEvents` still exists — reducer.ts increments it
+// and group 4 below folds it through a real tool storm — it is simply no longer
+// drawn. Nothing about the rule changes: what is left in the row still moves on
+// its own, which is why the role stays off.
+//
 // The same deck said nothing at all when a session stopped on a permission
 // prompt. That fact reached `document.title`, the favicon, the amber
 // `.waiting-stat` chip and the card's own waiting row, and all four of those are
@@ -203,11 +209,22 @@ describe("the stat strip is not a live region any more", () => {
     expect(appCode).not.toContain(`<span className="status" role="status">`);
   });
 
-  it("still holds the events counter that was driving it", () => {
-    // The counter is the evidence the strip was the wrong content for a live
-    // region, so a fix that quietened the strip by moving the counter somewhere
-    // else would have solved a different problem. It is still right here.
-    expect(appCode).toContain(`<span className="count">{stateRef.current.totalEvents}</span>`);
+  it("still holds a number that moves on its own, so the rule above is not vacuous", () => {
+    // This case used to pin `{stateRef.current.totalEvents}` itself: the counter
+    // was the evidence the strip was the wrong content for a live region, so a
+    // "fix" that quietened the strip by moving the counter elsewhere would have
+    // solved a different problem. The counter has since been removed from the
+    // topbar entirely — a product call, not an accessibility one — and pinning a
+    // deleted element would make this file a spec for something that no longer
+    // exists.
+    //
+    // What has to survive is the half that is general: the strip is quiet
+    // BECAUSE numbers that move constantly are the wrong content for a live
+    // region, and that argument only means anything while the strip still holds
+    // such a number. `totalTokens.sum` climbs on every event carrying usage, so
+    // the assertion above stays a decision rather than an accident of an empty
+    // row.
+    expect(appCode).toContain(`<span className="count">{fmtTokens(totalTokens.sum)}</span>`);
   });
 });
 

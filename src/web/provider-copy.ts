@@ -28,8 +28,8 @@ import type { Providers } from "./providers";
  * The CLIs this deck watches, named for the middle of a sentence.
  *
  * `null` when it watches neither — `--no-claude --no-codex`, which is a legal
- * pair of flags. Naming a CLI there would be a claim about a counter that can
- * only ever read zero, so the callers below drop the qualifier instead.
+ * pair of flags. Naming a CLI there would be a claim about logs this deck is
+ * not reading, so the caller drops the qualifier instead.
  */
 function providerNames(p: Providers): string | null {
   if (p.claude && p.codex) return "Claude Code and Codex";
@@ -115,44 +115,6 @@ function joinNames(names: readonly string[]): string {
 export function usageSubtitle(p: Providers, found: readonly string[] = []): string {
   const names = found.length ? joinNames(found.map(agentLabel)) : providerNames(p);
   return names ? `via ccusage · local ${names} logs` : "via ccusage · local agent logs";
-}
-
-/**
- * Where this deck's events physically come from.
- *
- * Two capture paths, and only one of them is hooks: Claude Code posts through
- * the hook entry in settings.json, while Codex is read out of the rollout JSONL
- * files the CLI writes for itself. A tooltip that calls all of them "hook
- * events" is wrong on a machine running Codex, and wrong in the direction that
- * sends the user to inspect a hook install that has nothing to do with it.
- */
-function eventSourceNames(p: Providers): string | null {
-  if (p.claude && p.codex) return "Claude Code hooks and Codex rollout files";
-  if (p.claude) return "Claude Code hooks";
-  if (p.codex) return "Codex rollout files";
-  return null;
-}
-
-/**
- * The topbar's session counter, explained.
- *
- * `sessionCount` has counted both providers since Codex support landed, while
- * the tooltip read "Distinct CC sessions" — a string five days older than that
- * support, which survived the migration untouched. This number is the first
- * thing a user checks to confirm capture works at all, so labelling it as a
- * count of a different product's sessions makes a correct number read as
- * evidence of failure.
- */
-export function sessionsCountTitle(p: Providers): string {
-  const names = providerNames(p);
-  return names ? `Distinct sessions — ${names}` : "Distinct sessions";
-}
-
-/** The topbar's event counter, explained — see eventSourceNames for why it can
- *  no longer be called a count of hook events. */
-export function eventsCountTitle(p: Providers): string {
-  const sources = eventSourceNames(p);
-  return sources ? `Total events received — ${sources}` : "Total events received";
 }
 
 /** One run of the hint sentence. `code` marks the runs that render in <code>,
