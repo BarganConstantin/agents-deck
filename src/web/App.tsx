@@ -49,7 +49,7 @@ import { costForUsage, fmtCost, fmtCostRate } from "./pricing";
 import { versionChipLabel, versionChipTitle, versionNoticeLabel } from "./version-chip";
 import { emptyScope } from "./scope";
 import { ASSUMED, readProviders, type Providers } from "./providers";
-import { captureHints, eventsCountTitle, finishSoundTitle, sessionsCountTitle } from "./provider-copy";
+import { captureHints, finishSoundTitle } from "./provider-copy";
 import { pauseButton, statusPill } from "./status-pill";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
@@ -2148,8 +2148,12 @@ function Inner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [requestClear, handleRelayout, handleFit, clearSelection, selectAgent, stepAgent, togglePause]);
 
+  /** Not a topbar readout any more — the "agents" counter went with the
+   *  sessions and events ones. This is the emptiness test: zero agents is what
+   *  puts the hero on the canvas and the "nothing selected" copy in the detail
+   *  rail, and it is the number ClearConfirm counts to say what clearing
+   *  destroys. */
   const agentCount = stateRef.current.agents.size;
-  const sessionCount = new Set(Array.from(stateRef.current.agents.values()).map(a => a.sessionId)).size;
   /** The two numbers the topbar chip and the tab strip are driven from —
    *  sessions blocked on a human, longest-blocked first, and sessions with an
    *  agent still moving. Both are recomputed from the agents map on every frame
@@ -2403,14 +2407,17 @@ function Inner() {
           {/* NOT a live region, and #372 is the issue that took the
               `role="status"` off it. Nothing in this strip is a status
               *message*: it is a permanently visible readout the user can read
-              whenever they want one, and every number in it moves on its own —
-              `totalEvents` increments once per hook event, which on a fan-out is
-              tens per second. `role="status"` also carries an implicit
+              whenever they want one, and every number in it still moves on its
+              own — tokens climbs on every event carrying usage, and the cost
+              label reprices its `$/h` rate on each frame while something is
+              live. `role="status"` also carries an implicit
               `aria-atomic="true"`, so what a screen reader actually did with
-              each of those increments was re-read the whole strip, sessions and
-              agents and tokens and cost together, rather than the one number
-              that moved. Continuous speech of numbers nobody asked for is how a
-              page teaches its user to turn the screen reader off, and it was
+              each of those increments was re-read the WHOLE strip rather than
+              the one number that moved. That is a property of the role, not of
+              how many numbers are in the row: it held when the row also carried
+              the sessions, agents and events counters, and it holds now that
+              they are gone. Continuous speech of numbers nobody asked for is how
+              a page teaches its user to turn the screen reader off, and it was
               being spent on the least urgent thing in the topbar.
               WCAG 4.1.3 was satisfied here — for the wrong content. The alarm
               that is worth a live region has one of its own, below. */}
@@ -2423,16 +2430,6 @@ function Inner() {
                 <span className={`pill ${pill.tone}`} title={pill.title}>{pill.label}</span>
               );
             })()}
-            {/* Both counters have always counted both providers; only their
-                tooltips said otherwise. "Distinct CC sessions" and "Total hook
-                events received" were written when the deck watched Claude Code
-                alone, and a Codex user reading them sees a correct number
-                labelled as a count of a product they are not running (#404).
-                Named from `providers` rather than trimmed to "sessions" and
-                "events" — see provider-copy.ts. */}
-            <span className="stat" title={sessionsCountTitle(providers)}><span className="count">{sessionCount}</span><span className="lbl">sessions</span></span>
-            <span className="stat" title="Total agents (root + subagents)"><span className="count">{agentCount}</span><span className="lbl">agents</span></span>
-            <span className="stat" title={eventsCountTitle(providers)}><span className="count">{stateRef.current.totalEvents}</span><span className="lbl">events</span></span>
             {/* Machine state, not session state — the only readout in this strip
                 that is not about agents. Renders nothing until the server holds
                 two CPU samples, so it never occupies the row with a number it

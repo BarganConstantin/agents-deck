@@ -665,9 +665,13 @@ button:focus-visible { outline-offset: 1px; }
 
    The numbers replace the graphic IN PLACE on hover rather than appearing
    beside it. Expanding would shove every control to its right by ~30px on a
-   pointer that was only passing through, and this strip has no room to give:
-   it already carries five stats, the MCP dots and the blocked-session button
-   with no responsive collapse anywhere in the sheet. */
+   pointer that was only passing through. The row has room it did not have when
+   this was written — it carried five stats then, and the sessions, agents and
+   events counters have since been removed, leaving tokens, cost, the MCP dots
+   and the blocked-session button — but the rule is not about room: a readout
+   that reflows its neighbours because a pointer crossed it is a moving target,
+   and there is still no responsive collapse anywhere in this sheet to absorb
+   the shove. */
 .topbar .status .sysmeter-wrap { position: relative; display: inline-flex; align-items: center; }
 .topbar .status .sysmeter {
   display: inline-flex;
@@ -695,10 +699,16 @@ button:focus-visible { outline-offset: 1px; }
    attached to the thing that opened it. */
 .topbar .status .sysmeter:hover,
 .topbar .status .sysmeter[aria-expanded="true"] { background: var(--line); }
-/* Same separator the stats draw between themselves — this sits in that run and
-   should not look bolted onto the end of it. */
-.topbar .status .stat + .sysmeter-wrap::before,
-.topbar .status .stat + .sysmeter::before {
+/* Same separator the stats draw between themselves — the meter sits in that run
+   and should not look welded to its neighbour.
+   Drawn on the stat AFTER the meter rather than on the meter itself, which is
+   where it used to be: with the sessions, agents and events counters gone the
+   meter is the first readout in the row, and a divider before it would hang off
+   the status pill with nothing to its left. The pill leads the row and the run
+   opens on its first readout — the same shape the row had when `sessions` was
+   the element with nothing drawn to its left. */
+.topbar .status .sysmeter-wrap + .stat::before,
+.topbar .status .sysmeter + .stat::before {
   content: "";
   display: inline-block;
   width: 1px;
@@ -1048,10 +1058,11 @@ button:focus-visible { outline-offset: 1px; }
    codebase gives every custom control. It lives outside .status because that
    span is a readout and this is a control, and because a control has no business
    inside a live region — which .status was until #372 took the role off it, on
-   the grounds that a strip whose events counter moves on every hook event is the
-   last thing in the topbar worth announcing. The announcing this chip's own
-   number deserves is done by a visually hidden role="status" beside it, so the
-   chip stays a plain button. */
+   the grounds that a strip whose numbers move on every event is the last thing
+   in the topbar worth announcing. (The events counter that made that case is
+   itself gone from the row now; tokens and cost still move that way.) The
+   announcing this chip's own number deserves is done by a visually hidden
+   role="status" beside it, so the chip stays a plain button. */
 .topbar .waiting-stat {
   display: inline-flex;
   align-items: center;

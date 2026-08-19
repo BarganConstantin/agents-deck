@@ -13,6 +13,10 @@
 // reached the tab title, the favicon, an amber chip and a card row, all four of
 // them silent, and was announced nowhere at all.
 //
+// The sessions, agents and events counters in that utterance have since been
+// removed from the strip; tokens and cost still climb on their own, so the row
+// is the same wrong content for a live region that it was, with fewer numbers.
+//
 // So the rule this module encodes is that a live region earns its keep by being
 // quiet. It says something when a person's attention is actually required, it
 // says nothing on the frames in between, and it never repeats itself.

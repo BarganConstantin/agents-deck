@@ -18,6 +18,12 @@
 // tagline promising that Codex forks subagents, which it has never emitted; and
 // an empty detail panel waiting for a "first hook" that Codex cannot fire.
 //
+// The two counters have since been removed from the topbar outright, and
+// `sessionsCountTitle` / `eventsCountTitle` with them — a product call about
+// which numbers earn a permanent slot, not a retraction of #404. So the block
+// below no longer calls those two functions; it holds the rule they were an
+// instance of, against the provider-blind numbers the strip still shows.
+//
 // The fix is gated on `providers` (#402) rather than reworded into vagueness. A
 // sentence that is true because it names no path, no flag and no variable is not
 // an improvement on a false one — it is the same dead end with better manners —
@@ -32,7 +38,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { ASSUMED, type Providers } from "../providers";
-import { captureHints, eventsCountTitle, sessionsCountTitle } from "../provider-copy";
+import { captureHints } from "../provider-copy";
 import { emptyScope } from "../scope";
 
 // @ts-expect-error — .mjs server module, no types
@@ -119,28 +125,37 @@ describe("the empty canvas", () => {
   });
 });
 
-describe("the topbar counters", () => {
-  it("stop labelling a provider-blind number as one product's", () => {
+describe("the topbar readouts", () => {
+  // The sessions and events counters this block was written for are gone from
+  // the strip, and `sessionsCountTitle` / `eventsCountTitle` went with them —
+  // #404 named the two tooltips it fixed, not a rule about tooltips in general.
+  // What DOES generalise is the reason those strings were wrong: the strip's
+  // numbers are provider-blind, so nothing in it may name one CLI. Tokens and
+  // cost are the numbers left, they add up both CLIs exactly as the counters
+  // did, and their tooltips are the ones that could drift the same way.
+  const strip = appCode.slice(
+    appCode.indexOf(`<span className="status">`),
+    appCode.indexOf(`<div className="vis-hidden"`),
+  );
+
+  it("still has a strip with tooltipped numbers in it, so this block is not vacuous", () => {
+    expect(strip, "the .status strip is gone from App.tsx entirely").toBeTruthy();
+    expect(strip).toContain(`<span className="lbl">tokens</span>`);
+    expect(strip).toContain("cost");
+    expect((strip.match(/title=/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("labels no provider-blind number as one product's", () => {
+    // The retired pair, first: neither string comes back anywhere.
     expect(appCode).not.toContain("Distinct CC sessions");
     expect(appCode).not.toContain("Total hook events received");
-  });
-
-  it("name the CLIs this deck is actually watching", () => {
-    expect(sessionsCountTitle(BOTH)).toBe("Distinct sessions — Claude Code and Codex");
-    expect(sessionsCountTitle(CLAUDE_ONLY)).toBe("Distinct sessions — Claude Code");
-    expect(sessionsCountTitle(CODEX_ONLY)).toBe("Distinct sessions — Codex");
-    // Watching neither is a legal pair of flags, and there the qualifier would
-    // be a claim about a counter that can only ever read zero.
-    expect(sessionsCountTitle(NEITHER)).toBe("Distinct sessions");
-  });
-
-  it("call Codex's events what they are, which is not hook events", () => {
-    expect(eventsCountTitle(BOTH)).toContain("Codex rollout files");
-    expect(eventsCountTitle(BOTH)).toContain("Claude Code hooks");
-    expect(eventsCountTitle(CODEX_ONLY)).toBe("Total events received — Codex rollout files");
-    expect(eventsCountTitle(CODEX_ONLY)).not.toContain("hook");
-    expect(eventsCountTitle(CLAUDE_ONLY)).toBe("Total events received — Claude Code hooks");
-    expect(eventsCountTitle(NEITHER)).toBe("Total events received");
+    // And nothing that remains in the strip names a CLI at all. `totalTokens`
+    // and the cost aggregate walk every agent on the canvas, Codex ones
+    // included, so any product name in these tooltips is the #404 defect again
+    // on a different number.
+    for (const name of ["Claude Code", "Codex", " CC ", "hook events"]) {
+      expect(strip, `the status strip names ${name}`).not.toContain(name);
+    }
   });
 });
 
