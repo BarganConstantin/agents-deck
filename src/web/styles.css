@@ -1375,7 +1375,15 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   margin-bottom: -4px;
   background: none;
   border: 0;
-  border-radius: 4px;
+  /* Round, and it is the focus ring that wants it rather than anything drawn at
+     rest — nothing here paints a box. These glyphs were 13x16 before they were
+     given a 24x24 hit area, and at that size the shared `:focus-visible` ring
+     read as a soft blob hugging the glyph. On a 24px square the same ring reads
+     as a hard-edged box, which is a bigger visual change than the target growth
+     that caused it. A circle keeps the ring honest about where you can press
+     while restoring what it looked like. Squared corners belong to the bordered
+     `.btn`s, which are boxes on purpose. */
+  border-radius: 50%;
   color: var(--muted);
   font: inherit;
   font-size: 16px;
@@ -1383,6 +1391,10 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   cursor: pointer;
   transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
+/* The shared ring sits 2px out, which is right for a rectangle it has to clear
+   the corners of. A circle has no corners to clear and 2px leaves a visible gap,
+   so this one hugs. */
+.glyph-btn:focus-visible { outline-offset: 1px; }
 .glyph-btn:hover { color: var(--text); }
 /* 0.94, not the 0.97 a labelled button gets. The sheet's own rule is written at
    `.detail-close` — on a box this size three percent is under a pixel of travel
