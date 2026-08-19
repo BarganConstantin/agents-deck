@@ -456,10 +456,10 @@ export default function AccountsPanel({ onClose }: Props) {
           <button type="button" className="btn ap-add" onClick={() => setAddOpen(true)}
             aria-label="Add an account"
             title="Sign in to another Claude account, or paste one shared from another deck">+</button>
-          <button type="button" className="btn ap-refresh" onClick={() => load(true)}
+          <button type="button" className="glyph-btn ap-refresh" onClick={() => load(true)}
             disabled={reloading} aria-label="Reload accounts"
             title="Reload from claude-swap">{reloading ? "…" : "↻"}</button>
-          <button type="button" className="btn icon-btn" onClick={onClose} aria-label="Close accounts panel" title="Close (A)">×</button>
+          <button type="button" className="glyph-btn" onClick={onClose} aria-label="Close accounts panel" title="Close (A)">×</button>
         </div>
       </div>
 

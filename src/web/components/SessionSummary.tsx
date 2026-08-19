@@ -40,7 +40,7 @@ export default function SessionSummary({ state, sessionId, onClose }: Props) {
           </div>
           <div className="modal-actions">
             <span className="modal-dur" title="Total wall time">{summary.durationLabel}</span>
-            <button type="button" ref={closeRef} className="btn" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
+            <button type="button" ref={closeRef} className="glyph-btn" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
           </div>
         </div>
 

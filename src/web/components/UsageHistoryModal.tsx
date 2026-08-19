@@ -217,13 +217,13 @@ export default function UsageHistoryModal({ onClose, providers }: Props) {
             ))}
           </div>
           <button
-            className="btn icon-btn uh-reload"
+            className="glyph-btn uh-reload"
             onClick={reload}
             disabled={loading}
             title="Re-run ccusage"
             aria-label="Reload"
           >{loading ? "…" : "↻"}</button>
-          <button ref={closeRef} className="uh-close" onClick={onClose} aria-label="Close">×</button>
+          <button ref={closeRef} className="glyph-btn uh-close" onClick={onClose} aria-label="Close">×</button>
         </header>
 
         {view.phase === "busy" ? (

@@ -542,7 +542,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
           {(providers.claude || providers.codex) && (
           <button
             type="button"
-            className="btn up-refresh-btn"
+            className="glyph-btn up-refresh-btn"
             onClick={refreshAll}
             disabled={anyLoading}
             aria-label={refreshLabel}
@@ -551,7 +551,7 @@ export default function UsagePanel({ state, now, providers, onClose }: Props) {
           )}
           <button
             type="button"
-            className="btn icon-btn up-close"
+            className="glyph-btn up-close"
             onClick={onClose}
             aria-label="Close usage panel"
             title="Close (U)"

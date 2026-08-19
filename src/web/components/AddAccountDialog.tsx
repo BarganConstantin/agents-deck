@@ -182,7 +182,7 @@ export default function AddAccountDialog({ onClose, onChanged }: Props) {
             </span>
           </div>
           <div className="modal-actions">
-            <button type="button" className="btn icon-btn" onClick={close} aria-label="Close (Esc)" title="Close (Esc)">×</button>
+            <button type="button" className="glyph-btn" onClick={close} aria-label="Close (Esc)" title="Close (Esc)">×</button>
           </div>
         </header>
 

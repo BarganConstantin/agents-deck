@@ -134,7 +134,7 @@ export default function ContextModal({ agent, onClose }: Props) {
             <div className="ctx-modal-title">Context · {agent.label}</div>
             <div className="ctx-modal-sub">{copy.subtitle}</div>
           </div>
-          <button type="button" ref={closeRef} className="ctx-modal-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
+          <button type="button" ref={closeRef} className="glyph-btn ctx-modal-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
         </header>
 
         <section className="ctx-window-row">
