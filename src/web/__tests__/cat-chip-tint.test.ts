@@ -20,13 +20,37 @@
 // chip against the bubble's own accent rather than against a colour written down
 // here, so the fix for a gap like this cannot be a colour that matches neither.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { collectBursts, hashHue, mcpChipIdentity } from "../components/ToolBursts";
+import { collectBursts, mcpChipIdentity } from "../components/ToolBursts";
 import type { AgentNodeData, ToolCall } from "../types";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
+
+/** The djb2 the topbar's MCP legend used to spell out for itself, restated the
+ *  way #374 restates every helper it merges — so "the hue did not move" is
+ *  checked against the retired copy's own arithmetic rather than against the
+ *  surviving function's opinion of itself.
+ *
+ *  This is the whole reason `hashHue` was exported (#501) and the reason it no
+ *  longer needs to be: the legend is gone, its copy is gone, and the claim is
+ *  made through the two functions that still put a server's hue on screen. */
+const djb2 = (s: string) => {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
+  return Math.abs(h) % 360;
+};
+
+/** Every module in the bundle, tests excluded — the same walk session-hue and
+ *  control-edges do, so a file that does not exist yet is already swept. */
+function modulesUnder(dir: string): string[] {
+  return readdirSync(dir).flatMap(name => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return name === "__tests__" ? [] : modulesUnder(path);
+    return /\.tsx?$/.test(path) ? [path] : [];
+  });
+}
 // Comments stripped: this file asks what the sheet DECLARES, and the rule added
 // for "other" is introduced by a comment naming its own selector.
 const css = readFileSync(join(web, "styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -224,7 +248,7 @@ describe("which server an MCP chip is counting", () => {
     const one = mcpChipIdentity(["mcp__sentry-prod__issues", "mcp__sentry-prod__events"])!;
     expect(one).toBeTruthy();
     expect(one.label).toBe("sentry-prod");
-    expect(one.hue).toBe(hashHue("sentry-prod"));
+    expect(one.hue).toBe(djb2("sentry-prod"));
     // Non-MCP calls in between are not this chip's business — it counts the mcp
     // bucket, and the rest of the strip counts the rest.
     expect(mcpChipIdentity(["Bash", "mcp__sentry-prod__issues", "Read"])!.label).toBe("sentry-prod");
@@ -265,7 +289,7 @@ describe("which server an MCP chip is counting", () => {
     for (const name of ["constructor", "tostring", "valueof", "hasownproperty"]) {
       const one = mcpChipIdentity([`mcp__${name}__probe`])!;
       expect(one.label, name).toBe(name);
-      expect(one.hue, name).toBe(hashHue(name));
+      expect(one.hue, name).toBe(djb2(name));
     }
   });
 });
@@ -301,26 +325,56 @@ describe("the chip's hue IS the bubble's hue, drawn from the same call", () => {
     expect(mcpChipIdentity(names)).toBeNull();
   });
 
-  it("is one hash and not two — the legend reads it from the same function", () => {
-    // The topbar's MCP legend spelled the djb2 out a second time under a
-    // comment claiming it was the same one. It is a call now, so a dot, a
-    // bubble and a chip cannot disagree about what colour a server is.
-    expect(app).toMatch(/hue: hashHue\(server\)/);
-    expect(app).not.toMatch(/h = \(\(h << 5\) \+ h\)/);
-    expect(app).toMatch(/import ToolBursts, \{ hashHue, mcpChipIdentity \} from "\.\/components\/ToolBursts";/);
-    // …and it is still the hash it was, so nothing on screen moved: the values
-    // the retired copy produced, restated here the way #374 restates every
-    // helper it merged.
-    const djb2 = (s: string) => {
-      let h = 5381;
-      for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
-      return Math.abs(h) % 360;
-    };
-    for (const s of ["", "github", "sentry-prod", "supabase-local", "constructor", "a".repeat(64)]) {
-      expect(hashHue(s), s).toBe(djb2(s));
-      expect(hashHue(s), s).toBeLessThan(360);
-      expect(hashHue(s), s).toBeGreaterThanOrEqual(0);
+  it("is still the hash it was, asked of the surfaces that draw it rather than of the symbol", () => {
+    // #501 exported `hashHue` for exactly one outside reader, the topbar's MCP
+    // legend, which had spelled the djb2 out a second time under a comment
+    // claiming it was the same one. The legend has been removed and the export
+    // went back to module-private with it — an export whose only caller is in
+    // its own file is the dead surface #383 swept.
+    //
+    // The invariant is NOT about the legend, so it stays: a server's hue is
+    // this arithmetic and no other, and nothing on screen moved when the copy
+    // was retired. It is stated through the two functions that still put that
+    // hue on screen, which is a stronger claim than the symbol's own — the chip
+    // and the bubble have to agree with the retired copy AND with each other.
+    for (const s of ["sentry-prod", "supabase-local", "constructor", "a".repeat(64)]) {
+      const chip = mcpChipIdentity([`mcp__${s}__probe`])!;
+      expect(chip.hue, s).toBe(djb2(s));
+      expect(chip.hue!, s).toBeLessThan(360);
+      expect(chip.hue!, s).toBeGreaterThanOrEqual(0);
+      expect(canvas([`mcp__${s}__probe`])[0].mcpHue, s).toBe(djb2(s));
     }
+    // The empty segment is the one input the retired copy took that no surface
+    // can be asked for: a nameless server is refused above rather than hued,
+    // which is #474's rule and a better answer than the number was.
+    expect(mcpChipIdentity(["mcp__"])).toBeNull();
+  });
+
+  it("is spelled in one place per hue domain, and App.tsx is not one of them", () => {
+    // The old form of this line was `app` not matching the djb2 body — a rule
+    // about App.tsx because App.tsx was where the legend's copy happened to be.
+    // With the legend gone the rule is worth stating over the tree, so the next
+    // copy fails wherever somebody puts it rather than only in the one file.
+    //
+    // Two modules spell this arithmetic and the second is NOT the defect #374
+    // removed. `reducer.sessionHue` hashes a session id and `ToolBursts.hashHue`
+    // hashes an MCP server segment: same body, different domains, neither
+    // derived from the other, and #374's sweep (duplicated-helpers.test.ts) went
+    // through seven helper pairs without listing them. They are named here
+    // rather than pattern-allowed, so merging them stays a decision somebody
+    // makes on purpose — and a THIRD spelling fails this line on arrival.
+    const spelt = modulesUnder(web)
+      .filter(p => /h = \(\(h << 5\) \+ h\)/.test(readFileSync(p, "utf8")))
+      .map(p => p.slice(web.length).replace(/\\/g, "/"))
+      .sort();
+    expect(spelt).toEqual(["components/ToolBursts.tsx", "reducer.ts"]);
+    // The MCP one is private, so a second copy is the only way to get one.
+    const bursts = readFileSync(join(web, "components/ToolBursts.tsx"), "utf8");
+    expect(bursts).toMatch(/^function hashHue\(/m);
+    expect(bursts, "hashHue is exported again with no reader outside the file")
+      .not.toMatch(/^export function hashHue\b/m);
+    expect(app, "App.tsx imports a hash it no longer has a use for")
+      .not.toMatch(/\bhashHue\b/);
   });
 });
 

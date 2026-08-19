@@ -248,8 +248,13 @@ const SITES: Site[] = [
     token: "--session-edge-l", alpha: 1, role: "graphic", beds: ["--bg"], was: 72 },
   { name: "settled edge", where: ".react-flow__edge.sess-edge.sess-idle .react-flow__edge-path", s: 50,
     token: "--session-edge-idle-l", alpha: 1, role: "graphic", beds: ["--bg"], was: 55 },
-  { name: "mcp legend dot", where: ".topbar .status .mcp-legend .mcp-dot", s: 65, token: "--mcp-dot-l",
-    alpha: 1, role: "graphic", beds: ["--panel", "--bg-soft", "--bg"], was: 65 },
+  // #330's eighth site was the topbar's MCP legend dot, on --panel / --bg-soft /
+  // --bg. The legend has been removed from the strip, and with it the only place
+  // an --mcp-dot-l hue was ever painted outside the detail panel — so the tier
+  // keeps its reader (this stripe, and the MCP category chip that composes the
+  // same expression at 0.40) and loses two beds it no longer lands on. Its dark
+  // ratio was --panel's, which is the bed the stripe already names, so the
+  // number below did not move when the site did.
   { name: "mcp burst stripe", where: ".tool-burst.cat-mcp.mcp-hue", s: 65, token: "--mcp-dot-l", alpha: 1,
     role: "graphic", beds: ["--panel"], was: 65 },
   { name: "cluster label rim", where: ".cluster-label", s: 65, token: "--session-rim-l", alpha: 0.5,
@@ -354,8 +359,9 @@ describe("every generated colour clears its floor in light, for every hue", () =
 
   it("is the fix and not a rounding — every one of them failed before", () => {
     // The same sweep against the lightness JS used to hard-code. Six of the
-    // eight sat between 1.05:1 and 1.82:1 on this canvas; none reached its
-    // floor, and the two rims could not have.
+    // eight #330 measured sat between 1.05:1 and 1.82:1 on this canvas; none
+    // reached its floor, and the two rims could not have. One of the eight, the
+    // topbar's MCP legend dot, has since left the app; the rest still answer.
     for (const site of SITES) {
       const w = worst(site, site.was, "light");
       expect(w.ratio, `${site.name} at the old ${site.was}%`).toBeLessThan(NON_TEXT);
@@ -378,9 +384,12 @@ describe("the dark theme did not move", () => {
     expect(worst(SITES[1], l("--session-accent-l"), "dark").ratio).toBeCloseTo(3.13, 2);
     expect(worst(SITES[2], l("--session-edge-l"), "dark").ratio).toBeCloseTo(5.74, 2);
     expect(worst(SITES[3], l("--session-edge-idle-l"), "dark").ratio).toBeCloseTo(3.18, 2);
+    // 4.17 is the reading the retired legend dot carried too — its worst bed
+    // was --panel, which is this stripe's only one — so removing that site left
+    // the tier's pinned dark number exactly where it was.
     expect(worst(SITES[4], l("--mcp-dot-l"), "dark").ratio).toBeCloseTo(4.17, 2);
-    expect(worst(SITES[6], l("--session-rim-l"), "dark").ratio).toBeCloseTo(1.51, 2);
-    expect(worst(SITES[7], l("--session-rim-l"), "dark").ratio).toBeCloseTo(1.25, 2);
+    expect(worst(SITES[5], l("--session-rim-l"), "dark").ratio).toBeCloseTo(1.51, 2);
+    expect(worst(SITES[6], l("--session-rim-l"), "dark").ratio).toBeCloseTo(1.25, 2);
   });
 
   it("leaves the one dark shortfall #330 named standing, on the record", () => {
@@ -478,7 +487,7 @@ describe("the colour is composed on the CSS side of the theme boundary", () => {
     // The defect was never a wrong number, it was a number in the wrong file.
     // Nothing under src/web composes hsl() any more; the components emit a hue
     // and the sheet does the rest, which is the only reason data-theme reaches
-    // these eight at all.
+    // any of these at all.
     //
     // #378: this ran over the four files in COMPONENTS, which is the four that
     // had the defect — the other twelve .tsx and every .ts beside them could
@@ -503,11 +512,14 @@ describe("the colour is composed on the CSS side of the theme boundary", () => {
     expect(COMPONENTS["SessionClusters.tsx"]).toMatch(/"--session-hue": hue/);
     expect(COMPONENTS["AgentNode.tsx"]).toMatch(/"--session-hue": hue/);
     expect(COMPONENTS["App.tsx"]).toMatch(/"--session-hue": hue/);
-    expect(COMPONENTS["App.tsx"]).toMatch(/"--mcp-hue": s\.hue/);
+    // App's --mcp-hue was the topbar legend's dot until that row was removed;
+    // the MCP category chip hands its hue across the same boundary the same
+    // way, so the rule this line states is unchanged and still has a subject.
+    expect(COMPONENTS["App.tsx"]).toMatch(/"--mcp-hue": hue/);
     expect(COMPONENTS["ToolBursts.tsx"]).toMatch(/"--mcp-hue": b\.mcpHue/);
   });
 
-  it("builds all eight from a tier the sheet declares for both themes", () => {
+  it("builds every one of them from a tier the sheet declares for both themes", () => {
     // The declaration has to name a var() for the lightness: an hsl() with a
     // literal there is the original bug wearing a stylesheet.
     const spec = (value: string) =>
@@ -515,7 +527,7 @@ describe("the colour is composed on the CSS side of the theme boundary", () => {
     const found = new Map<string, ReturnType<typeof spec>>();
     for (const [prop, site] of [
       ["color", SITES[0]], ["--accent", SITES[1]], ["stroke", SITES[2]], ["stroke", SITES[3]],
-      ["background", SITES[4]], ["--cat-accent", SITES[5]], ["border", SITES[6]], ["border", SITES[7]],
+      ["--cat-accent", SITES[4]], ["border", SITES[5]], ["border", SITES[6]],
     ] as Array<[string, Site]>) {
       const value = decl(site.where, prop);
       expect(value, `${site.where} { ${prop} }`).toBeTruthy();
@@ -526,9 +538,11 @@ describe("the colour is composed on the CSS side of the theme boundary", () => {
       expect(m![3] === undefined ? 1 : +m![3], `${site.name} alpha`).toBe(site.alpha);
       found.set(site.name, m);
     }
-    // Not "eight were checked" — the loop above ran eight times by
-    // construction, so this only ever said that no two SITES share a name.
-    // What proves the sheet holds no ninth is the sweep in the next case.
+    // Not "seven were checked" — the loop above ran seven times by
+    // construction, so this only ever said that no two SITES share a name. It
+    // does catch a SITES that has grown or shrunk without the pairing list
+    // following it, which is how the retired legend dot was kept honest.
+    // What proves the sheet holds no eighth is the sweep in the next case.
     expect(found.size, "two SITES share a name, so one of them was never checked").toBe(SITES.length);
     for (const theme of themes) {
       for (const site of SITES) expect(() => lightnessOf(theme, site.token), `${theme} ${site.token}`).not.toThrow();

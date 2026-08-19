@@ -469,13 +469,19 @@ function parseMcpName(toolName: string): McpParse | null {
 
 /** Stable hash → 0..359 hue for unknown MCP servers.
  *
- *  Exported because the topbar's MCP legend needs the same number for the same
- *  server — App.tsx wrote the djb2 out a second time under a comment saying
- *  "same hash ToolBursts uses", which is the shape #374 spent a whole issue
- *  removing: a copy is only correct until one side is edited. One dot in that
- *  legend and one bubble on the canvas name the same server, so they resolve
- *  the hue through one function. */
-export function hashHue(s: string): number {
+ *  Module-private, and back that way deliberately. #501 exported it for one
+ *  reader: the topbar's MCP legend, which had spelled the djb2 out a second time
+ *  under a comment saying "same hash ToolBursts uses" — the shape #374 spent a
+ *  whole issue removing, since a copy is only correct until one side is edited.
+ *  That legend is gone, and an export whose only caller is in its own file is
+ *  the dead surface #383 swept. `primaryDisplayFor` is the one caller now, and
+ *  both surfaces that show a server's hue — the bubble and the MCP category
+ *  chip — reach it through that, so they still cannot disagree.
+ *
+ *  What kept the export honest is not gone with it: cat-chip-tint.test.ts still
+ *  pins this against a restatement of the retired copy, through the public
+ *  functions rather than through the symbol. */
+function hashHue(s: string): number {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
   return Math.abs(h) % 360;
