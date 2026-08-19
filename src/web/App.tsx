@@ -3192,7 +3192,7 @@ function Inner() {
         <aside className="detail" aria-label="Detail">
           <button
             type="button"
-            className="detail-close"
+            className="glyph-btn detail-close"
             title="Close panel"
             aria-label="Close detail panel"
             onClick={() => setDetailOpen(false)}

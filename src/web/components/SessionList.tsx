@@ -138,7 +138,7 @@ export default function SessionList({ state, now, selectedIds, onSelect, onClose
             signal rather than a claim that none of them is blocked. */}
         {waitingCount > 0 && <span className="sl-waiting-count">{waitingCount} waiting</span>}
         {liveCount > 0 && <span className="sl-live-count">{liveCount} live</span>}
-        <button className="btn icon-btn sl-close" onClick={onClose} title="Hide sidebar (L)" aria-label="Hide session list">‹</button>
+        <button className="glyph-btn sl-close" onClick={onClose} title="Hide sidebar (L)" aria-label="Hide session list">‹</button>
       </div>
       <div className="sl-rows">
         {rows.length === 0 && <div className="sl-empty">No sessions yet.</div>}

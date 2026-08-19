@@ -400,8 +400,16 @@ const CONTROLS: Control[] = [
   { at: ".ver-banner .ver-auto:hover", fillFrom: ".ver-banner .ver-auto", beds: BANNER },
   // canvas, detail panel, modals
   { at: ".detail-reopen", beds: ["--bg"] },
-  { at: ".detail-close:hover", fillFrom: ".detail-close:hover", beds: ["--panel"] },
-  { at: ".ctx-modal-close", beds: ["--panel"] },
+  // `.detail-close:hover` and `.ctx-modal-close` used to be here, and they are
+  // gone rather than exempted. Both are `.glyph-btn` now — a bare character in
+  // a panel header, no border at rest and none grown on hover — so there is no
+  // boundary left for this sweep to measure and no arithmetic an exemption
+  // would be excusing it from. 1.4.11 is answered the way it is answered for
+  // `.detail .tool` below: the glyph is the identification, inside a box that
+  // already draws its own edge and writes its own title. The exhaustiveness
+  // check at the bottom of this describe is what keeps that honest — the day
+  // either one draws an edge again it lands in `unclassified` and has to come
+  // back up here or be written into EXEMPT with a reason.
   { at: ".session-list .sl-row:hover", fillFrom: ".session-list .sl-row:hover",
     states: [".session-list .sl-row.selected"], beds: ["--panel"] },
   // accounts panel
@@ -716,9 +724,24 @@ describe("the control surface, promoted (#332)", () => {
     // Twenty-four rules at the time of writing; a floor rather than a count,
     // so deleting a control does not fail this and re-scoping the tokens back
     // to one block does.
+    //
+    // The floor was 20 against 23 readers, which left room for three deletions
+    // and no more — so the first change that actually did what the sentence
+    // above says is allowed failed it. Four rules stopped reading the tokens
+    // when the panel and dialog header closes went bare: the fill and edge
+    // `.detail-close:hover` grew, the edge `.ctx-modal-close` rested on and the
+    // fills under `.ctx-modal-close:hover` and `.uh-close:hover`. None of that
+    // is a re-scope; it is four boxes that stopped being drawn.
+    //
+    // So the count is a floor with slack in it again, and the claim the count
+    // was standing in for is asserted directly underneath. A re-scope is not
+    // really "fewer readers" — it is readers that all live in one place — and
+    // counting the distinct blocks they sit in says so whatever the total does.
     const readers = RULES.filter(r => /var\(--ctl-(fill|edge)\)/.test(r.body));
-    expect(readers.length).toBeGreaterThanOrEqual(20);
+    expect(readers.length).toBeGreaterThanOrEqual(15);
     expect(readers.filter(r => r.selector.startsWith(".ap-")).length).toBeLessThan(readers.length / 2);
+    const areas = new Set(readers.map(r => selectors(r.selector)[0].split(/[\s:.]+/).filter(Boolean)[0]));
+    expect(areas.size, `--ctl-* is read from ${[...areas].sort().join(", ")}`).toBeGreaterThanOrEqual(10);
   });
 
   it("is a fill for controls that write in --text, and the sheet knows which those are", () => {

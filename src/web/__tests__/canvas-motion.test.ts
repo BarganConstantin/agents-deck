@@ -256,10 +256,17 @@ type Press = [selector: string, scale: string, prop: "transform" | "scale"];
  *  which ones had been got to. */
 const PRESSES: Press[] = [
   ["button.btn:active:not(:disabled)", "0.97", "transform"],
-  // The machine meter and its panel's close button — same convention, joined
-  // here rather than exempted, which is what #355 asked of the next control.
+  // The machine meter — same convention, joined here rather than exempted,
+  // which is what #355 asked of the next control.
   [".topbar .status .sysmeter:active", "0.97", "transform"],
-  [".sd-close:active", "0.97", "transform"],
+  // Every panel and dialog header close, in one entry. This used to be five —
+  // `.sd-close` at 0.97 and `.detail-close`, `.ctx-modal-close` and `.uh-close`
+  // at 0.94, with the rest pressing as `button.btn` because they were wearing
+  // `btn icon-btn` — and the five are one control now. 0.94 is the number the
+  // sheet's own rule asks for at this size, and it is what three of the four
+  // already used; `.sd-close`'s 0.97 was three percent of a 16px box, which is
+  // half a pixel and was never visible.
+  [".glyph-btn:active:not(:disabled)", "0.94", "transform"],
   [".topbar .waiting-stat:active", "0.97", "transform"],
   [".topbar .brand button.v:active", "0.97", "transform"],
   [".ap-manage-btn:active:not(:disabled)", "0.97", "transform"],
@@ -271,11 +278,8 @@ const PRESSES: Press[] = [
   [".ap-rotate:active:not(:disabled)", "0.97", "transform"],
   [".aa-tab:active", "0.97", "transform"],
   [".cat-filter:active", "0.97", "transform"],
-  [".detail-close:active", "0.94", "transform"],
   [".detail-reopen:active", "0.94", "transform"],
-  [".ctx-modal-close:active", "0.94", "transform"],
   [".ctx-donut:active", "0.94", "transform"],
-  [".uh-close:active", "0.94", "transform"],
   [".uh-range-btn:active", "0.97", "transform"],
   [".uh-bar-col:active", "0.97", "transform"],
   [".session-list .sl-row:active", "0.97", "transform"],

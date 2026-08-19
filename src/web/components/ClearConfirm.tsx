@@ -46,7 +46,7 @@ export default function ClearConfirm({ agentCount, onConfirm, onCancel }: Props)
             <span id="clear-confirm-title" className="modal-tool-name">Clear the deck?</span>
           </div>
           <div className="modal-actions">
-            <button type="button" className="btn icon-btn" onClick={onCancel} aria-label="Cancel (Esc)" title="Cancel (Esc)">×</button>
+            <button type="button" className="glyph-btn" onClick={onCancel} aria-label="Cancel (Esc)" title="Cancel (Esc)">×</button>
           </div>
         </header>
 

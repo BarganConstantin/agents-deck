@@ -389,7 +389,7 @@ describe("what each of the four toggles announces", () => {
     expect(body).toMatch(/setSessionListOpen\(open => \{[\s\S]*?return !open;/);
     expect(app).toMatch(/\{sessionListOpen && \(\s*<SessionList/);
     expect(app).toMatch(/onClose=\{\(\) => setSessionListOpen\(false\)\}/);
-    expect(sessionList).toMatch(/className="btn icon-btn sl-close" onClick=\{onClose\}/);
+    expect(sessionList).toMatch(/className="glyph-btn sl-close" onClick=\{onClose\}/);
     // Escape is not a third way out and never was: this is an <aside> beside
     // the canvas, not a modal, so it registers no dismisser with modalStack and
     // the key falls through to clearing the canvas selection. Pinned so the

@@ -52,7 +52,7 @@ export default function ToolModal({
           </div>
           <div className="modal-actions">
             <span className="modal-dur">{toolDuration(tool, "in-flight…")}</span>
-            <button className="btn icon-btn" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
+            <button className="glyph-btn" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
           </div>
         </header>
 

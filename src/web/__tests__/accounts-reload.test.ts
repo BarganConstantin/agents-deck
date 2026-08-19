@@ -143,7 +143,7 @@ describe("the panel's reload path", () => {
   });
 
   it("disables the ↻ and says so while a reload the user asked for is in flight", () => {
-    expect(panel).toMatch(/className="btn ap-refresh"[\s\S]{0,200}disabled=\{reloading\}/);
+    expect(panel).toMatch(/className="glyph-btn ap-refresh"[\s\S]{0,200}disabled=\{reloading\}/);
     expect(panel).toContain('{reloading ? "…" : "↻"}');
     // Only the forced half: a poll blinking the button every 15 seconds would
     // read as the panel doing something to itself.

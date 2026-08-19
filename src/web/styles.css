@@ -949,23 +949,14 @@ button:focus-visible { outline-offset: 1px; }
 .sd-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
 .sd-title { font-size: 12px; font-weight: 600; }
 .sd-sub { color: var(--muted); font-variant-numeric: tabular-nums; }
-.sd-close {
-  margin-left: auto;
-  background: none;
-  border: 0;
-  color: var(--muted);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-  border-radius: 4px;
-  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-.sd-close:hover { color: var(--text); }
-.sd-close:active { transform: scale(0.97); }
+/* The bare glyph the rest of the deck's header closes have come to — the whole
+   of its appearance is `.glyph-btn` now, and what is left here is the one thing
+   that is this header's rather than the control's: the × goes to the end of the
+   row. It was measured at 13.34 x 16 before, which is why `.glyph-btn` carries
+   a hit area at all; the exemplar was the smallest target of the lot. */
+.sd-close { margin-left: auto; }
 .topbar .status .sysmeter:active { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) {
-  .sd-close:active,
   .topbar .status .sysmeter:active { transform: none; }
 }
 
@@ -1333,6 +1324,78 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
+/* ---------------- the bare glyph a panel header closes with ----------------
+   The third kind of button on this deck, and the one it had been drawing five
+   different ways. A panel or dialog header offers to shut itself, hide itself
+   or re-read itself, and it offers that as a single character sitting at the
+   end of a titled, bordered box — × or ‹ or ↻. Until now most of those
+   characters were wearing `btn icon-btn`, which is a 30px square with its own
+   1px edge: a control box drawn INSIDE a control box, one hairline in from a
+   panel edge that is already saying where the panel stops. The machine panel's
+   × never wore it and is the shape the rest have come to.
+
+   1.4.11 asks a control to be identifiable, not to be boxed. The identification
+   here is the glyph plus the header it sits in — nothing floats on a canvas —
+   which is the same reading that lets `.detail .tool` and `.react-flow__controls-button`
+   go unbordered, and control-edges.test.ts stops sweeping these the moment they
+   stop declaring an edge.
+
+   What removing the box does NOT get to remove is the target. The glyph's own
+   line box is 16px tall and, for ×, 9.34px wide — measured, not estimated —
+   which is well under the 24px SC 2.5.8 asks for and which this sheet argues
+   for at `.ver-close`, `.ap-more` and `.detail-reopen`. So the box stays 24px
+   in both directions, as padding around a glyph that is drawn small: the
+   pointer gets the square, the reader gets the character.
+
+   The vertical half of that padding is handed straight back as a negative
+   margin — the technique `.sysmeter` uses a few hundred lines up, for the same
+   reason: a header row should be the height of what is written in it, not of
+   the invisible area around it. The HORIZONTAL half is deliberately NOT handed
+   back. These controls come in runs of two and three (`.up-header-right`,
+   `.ap-header-right`, `.modal-actions`, `.uh-head`), and a negative margin
+   between two neighbours would slide their 24px targets into each other — one
+   accessible target eating the next is not a fix, it is the same defect with
+   the numbers moved around. Where a run needs to sit tighter, the container's
+   `gap` says so; nothing here overlaps anything.
+
+   A bare class rather than `button.glyph-btn`, deliberately. At (0,1,0) it ties
+   with the per-control rules below and loses the tie on source order, which is
+   what lets `.uh-reload`, `.ap-refresh` and `.up-refresh-btn` keep saying their
+   own padding out loud. Written with an element name it would have outranked
+   all three and quietly killed them — which is the exact defect #380 spent an
+   issue removing from this sheet, reintroduced from the other side. */
+.glyph-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 4px;
+  margin-top: -4px;
+  margin-bottom: -4px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.glyph-btn:hover { color: var(--text); }
+/* 0.94, not the 0.97 a labelled button gets. The sheet's own rule is written at
+   `.detail-close` — on a box this size three percent is under a pixel of travel
+   and reads as nothing having happened — and three of the four bare closes that
+   already existed were at 0.94 while the machine panel's was at 0.97 on a 16px
+   box, where it was invisible. One box, one number, and the number is the one
+   that can be seen.
+   Guarded, because three of the controls wearing this class can be disabled —
+   `.up-refresh-btn`, `.ap-refresh` and `.uh-reload` all go inert while the run
+   they started is out. `button.btn:active` was guarded and they used to inherit
+   that; the guard comes with them rather than being left behind. */
+.glyph-btn:active:not(:disabled) { transform: scale(0.94); }
+
 /* ---------------- search ---------------- */
 
 /* Keeps --bg-soft for the reason .selected-ribbon does: the placeholder is
@@ -1689,34 +1752,30 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   flex-direction: column;
   gap: 12px;
 }
-/* Close (×) button — top-right of the detail panel. */
+/* Close (×) button — top-right of the detail panel. `.glyph-btn` for its whole
+   appearance, which this one was already most of the way to: transparent fill,
+   a border that was transparent at rest, --muted, 24 x 24. What it drew that
+   the standard does not is a hover that faded a box IN — a --ctl-fill wash and a
+   --ctl-edge border arriving together under the pointer — so the control read as
+   boxed exactly when it was being aimed at. Only the corner it is pinned to is
+   this panel's own business, and that is all that is left here.
+   It is the one control in this group that is not in a header row; it is the
+   detail panel's close all the same, and leaving it as the last × on the deck
+   with a hover box would have been the split this change is removing. */
 .detail-close {
   position: absolute;
   top: 10px;
   right: 12px;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  line-height: 1;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
   z-index: 2;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease,
-              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+  /* `.glyph-btn` hands its vertical padding back as a negative margin so a
+     header ROW stays the height of the glyph written in it. There is no row
+     here — this is pinned to a corner, and `top` is measured to the margin
+     edge, so the same two declarations would have quietly lifted the × four
+     pixels up the panel instead. The target is unchanged; only the reason for
+     the margin does not apply. */
+  margin-top: 0;
+  margin-bottom: 0;
 }
-.detail-close:hover {
-  color: var(--text);
-  background: var(--ctl-fill);
-  border-color: var(--ctl-edge);
-}
-/* Deeper than the 0.97 a full-size button gets: on a 24px square, three
-   percent is under a pixel of travel and reads as nothing happening. */
-.detail-close:active { transform: scale(0.94); }
 /* When the detail panel is closed, drop its 360px column so the canvas
    reclaims the space. Keyed off the reopen tab, which only renders when closed. */
 .app:has(.detail-reopen) { grid-template-columns: 1fr; }
@@ -2063,19 +2122,15 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    also the last live rule at 15px, so the size retires with it. */
 .ctx-modal-title { font-size: 14px; font-weight: 600; }
 .ctx-modal-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+/* The context modal's × — a header close like the other five, and the last one
+   still drawing its own 28px bordered box. `.glyph-btn` now, which takes the
+   edge, the fill, the 28px square and the 18px glyph with it; the header this
+   sits in already has a title, a subtitle and a panel edge saying where it is.
+   The easing stays on this selector for the reason spelled out at `.uh-close`. */
 .ctx-modal-close {
-  background: transparent;
-  border: 1px solid var(--ctl-edge);
-  color: var(--text);
-  border-radius: 6px;
-  width: 28px; height: 28px;
-  font-size: 18px; line-height: 1;
-  cursor: pointer;
-  transition: background 120ms, border-color 120ms,
-              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.ctx-modal-close:hover { background: var(--ctl-fill); }
-.ctx-modal-close:active { transform: scale(0.94); }
+.ctx-modal-close:hover { color: var(--text); }
 .ctx-window-row { margin-bottom: 16px; }
 .ctx-window-bar {
   position: relative;
@@ -3112,14 +3167,18 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   color: var(--warn);
   font-weight: 600;
 }
-/* The font-size #380 found here never rendered and is gone. This button is
-   `class="btn icon-btn sl-close"`, and `button.btn.icon-btn` is (0,2,1) against
-   this rule's (0,2,0) — a tie on classes decided by the element name — so the
-   15px was always losing to the shared 14px. Deleted rather than made to win:
-   the deck has shipped this glyph at 14px for its whole life, 14px is what every
-   other icon button in the app is set in, and "restore a size no one has ever
-   seen" is a visual change dressed up as a cleanup. The width and height beside
-   it are dead by the same arithmetic; those are #383's sweep, not this issue's. */
+/* #380 deleted a 15px font-size here that had never rendered: the button was
+   `class="btn icon-btn sl-close"` and `button.btn.icon-btn` (0,2,1) beat this
+   rule's (0,2,0), so the shared 14px always won. It noted that the width and
+   height beside it were dead by the same arithmetic and left them for later.
+   Later is now — the button is `class="glyph-btn sl-close"`, nothing declares a
+   competing size any more, and these two render for the first time. Kept rather
+   than deleted, and kept at 26 rather than folded into `.glyph-btn`'s 24: this
+   is the one header close with no neighbour, so it can afford the two extra
+   pixels, and 26 clears the 24px floor the same way. What the reader sees change
+   is the 30px bordered square becoming a 26px square with no box drawn round it;
+   the ‹ itself goes 14px → 16px, the size every bare glyph on the deck is set
+   in. */
 .session-list .sl-close { width: 26px; height: 26px; }
 
 /* The two numbers the row's inset is made of, declared where they are about
@@ -4087,14 +4146,18 @@ button.tool.clickable:last-child { border-bottom: none; }
   border-radius: 999px;
   background: rgba(240,171,252,0.12);
 }
-/* Same dead override as `.sl-close`: `class="btn icon-btn up-close"` puts
-   `button.btn.icon-btn` (0,2,1) over this rule's (0,1,0), so the 16px declared
-   here has never painted a pixel and the shared 14px has. Deleted. */
-.up-close {
-  line-height: 1;
-  padding: 2px 6px;
-  color: var(--muted);
-}
+/* #380 deleted a 16px font-size here for the same reason it deleted `.sl-close`'s
+   15px: `class="btn icon-btn up-close"` put `button.btn.icon-btn` (0,2,1) over
+   this rule's (0,1,0). The class set is `glyph-btn up-close` now, so that fight
+   is over — and the colour below, which was losing to `button.btn`'s
+   `color: var(--text)` by the same arithmetic and had never rendered either, is
+   what the × is actually drawn in. It says --muted, `.glyph-btn` says --muted,
+   and the value the reader gets is the one this rule was always asking for.
+   The `line-height: 1` and `padding: 2px 6px` that used to sit here are gone:
+   both are `.glyph-btn`'s to decide now, and a second copy of the padding would
+   have quietly out-ranked the shared rule and pulled this one control off the
+   24px box every other header close stands in. */
+.up-close { color: var(--muted); }
 
 .up-total {
   display: flex;
@@ -4290,16 +4353,21 @@ button.tool.clickable:last-child { border-bottom: none; }
 
 /* ── quota bars ── */
 .up-quota-section { padding-top: 10px; border-top: none; }
-/* One #380 did not list, found by sweeping the same arithmetic over every
-   rendered class set rather than over the five selectors it happened to name.
-   This is `class="btn up-refresh-btn"` with no `icon-btn`, so the competition is
-   `button.btn` (0,1,1) against (0,1,0): the shared 12px wins and the 14px here
-   never rendered. Deleted, same reasoning as the two above. */
-.up-refresh-btn {
-  padding: 1px 7px;
-  color: var(--muted);
-  line-height: 1.4;
-}
+/* The ↻ beside the × above, and it moves with it — a header with one bare glyph
+   and one 30px bordered box beside it is the split this change exists to end.
+   #380 deleted a 14px font-size here that `button.btn`'s 12px had always beaten;
+   the class set is `glyph-btn up-refresh-btn` now, so nothing outranks anything
+   and the padding below renders for the first time. It is kept because it is
+   still true — 1px 7px round a 16px glyph, inside the 24px floor `.glyph-btn`
+   holds, so the box does not move — while the `line-height: 1.4` that used to
+   sit beside it is gone. That one WAS live, and left alone it would have made
+   this button 24.4px tall against its neighbour's 24: a 0.4px step between two
+   controls in one header, which is the smaller cousin of the 1.4px step #380
+   removed from the topbar. `.glyph-btn`'s `line-height: 1` is the answer, once,
+   for both of them. The `color: var(--muted)` is gone for the same reason it
+   stays on `.up-close`: there it is what the sheet asks of the × by name, here
+   it was only a second spelling of the shared rule. */
+.up-refresh-btn { padding: 1px 7px; }
 .up-quota-bars { display: flex; flex-direction: column; gap: 10px; }
 .qb-row { display: flex; flex-direction: column; gap: 3px; }
 .qb-meta {
@@ -4466,23 +4534,31 @@ button.tool.clickable:last-child { border-bottom: none; }
 .uh-range-btn:hover { color: var(--text); }
 .uh-range-btn:active { transform: scale(0.97); }
 .uh-range-btn.on { background: var(--accent-dim); color: var(--text); }
-/* The other one #380's five missed. `class="btn icon-btn uh-reload"`, so
-   `button.btn.icon-btn` (0,2,1) beats this (0,1,0) and the ↻ has always drawn at
-   the shared 14px, never at 13. The width, height and padding here are dead the
-   same way and are left for #383. */
+/* #380 deleted a 13px font-size here that `button.btn.icon-btn`'s 14px had
+   always beaten, and left the width, height and padding standing as dead by the
+   same arithmetic. The class set is `glyph-btn uh-reload` now and all three are
+   live — which is the whole of what changes in this header's geometry, because
+   24 x 24 with no padding is the box `.glyph-btn` would have given it anyway.
+   What the reader sees is the 30px bordered square this actually rendered as
+   becoming the 24px square it always said it was, with the edge gone. */
 .uh-reload { width: 24px; height: 24px; padding: 0; }
 /* A ccusage run is seconds long and the button is the only thing on the header
    that moves while it lasts, so it has to read as busy rather than as ignored. */
 .uh-reload:disabled { opacity: var(--dim-off); cursor: default; }
+/* Already borderless, already 24 x 24, already 16px and already --muted — this
+   × was the standard before there was a name for it, and everything it used to
+   say is `.glyph-btn`'s now. The one thing that was NOT the standard was the
+   hover: a --ctl-fill wash under the glyph, which is a box appearing under the
+   pointer on a control whose whole point is that it has no box. The colour step
+   to --text is the whole hover, here as everywhere else.
+   The easing stays on this selector rather than being left to the shared rule,
+   because canvas-motion.test.ts asks this button and `.ctx-modal-close` by name
+   whether each property their hover moves is one their own rule eases. Same
+   values as `.glyph-btn`; that rule is still where the decision lives. */
 .uh-close {
-  width: 24px; height: 24px; font-size: 16px; line-height: 1;
-  border: none; background: transparent; color: var(--muted);
-  cursor: pointer; border-radius: 6px;
-  transition: background 120ms, color 120ms,
-              transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.uh-close:hover { color: var(--text); background: var(--ctl-fill); }
-.uh-close:active { transform: scale(0.94); }
+.uh-close:hover { color: var(--text); }
 
 .uh-status { padding: 40px 0; text-align: center; color: var(--muted); font-size: 12px; }
 .uh-status.uh-err { color: var(--err); max-width: 46ch; margin: 0 auto; line-height: 1.5; }
@@ -4643,10 +4719,13 @@ button.tool.clickable:last-child { border-bottom: none; }
   letter-spacing: 0.02em;
 }
 .ap-header-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-/* `class="btn ap-refresh"`, so `button.btn` (0,1,1) outranks this (0,1,0) and
-   the 11px that used to sit here never rendered — the ↻ has always been the
-   shared 12px. Deleted rather than promoted, for the reason spelled out at
-   `.sl-close`: making a rule render for the first time changes the picture. */
+/* #380 deleted an 11px font-size here that `button.btn`'s 12px had always
+   beaten, and said that making a rule render for the first time changes the
+   picture. It does, and this is the change: `class="glyph-btn ap-refresh"` puts
+   nothing above this rule any more, so the padding is live. Kept, because 1px
+   6px inside `.glyph-btn`'s 24px floor changes no pixel of the box — it only
+   says where the glyph sits in it.
+   The `+` two lines up is NOT one of these. See `.ap-add`. */
 .ap-refresh { padding: 1px 6px; }
 /* The one moment this button does nothing. A reload can ask claude-swap to
    collect over the network, so it is not instant, and without a dimmed state a
@@ -5245,7 +5324,15 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
    the hover rule. It is also the one of the seven that should stay dead on its
    own merits: 16px would make "+" the loudest glyph in a 288px panel, which is
    the argument `.ap-failure-x` makes against sizing a control like a control
-   when it lives inside 10px text. */
+   when it lives inside 10px text.
+   And it is the one control in an `ap-`, `up-`, `uh-` or `modal-` header that
+   did NOT go bare with the rest. Its two neighbours shut the panel and re-read
+   it — chrome, operating the box they sit in. This one opens a dialog and adds
+   an account to the machine, which is the panel's single affirmative action, and
+   the sheet already spends a colour saying so. A `.btn` box round the one
+   control that does something is the distinction `button.btn.primary` exists to
+   draw; taking it away would have left three identical glyphs, one of which is
+   not like the others. */
 .ap-add {
   line-height: 1;
   padding: 2px 8px 4px;
@@ -5692,8 +5779,12 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
      convention and it has to switch off in one place, or the next control to
      adopt it quietly reintroduces the motion. */
   button.btn:active:not(:disabled), .ap-manage-btn:active:not(:disabled), .ap-more:active,
-  .cat-filter:active, .detail-close:active, .ctx-modal-close:active,
-  .uh-close:active, .uh-range-btn:active,
+  /* One entry where there were five. `.sd-close`, `.detail-close`,
+     `.ctx-modal-close`, `.uh-close` and the header closes that used to press as
+     `button.btn` are all `.glyph-btn` now, and the press they share switches off
+     with them. */
+  .glyph-btn:active:not(:disabled),
+  .cat-filter:active, .uh-range-btn:active,
   .selected-ribbon .selected-close:active,
   .ver-banner .ver-cmd:active, .ver-banner .ver-auto:active,
   .ver-banner .ver-close:active,

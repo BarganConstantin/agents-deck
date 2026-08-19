@@ -314,7 +314,7 @@ describe("the deck's six overlays", () => {
     // is "7d" reads as a setting to change rather than a thing to read or leave.
     const src = read("UsageHistoryModal.tsx");
     expect(src).toMatch(/const closeRef = useRef<HTMLButtonElement>\(null\);/);
-    expect(src).toMatch(/<button ref=\{closeRef\} className="uh-close"/);
+    expect(src).toMatch(/<button ref=\{closeRef\} className="glyph-btn uh-close"/);
   });
 
   it("focuses the sign-in dialog's primer, the branch it always opens on", () => {
