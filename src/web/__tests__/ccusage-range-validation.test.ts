@@ -10,7 +10,7 @@
 //
 // These pin the grammar and pin that the route enforces it before anything gets
 // near a child process.
-import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { get, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -25,15 +25,60 @@ process.env.HOME = DIR;
 process.env.USERPROFILE = DIR;
 process.env.CLAUDE_CONFIG_DIR = join(DIR, "claude");
 process.env.CODEX_HOME = join(DIR, "codex");
-// A request that gets PAST the gate reaches the real fetchCcusageDaily, and on
-// this temp home there is no managed ccusage — so without this the accepted
-// cases would each try to `npm install ccusage@latest` off the registry. With
-// installs off, getRunner refuses immediately and nothing is ever spawned,
-// which is all these tests need: the question is 400 versus not-400.
+// A request that gets PAST the gate reaches the real fetchCcusageDaily, and
+// what happens THERE has to be pinned here rather than left to whatever the
+// machine running the suite happens to have installed. Two variables, and they
+// are not interchangeable.
+//
+// Installs off, because this temp home has no managed ccusage and the accepted
+// cases would otherwise each try to `npm install ccusage@latest` off the
+// registry.
 process.env.AGENTS_DECK_NO_INSTALL = "1";
+// And an override naming a file that is not there, which is what actually keeps
+// the gate the only thing under test.
+//
+// The comment this replaces said installs-off was enough — that getRunner
+// "refuses immediately and nothing is ever spawned". That stopped being true
+// when #433 gave getRunner its PATH branch, and the branch sits BEFORE the
+// installs-off check by design: PATH before installing is what stops the deck
+// downloading a second copy of a tool the machine already has. So on any
+// machine whose developer has ccusage on PATH — the common case, and this one —
+// every accepted request ran that copy instead of refusing. Twice, because
+// `--by-agent` fails on a home with no Claude data and runDaily retries the
+// flagless form. Measured at 1.2-3.5s a case against vitest's 5000ms default,
+// which is #491: not a slow endpoint, an endpoint doing real work nobody
+// intended it to do.
+//
+// An override that does not resolve throws `bad_override` before any process
+// starts, and tagged failures are never retried — so this costs one refusal and
+// no child at all. It also makes the answer the same everywhere, which the
+// PATH-dependent version never was: these cases were fast or slow, and on CI
+// will be present or absent, according to whether ccusage happens to be
+// installed. Resolution itself is ccusage-user-path.test.ts's subject, not this
+// file's.
+//
+// Either way the assertion is untouched: the question is 400 versus not-400.
+process.env.AGENTS_DECK_CCUSAGE = join(DIR, "no-such-ccusage");
 
 // @ts-expect-error — .mjs server module, no types
 const { startServer, isCliDate } = await import("../../server/index.mjs");
+
+// Stated, not inherited. With the spawn gone every case here is a refusal that
+// costs about a millisecond, so this is not a margin these tests need to spend —
+// it is the budget being a decision. vitest's defaults are 5000ms for a test and
+// 10000ms for a hook, and both were reached by nobody choosing them: the four
+// request cases sat at 67-71% of the first on a pass and failed together once
+// the machine was busy enough, which is the condition a shared CI runner is in
+// by default rather than by accident.
+//
+// 20s matches the smallest budget the other server-booting suites here already
+// state for themselves (log-line-atomic and session-cache-prune say 60s,
+// deck-token-redaction and sse-resume-backpressure 30s, codex-memory-single-writer
+// 25s) — this file was the one doing real per-case work and still on the
+// default. hookTimeout is set for the same reason and is not decoration:
+// `beforeAll` boots a real HTTP server, which is the one genuinely variable cost
+// left in the file.
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 
 let server: Server;
 let port = 0;
@@ -48,7 +93,8 @@ afterAll(async () => {
     server.closeAllConnections?.();
     server.close(() => done());
   });
-  for (const k of ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "AGENTS_DECK_NO_INSTALL"]) {
+  for (const k of ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "CODEX_HOME",
+    "AGENTS_DECK_NO_INSTALL", "AGENTS_DECK_CCUSAGE"]) {
     if (prevEnv[k] === undefined) delete process.env[k];
     else process.env[k] = prevEnv[k];
   }
@@ -135,11 +181,21 @@ describe("GET /api/ccusage", () => {
   it("lets a real YYYYMMDD range through", async () => {
     const { status, body } = await ccusage("?since=20260101&until=20260131");
 
-    // Past the gate. What comes back is ccusage's own verdict — here "installs
-    // are off", because this temp home has no managed copy — and the point is
-    // only that the route did not refuse it.
+    // Past the gate. What comes back is fetchCcusageDaily's own verdict — here
+    // the unresolvable override set at the top — and the point is only that the
+    // route did not refuse it.
     expect(status).toBe(200);
     expect(body.reason).not.toBe("bad_range");
+
+    // And pinned exactly, on the one case that says so, because "not bad_range"
+    // is true of every failure this endpoint has and would go on being true if
+    // the override stopped taking effect. `bad_override` is thrown before any
+    // process starts; `run_failed` is what a spawn that actually happened
+    // leaves behind. Asserting which one arrives is what keeps #491 fixed —
+    // without it the only symptom of the child process coming back is these
+    // cases quietly getting seconds slower again, which is precisely how this
+    // went unnoticed until a loaded machine turned it into a timeout.
+    expect(body.reason).toBe("bad_override");
   });
 
   it("still answers with both parameters absent", async () => {
