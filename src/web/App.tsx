@@ -16,7 +16,7 @@ import { shortModel } from "./model-label";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import SessionGroupNode from "./components/SessionGroupNode";
-import ToolBursts from "./components/ToolBursts";
+import ToolBursts, { hashHue, mcpChipIdentity } from "./components/ToolBursts";
 import SessionSummary from "./components/SessionSummary";
 import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
@@ -1944,10 +1944,14 @@ function Inner() {
     return () => window.clearTimeout(timer);
   }, [presentCats.length]);
 
-  // MCP server legend — unique servers observed across all tool calls,
-  // each with a count. ToolBursts gives unknown servers a hash-based hue
-  // accent; we mirror that here so the legend dot color matches the
-  // burst's stripe color for the same server.
+  // MCP server legend — unique servers observed across all tool calls, each
+  // with a count. Every dot is hued, because the row's job is to say how many
+  // DISTINCT servers this session has touched and identical dots cannot. That
+  // matches the bubble for a server the deck has no row for, which is hued the
+  // same way from the same hash; a server MCP_SERVERS does know is drawn on the
+  // canvas by its brand instead — 🐙 GitHub, base teal — and only its dot here
+  // is hashed, since a legend of eight identical teal dots would be a legend
+  // that has stopped counting.
   const mcpServers = useMemo<Array<{ server: string; count: number; hue: number }>>(() => {
     const counts = new Map<string, number>();
     for (const a of stateRef.current.agents.values()) {
@@ -1961,10 +1965,11 @@ function Inner() {
     }
     const out: Array<{ server: string; count: number; hue: number }> = [];
     for (const [server, count] of counts) {
-      // Same djb2-ish hash ToolBursts uses for unknown server hue.
-      let h = 5381;
-      for (let i = 0; i < server.length; i++) h = ((h << 5) + h) ^ server.charCodeAt(i);
-      out.push({ server, count, hue: Math.abs(h) % 360 });
+      // ToolBursts' own hash, called rather than written out again. The djb2
+      // used to be spelled a second time here under a comment promising it was
+      // "the same hash ToolBursts uses" — a promise nothing checked, on a
+      // number whose whole job is to be identical on both surfaces.
+      out.push({ server, count, hue: hashHue(server) });
     }
     out.sort((a, b) => b.count - a.count);
     return out;
@@ -3400,6 +3405,12 @@ function Detail({
   const inflight = agent.tools.filter(t => !t.endedAt).length;
   const catEntries = Array.from(catCounts.entries())
     .sort((a, b) => b[1] - a[1]);
+  // The one server this agent's MCP chip is counting, when there is one (#489)
+  // — ToolBursts' own answer for those calls, so the chip is named and tinted
+  // by the function that named and tinted the bubbles rather than by a second
+  // rule that agrees with it today. null when the calls span two servers, or
+  // when there are none, and the chip stays the generic category chip.
+  const mcpChip = catCounts.has("mcp") ? mcpChipIdentity(agent.tools.map(t => t.name)) : null;
 
   return (
     <>
@@ -3462,12 +3473,28 @@ function Detail({
               {errCount > 0 && <span className="ac-item ac-err"><b>{errCount}</b> err</span>}
             </div>
             <div className="cat-strip">
-              {catEntries.map(([c, n]) => (
-                <span className={`cat-chip cat-${c}`} key={c} title={`${n} ${DETAIL_CAT_LABEL[c]} call${n === 1 ? "" : "s"}`}>
-                  <span className="cat-emoji">{DETAIL_CAT_EMOJI[c]}</span>
-                  <span className="cat-count">{n}</span>
-                </span>
-              ))}
+              {catEntries.map(([c, n]) => {
+                // Only the mcp chip has a server behind it, and only when every
+                // one of its calls went to the same one. The hue rides in as a
+                // custom property and styles.css composes the colour — the
+                // lightness belongs to the theme, not to JS (#330).
+                const one = c === "mcp" ? mcpChip : null;
+                const hue = one?.hue;
+                const calls = `${n} ${DETAIL_CAT_LABEL[c]} call${n === 1 ? "" : "s"}`;
+                return (
+                  <span
+                    className={`cat-chip cat-${c}${hue != null ? " mcp-hue" : ""}`}
+                    key={c}
+                    style={hue != null ? { "--mcp-hue": hue } as React.CSSProperties : undefined}
+                    title={one ? `${calls}, all to ${one.label}` : calls}
+                  >
+                    <span className="cat-emoji">{DETAIL_CAT_EMOJI[c]}</span>
+                    <span className="cat-count">{n}</span>
+                    {/* The words the tint cannot be trusted to carry alone. */}
+                    {one && <span className="cat-server">{one.label}</span>}
+                  </span>
+                );
+              })}
             </div>
           </div>
         </section>
