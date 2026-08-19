@@ -320,7 +320,15 @@ describe("no font-size is declared where a shared rule outranks it (#379, #380)"
     expect(decl(".ap-switch", "font-size")).toBeNull();
     expect(decl(".ap-switch", "flex-shrink")).toBe("0");
     expect(decl(".ap-add", "font-size")).toBeNull();
-    expect(decl(".ap-add", "color")).toBe("var(--accent)");
+    // The colour is gone rather than dead. It was pinned here as the surviving
+    // declaration when the font-size went, but it never rendered either:
+    // `.ap-add` is (0,1,0) against `button.btn { color: var(--text) }` at
+    // (0,1,1). The button is bare now and takes `.glyph-btn`'s `--muted`, which
+    // is what its two neighbours have always used — so what is pinned is that
+    // nothing here re-declares a colour and reopens that fight from the side the
+    // class can actually win.
+    expect(decl(".ap-add", "color")).toBeNull();
+    expect(decl(".ap-add", "margin-right")).toBe("6px");
     expect(decl(".up-close", "font-size")).toBeNull();
     expect(decl(".up-close", "color")).toBe("var(--muted)");
     expect(decl(".session-list .sl-close", "font-size")).toBeNull();

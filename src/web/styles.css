@@ -5337,18 +5337,22 @@ button.ap-auto-state:disabled { cursor: default; opacity: var(--dim-off); }
    own merits: 16px would make "+" the loudest glyph in a 288px panel, which is
    the argument `.ap-failure-x` makes against sizing a control like a control
    when it lives inside 10px text.
-   And it is the one control in an `ap-`, `up-`, `uh-` or `modal-` header that
-   did NOT go bare with the rest. Its two neighbours shut the panel and re-read
-   it — chrome, operating the box they sit in. This one opens a dialog and adds
-   an account to the machine, which is the panel's single affirmative action, and
-   the sheet already spends a colour saying so. A `.btn` box round the one
-   control that does something is the distinction `button.btn.primary` exists to
-   draw; taking it away would have left three identical glyphs, one of which is
-   not like the others. */
+   It was the one control in an `ap-`, `up-`, `uh-` or `modal-` header kept as a
+   `.btn` box when the rest went bare, on the argument that it is the panel's one
+   affirmative action and that the sheet already spent a colour saying so. Both
+   halves were false as shipped. `.ap-add { color: var(--accent) }` is (0,1,0)
+   against `button.btn { color: var(--text) }` at (0,1,1), so the accent never
+   painted; the same arithmetic killed the padding below it, which is why the
+   button measured 33.56 x 30 — `button.btn`'s 24px of padding round a 12px
+   glyph — while its bare neighbours measured 24 x 24 round a 16px one. The box
+   was the largest in the run and the ink the smallest, which is the opposite of
+   the intent, and its 30px `min-height` set the header's height where the other
+   two contribute 16px: the step `--ctl-h` exists to remove, in a panel header.
+   Bare now, and the same ink as its neighbours — one header, one control
+   language. What tells the affirmative action apart is distance, not a box. */
 .ap-add {
   line-height: 1;
-  padding: 2px 8px 4px;
-  color: var(--accent);
+  margin-right: 6px;
 }
 
 /* The row's own disclosure, and the only door to share, rename, move and

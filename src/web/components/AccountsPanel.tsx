@@ -453,7 +453,7 @@ export default function AccountsPanel({ onClose }: Props) {
               some readers are configured to ignore is not a name; this is the
               second and last of the two the #381 sweep found. The tooltip stays
               as the longer hover sentence. */}
-          <button type="button" className="btn ap-add" onClick={() => setAddOpen(true)}
+          <button type="button" className="glyph-btn ap-add" onClick={() => setAddOpen(true)}
             aria-label="Add an account"
             title="Sign in to another Claude account, or paste one shared from another deck">+</button>
           <button type="button" className="glyph-btn ap-refresh" onClick={() => load(true)}
