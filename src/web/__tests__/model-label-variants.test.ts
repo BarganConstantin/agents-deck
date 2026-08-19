@@ -22,16 +22,16 @@
 // eyeballed.
 //
 // Bare node, no DOM. `shortModel` is a pure string function, so it is called
-// directly; the search consequence is driven through `matchesQuery` in
-// search-match.ts rather than re-derived here, and the money consequence
-// through `ratesForModel` in pricing.ts, so what is pinned is the behaviour of
-// the modules that actually consume the label.
+// directly; the money consequence is driven through `ratesForModel` in
+// pricing.ts rather than re-derived here, so what is pinned is the behaviour of
+// the module that actually consumes the label. (A third consumer, the /-search,
+// was removed with the search field itself — see the commit that deleted
+// search-match.ts.)
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { shortModel } from "../model-label";
-import { matchesQuery } from "../search-match";
 import { ratesForModel } from "../pricing";
 import type { AgentNodeData } from "../types";
 
@@ -323,53 +323,6 @@ describe("the label still fits where it is drawn", () => {
       "GPT-5.1 Chat Latest",
       "GPT-5.3 Codex Spark",
     ]);
-  });
-});
-
-describe("what the search does with the label now", () => {
-  it("finds each model by the words its own chip prints, and only that model", () => {
-    // The #418 consequence, which is the half that makes this more than a label
-    // bug: search indexes the raw id AND this label, so while two models shared
-    // a label there was no string a user could read off a card that would
-    // select one of them — typing "GPT-5.4" returned four models, and the four
-    // cards it returned all said "GPT-5.4".
-    //
-    // The check is on the MOST SPECIFIC labels in each family, the ones no other
-    // label in the group extends. A bare "GPT-5.6" is a prefix of every variant
-    // beside it and matching all five is the honest answer to a query that
-    // genuinely is less specific; before this fix every label in a group was
-    // most specific and every one of them selected the whole group.
-    for (const [, ids] of WAS_COLLAPSED) {
-      const cards = ids.map((id, i) => agent(`s${i}`, id));
-      for (const id of ids) {
-        const label = shortModel(id);
-        const extended = ids.some(other => {
-          const l = shortModel(other);
-          return l.length > label.length && l.startsWith(label);
-        });
-        if (extended) continue;
-        const hits = cards.filter(c => matchesQuery(c, label)).map(c => c.model!);
-        expect(hits, label).toContain(id);
-        expect(new Set(hits.map(oneModel)).size, `${label} → ${hits.join(" | ")}`).toBe(1);
-      }
-    }
-  });
-
-  it("still finds each model by the raw id someone pasted from a config file", () => {
-    const nano = agent("n", "gpt-5.4-nano");
-    const pro = agent("p", "gpt-5.4-pro");
-    expect(matchesQuery(nano, "gpt-5.4-nano")).toBe(true);
-    expect(matchesQuery(pro, "gpt-5.4-nano")).toBe(false);
-    expect(matchesQuery(pro, "gpt-5.4-pro")).toBe(true);
-    // And the family query keeps finding the whole family, by id and by label.
-    expect(matchesQuery(nano, "gpt-5.4")).toBe(true);
-    expect(matchesQuery(pro, "GPT-5.4")).toBe(true);
-  });
-
-  it("finds a Codex variant by its qualifier alone, which is what a user types", () => {
-    expect(matchesQuery(agent("a", "gpt-5.6-luna"), "luna")).toBe(true);
-    expect(matchesQuery(agent("b", "gpt-5.6-terra"), "luna")).toBe(false);
-    expect(matchesQuery(agent("c", "gpt-5.1-codex-max"), "codex max")).toBe(true);
   });
 });
 

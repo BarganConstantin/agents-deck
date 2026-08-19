@@ -51,8 +51,6 @@ import { emptyScope } from "./scope";
 import { ASSUMED, readProviders, type Providers } from "./providers";
 import { captureHints, eventsCountTitle, finishSoundTitle, sessionsCountTitle } from "./provider-copy";
 import { pauseButton, statusPill } from "./status-pill";
-import { searchStatus, shouldDimUnmatched } from "./search-status";
-import { matchesQuery, SEARCH_PLACEHOLDER } from "./search-match";
 import { promptTime, shortAgo } from "./relative-time";
 import { fmtTokens } from "./token-format";
 // The detail panel used to spell both of these out inline — an elapsed clock a
@@ -493,7 +491,6 @@ function snapshotToFlow(
   availableWidth: number,
   availableHeight: number,
   pinned: Map<string, { x: number; y: number }>,
-  query: string,
   measured: Map<string, { width: number; height: number }>,
   prevSessionSize: Map<string, { w: number; h: number }>,
   onBubble: (sessions: string[]) => void,
@@ -521,27 +518,12 @@ function snapshotToFlow(
 ): { nodes: Node<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>[]; edges: Edge[] } {
   const nodes: Node<AgentNodeData & { now: number; onOpenContext?: (sessionId: string) => void }>[] = [];
   const edges: Edge[] = [];
-  // Visible agents only, so the size below counts the same population the
-  // toolbar's "3 of 11" does — an exited agent still in state must not be the
-  // reason the whole board dims.
-  const matchSet = new Set<string>();
-  if (query) {
-    for (const a of state.agents.values()) {
-      if (visibleIds.has(a.id) && matchesQuery(a, query)) matchSet.add(a.id);
-    }
-  }
-  // A query nothing matched dims nothing: see search-status.ts. The zero-result
-  // line on the canvas says it instead.
-  const dimming = shouldDimUnmatched(query, matchSet.size);
-
   for (const a of state.agents.values()) {
     if (!visibleIds.has(a.id)) continue;
-    const dim = dimming && !matchSet.has(a.id);
     const exiting = a.exitAt != null;
     // Spotlight: out-of-lineage agents fade hard when a selection is active.
     const spotlitOut = lineage != null && !lineage.has(a.id);
     const cls = [
-      dim ? "rf-dim" : "",
       exiting ? "rf-exiting" : "",
       spotlitOut ? "rf-spotlit-out" : "",
     ].filter(Boolean).join(" ") || undefined;
@@ -563,7 +545,6 @@ function snapshotToFlow(
     });
     if (a.parentId && visibleIds.has(a.parentId)) {
       const hue = sessionHue(a.sessionId);
-      const edgeDim = query && (!matchSet.has(a.id) && !matchSet.has(a.parentId));
       const fading = exiting;
       // Selected-edge emphasis: thicker stroke + animated for edges that
       // touch any selected agent (multi-select: any in the set counts).
@@ -572,7 +553,7 @@ function snapshotToFlow(
       const spotlitOutEdge = lineage != null && !lineage.has(a.id) && !lineage.has(a.parentId);
       const baseWidth = a.state === "active" ? 2 : 1.5;
       const selectedWidth = isSelectedEdge ? baseWidth + 1.5 : baseWidth;
-      const effectiveOpacity = edgeDim || fading
+      const effectiveOpacity = fading
         ? 0.2
         : spotlitOutEdge ? 0.12 : 1;
       // The class picks the tier, the tier picks the lightness. Which of the
@@ -589,7 +570,7 @@ function snapshotToFlow(
         id: `e:${a.parentId}->${a.id}`,
         source: a.parentId,
         target: a.id,
-        animated: (a.state === "active" || isSelectedEdge) && !edgeDim && !fading,
+        animated: (a.state === "active" || isSelectedEdge) && !fading,
         type: "smoothstep",
         // No edge label — the target node already displays the agent name.
         // The transition is named here and valued in the stylesheet. An inline
@@ -1224,7 +1205,6 @@ function Inner() {
    *  member's start position, captured at drag start. */
   const groupDragRef = useRef<{ start: { x: number; y: number }; members: Map<string, { x: number; y: number }> } | null>(null);
   const restoredViewport = useState(() => loadViewport())[0];
-  const [query, setQuery] = useState("");
   /** Categories the user has muted via the filter chips. Bursts whose
    *  category is in this set don't render. Reset only by toggling them
    *  back on (R / clear don't touch it — filters are user intent). */
@@ -1235,7 +1215,6 @@ function Inner() {
   // won't hand over blanks the deck instead of costing a preference.
   const [theme, setTheme] = useState<Theme>(storedTheme);
   const [everConnected, setEverConnected] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
   // On the FIRST run this is redundant and known to be: the bootstrap wrote the
   // same attribute from the same stored value before anything painted, and the
   // write-back stores the value it just read. It is left unguarded anyway,
@@ -1797,14 +1776,14 @@ function Inner() {
   const { nodes, edges } = useMemo(
     () => {
       const flow = snapshotToFlow(
-      stateRef.current, now, availableWidth, availableHeight, pinnedRef.current, query,
+      stateRef.current, now, availableWidth, availableHeight, pinnedRef.current,
       measuredRef.current, prevSessionSizeRef.current, onBubble, settled, dragging,
       positionsRef.current, provisionalRef.current, layoutSig, lastLayoutSigRef,
       selectedIds, spotlightSet, visibleAgentIds, openContext,
       );
       return flow;
     },
-    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, settled, dragging, query, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
+    [stateRef.current, stateRef.current.lastSeq, now, availableWidth, availableHeight, settled, dragging, layoutSig, selectedIds, spotlightSet, visibleAgentIds, openContext, dragTick],
   );
 
   // Invisible per-session drag-handle nodes. One per session, sized to the
@@ -1886,32 +1865,6 @@ function Inner() {
     });
   }, [groupNodes, nodes, dragMoveTick]);
 
-
-  // Set of agent ids that match the current /-search query, or null when
-  // there's no query (= no dimming). Passed to ToolBursts so its bubbles
-  // dim in lockstep with the agent nodes — consistent visual filter.
-  //
-  // Counted over the visible set only. It used to walk every agent in state,
-  // including ones that have exited and are no longer drawn, so its size was
-  // not a number that could be shown to anyone: the readout below would have
-  // claimed matches for agents that are not on the canvas, and the "nothing
-  // matched" branch would disagree with the dimming, which only ever touches
-  // what is drawn.
-  const matchedAgentIds = useMemo<Set<string> | null>(() => {
-    if (!query) return null;
-    const set = new Set<string>();
-    for (const a of stateRef.current.agents.values()) {
-      if (visibleAgentIds.has(a.id) && matchesQuery(a, query)) set.add(a.id);
-    }
-    return set;
-  }, [stateRef.current, stateRef.current.lastSeq, query, visibleAgentIds]);
-
-  // The one readout the search never had. `dim` is part of it because "dim
-  // everything" is a claim that something else is lit.
-  const search = useMemo(
-    () => searchStatus(query, matchedAgentIds?.size ?? 0, visibleAgentIds.size),
-    [query, matchedAgentIds, visibleAgentIds],
-  );
 
   // Which categories currently have at least one tool on the canvas — the
   // filter row only shows chips for active categories so users aren't
@@ -2176,7 +2129,6 @@ function Inner() {
       // / still reaches the search box while a card holds focus, which is the
       // whole point of being able to tab onto one.
       if (intent.nodeId == null && ownsKeystroke(target)) return;
-      if (e.key === "/") { e.preventDefault(); searchInputRef.current?.focus(); return; }
       if (e.key === " ") { e.preventDefault(); togglePause(); }
       if (e.key === "c" || e.key === "C") requestClear("shortcut");
       if (e.key === "r" || e.key === "R") handleRelayout();
@@ -2448,31 +2400,6 @@ function Inner() {
           );
         })()}
         <div className="actions">
-          <div className="search">
-            <span className="search-icon" aria-hidden>⌕</span>
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder={SEARCH_PLACEHOLDER}
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              spellCheck={false}
-              aria-label="Filter the graph"
-            />
-            {query
-              ? <button className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
-              : <kbd className="search-kbd" aria-hidden>/</kbd>}
-            {/* The filter's own state, the way the category chips and the
-                selection ribbon show theirs. aria-live so a screen reader hears
-                the result change without leaving the field. */}
-            {search.count && (
-              <span
-                className={`search-count${search.empty ? " none" : ""}`}
-                aria-live="polite"
-                title={`${search.count} agents on the canvas match “${query}”`}
-              >{search.count}</span>
-            )}
-          </div>
           {/* NOT a live region, and #372 is the issue that took the
               `role="status"` off it. Nothing in this strip is a status
               *message*: it is a permanently visible readout the user can read
@@ -2971,20 +2898,6 @@ function Inner() {
         onMouseDownCapture={releasePointerFocus}
       >
         {agentCount === 0 && <EmptyHero live={live} everConnected={everConnected} providers={providers} />}
-        {/* Said out loud rather than implied by a grey canvas: a query that
-            matches nothing is indistinguishable from every session having aged
-            out, and the dimming that was carrying the message on its own is
-            itself masked by the spawn animations (#316). */}
-        {search.empty && agentCount > 0 && (
-          <div className="search-empty" role="status">
-            <span className="search-empty-text">{search.message}</span>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => { setQuery(""); searchInputRef.current?.focus(); }}
-            >Clear search</button>
-          </div>
-        )}
         {presentCats.length > 1 && (
           /* role="group", not role="toolbar". A toolbar is a promise about
              keyboard behaviour — one tab stop for the whole set, arrow keys
@@ -3160,7 +3073,6 @@ function Inner() {
             positions={positionsRef.current}
             pinned={pinnedRef.current}
             measured={measuredRef.current}
-            dimUnmatched={search.dim ? matchedAgentIds : null}
             spotlight={spotlightSet}
             hiddenCategories={hiddenCats}
             now={now}
@@ -3355,7 +3267,6 @@ function EmptyDetail({ count, workspace }: { count: number; workspace: string | 
             out of any control to where the letters below work again. */}
         <div className="sc"><kbd>tab</kbd><span>reach the cards</span></div>
         <div className="sc"><kbd>enter</kbd><span>select the focused card</span></div>
-        <div className="sc"><kbd>/</kbd><span>focus search</span></div>
         <div className="sc"><kbd>space</kbd><span>pause / resume</span></div>
         <div className="sc"><kbd>J</kbd><span>next agent</span></div>
         <div className="sc"><kbd>K</kbd><span>previous agent</span></div>

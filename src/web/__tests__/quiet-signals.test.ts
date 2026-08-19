@@ -371,51 +371,32 @@ describe("4. the sparkline that prints its counts nowhere (#368.4)", () => {
   });
 });
 
-describe("5. the focus ring the search field never drew (#368.5)", () => {
+describe("5. one focus language, and nothing quietly opting out of it", () => {
+  // This began as the search field's own ring (#368.5): `outline: none` on a
+  // rule that also carried layout beat the global :focus-visible on both
+  // specificity and source order, so the field drew no ring at all. The field
+  // is gone, and what survives it is the general rule it produced — a sheet
+  // where nothing removes an outline without putting one back, and where every
+  // ring that exists is the same ring.
   it("restores an outline anywhere the sheet removes one", () => {
-    // `outline: none` on a rule that also carries layout beat the global
-    // :focus-visible on specificity AND source order. One rule does it; if a
-    // second ever does, it has to put the ring back too.
     const killers = [...css.matchAll(/^([^{}\n][^{}]*)\{([^}]*outline:\s*none[^}]*)\}/gm)]
       .map(([, selector]) => selector.trim());
-    expect(killers).toEqual([".search input"]);
+    // Nothing does today. The loop is what matters: the next rule that opts out
+    // has to opt back in for the keyboard.
+    expect(killers).toEqual([]);
     for (const sel of killers) {
       expect(declOf(`${sel}:focus-visible`, "outline"), sel).not.toBeNull();
     }
   });
 
-  it("draws it in the deck's one focus language, not a second one", () => {
-    expect(declOf(".search input:focus-visible", "outline")).toBe("2px solid var(--accent)");
-    expect(declOf(".search input:focus-visible", "outline-offset")).toBe("1px");
-    // The same declaration the other two text inputs already carried.
+  it("draws every ring in the deck's one focus language, not a second one", () => {
     for (const sel of [".ap-manage-input:focus-visible", ".aa-field input:focus-visible"]) {
       expect(declOf(sel, "outline"), sel).toBe("2px solid var(--accent)");
     }
-    // And every focus ring in the sheet is that ring — offset may vary, colour
-    // and weight may not.
+    // Offset may vary, colour and weight may not.
     for (const [, body] of css.matchAll(/:focus-visible[^{}]*\{([^}]*)\}/g)) {
       const outline = decl(body, "outline");
       if (outline && outline !== "none") expect(outline).toBe("2px solid var(--accent)");
     }
-  });
-
-  it("reads the ring at 3:1 against the field and the bar it floats on, both themes", () => {
-    // 1.4.11 covers a focus indicator. `/` focuses this field, so in light the
-    // border tint it used to rely on was 1.67:1 and the glow 1.37:1.
-    const beds: Record<Theme, string[]> = {
-      dark: ["--panel", "--bg-soft"],   // the topbar gradient's two stops
-      light: ["--panel", "--bg"],
-    };
-    for (const theme of themes) {
-      const ring = resolve(declOf(".search input:focus-visible", "outline")!.replace(/^2px solid /, ""), theme);
-      for (const bed of [...beds[theme], "--bg-soft"]) {
-        expect(contrastRatio(ring, tok(bed, theme)), `${theme} ring on ${bed}`)
-          .toBeGreaterThanOrEqual(NON_TEXT);
-      }
-    }
-  });
-
-  it("keeps `outline: none` for the pointer, so the ring stays a keyboard answer", () => {
-    expect(declOf(".search input", "outline")).toBe("none");
   });
 });

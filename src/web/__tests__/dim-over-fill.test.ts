@@ -8,11 +8,11 @@
 // `both` keeps them applying their last keyframe long after they have finished.
 // A filling animation outranks every author declaration under it. Both terminal
 // keyframes restated `opacity` and `filter`, and `opacity` and `filter` are the
-// only two properties `.tool-burst.dim`, `.react-flow__node.rf-dim` and
-// `.rf-spotlit-out` have. Every one of the three was dead: typing a search
-// matched, React added the class to the same element it was already on, and the
-// board did not change. Reduced motion swapped the entrance for `fadeIn`, also
-// with `both`, also ending on `opacity: 1`, so it was dead there too.
+// only two properties `.tool-burst.dim` and `.react-flow__node.rf-spotlit-out`
+// have. Both were dead: the class went on, and the board did not change. (A
+// third, `.rf-dim`, was the /-search's own and went with the field.) Reduced
+// motion swapped the entrance for `fadeIn`, also with `both`, also ending on
+// `opacity: 1`, so it was dead there too.
 //
 // The fix is not a higher-priority declaration — `!important` would beat the
 // animation and lose the ability to layer the dim with anything else. It is to
@@ -20,7 +20,7 @@
 // cascade: the animation interpolates towards the element's own value and, once
 // filling, simply is it, so a class added a second or an hour later lands.
 //
-// Hence the invariant swept below, which is wider than the three selectors: no
+// Hence the invariant swept below, which is wider than the two selectors: no
 // animation an element can still be running may name a property that a rule on
 // that same element needs to win. "Can still be running" is a fill mode that
 // includes forwards, or an infinite duration — an infinite animation never
@@ -28,7 +28,7 @@
 //
 // Exempt: `.fading` and `.rf-exiting`. Those animations are the state, not a
 // competitor to it — the element is being removed on a wall-clock timer and has
-// nothing left to say about search.
+// nothing left to say about the selection.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -178,18 +178,18 @@ for (const base of BASES) {
   }
 }
 
-describe("what a search dims outranks the entrance that was filling over it", () => {
+describe("what a selection dims outranks the entrance that was filling over it", () => {
   it("keeps every property the dim rules need out of the keyframes still applying", () => {
     expect([...masked]).toEqual([]);
   });
 
-  it("still finds the three selectors the report named, so a pass means something", () => {
+  it("still finds the two selectors that remain, so a pass means something", () => {
     const swept = BASES.flatMap(b => stateRules(b).map(s => s.selector));
-    for (const sel of [".tool-burst.dim", ".react-flow__node.rf-dim", ".react-flow__node.rf-spotlit-out"]) {
+    for (const sel of [".tool-burst.dim", ".react-flow__node.rf-spotlit-out"]) {
       expect(swept, sel).toContain(sel);
     }
     // Both dim with the same pair, and both are what the keyframes used to name.
-    for (const sel of swept.filter(s => /\.(dim|rf-dim|rf-spotlit-out)$/.test(s))) {
+    for (const sel of swept.filter(s => /\.(dim|rf-spotlit-out)$/.test(s))) {
       const props = stateRules(sel.startsWith(".tool-burst") ? ".tool-burst" : ".react-flow__node")
         .find(s => s.selector === sel)!.props;
       expect([...props].sort(), sel).toEqual(["filter", "opacity"]);

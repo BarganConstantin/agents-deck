@@ -201,8 +201,8 @@
    block also spells: `.ap-failure-x` and the two search-dim hovers rest at 0.6
    and lift to 1 under the pointer, which is a quiet affordance rather than a
    dead one; `.ap-dot`, `.ap-field::after`, `.ap-auto-now::after`, the accent
-   stripe and `.aa-mark-ring` are decoration with no state at all; `.rf-dim`,
-   `.rf-spotlit-out` and `.tool-burst.dim` are what a search does to what it did
+   stripe and `.aa-mark-ring` are decoration with no state at all;
+   `.rf-spotlit-out` and `.tool-burst.dim` are what a selection does to what it
    not match, which is a third idiom with its own ladder. Those are coincidentally
    equal numbers, not the same decision, and a token over them would be worse
    than the literals they are. */
@@ -334,7 +334,7 @@ html, body, #root {
   outline-offset: 2px;
   border-radius: 4px;
 }
-button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
+button:focus-visible { outline-offset: 1px; }
 
 .app {
   display: grid;
@@ -1210,46 +1210,8 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 
 /* ---------------- search ---------------- */
 
-.search {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  margin-right: 4px;
-}
-.search-icon {
-  position: absolute;
-  left: 8px;
-  color: var(--muted);
-  font-size: 14px;
-  pointer-events: none;
-}
 /* Keeps --bg-soft for the reason .selected-ribbon does: the placeholder is
    --muted, and the control fill would take it to 4.05:1 in dark. */
-.search input {
-  background: var(--bg-soft);
-  color: var(--text);
-  border: 1px solid var(--ctl-edge);
-  padding: 6px 26px 6px 24px;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 12px;
-  /* 220px until #418 gave the placeholder a fourth word. A placeholder that
-     overruns its field is CLIPPED, not ellipsised, so the sentence promising
-     what the search can find would have been cut mid-word — and the deck runs
-     on three different system UI fonts, which is where the last few pixels go:
-     the same string sets ~163px in SF (macOS) and ~170px in Segoe UI (Windows),
-     against the 168px of content box 220px left after the icon and the count.
-     240px clears the widest of the three with room, and costs the topbar 20px
-     it has. */
-  min-width: 240px;
-  outline: none;
-  transition: border-color 120ms, box-shadow 120ms;
-}
-.search input::placeholder { color: var(--muted); }
-.search input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-dim);
-}
 /* The ring every other input on this deck draws, which this field was the only
    one missing. `outline: none` above sits at (0,1,1) on a rule that also
    carries the field's layout, so it beat the global :focus-visible at (0,1,0)
@@ -1261,81 +1223,16 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    Declared exactly as .ap-manage-input:focus-visible and .aa-field
    input:focus-visible declare it — one focus language, not a second one — and
    `outline: none` stays for the pointer. */
-.search input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.search-clear {
-  position: absolute;
-  right: 4px;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 16px;
-  padding: 0 6px;
-  line-height: 1;
-  /* No transition at all before the press was added, so the hover colour
-     snapped too — the same pairing .ctx-modal-close and .uh-close got. */
-  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-.search-clear:hover { color: var(--text); }
-.search-clear:active { transform: scale(0.94); }
-.search-kbd {
-  position: absolute;
-  right: 6px;
-  pointer-events: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0 5px;
-  line-height: 16px;
-  height: 16px;
-}
-.search input:focus ~ .search-kbd { opacity: 0; }
 /* Result count. In flow after the field rather than absolutely placed like the
    × and the / hint, which share the input's right inset — this has to take
    width of its own or a two-digit total would sit under them. */
-.search-count {
-  margin-left: 6px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.search-count.none { color: var(--warn); }
 
 /* Zero matches. Sits with the category bar rather than over the middle of the
    canvas: the board behind it is still the user's, and the point is to name the
    filter, not to replace what it is filtering. */
-.search-empty {
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 7;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px 6px 14px;
-  background: rgba(20, 22, 27, 0.88);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.30);
-}
 :root[data-theme="light"] .search-empty {
   background: rgba(255, 255, 255, 0.88);
   box-shadow: 0 6px 18px rgba(15,23,42,0.10);
-}
-.search-empty-text {
-  font-size: 12px;
-  color: var(--text);
 }
 
 /* ---------------- connection banner ---------------- */
@@ -1529,8 +1426,6 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
 .ver-banner .ver-close:active { transform: scale(0.94); }
 
 /* dim nodes that don't match search */
-.react-flow__node.rf-dim { opacity: 0.22; filter: saturate(0.4); }
-.react-flow__node.rf-dim:hover { opacity: 0.6; }
 
 /* Spotlight: when an agent is selected, non-lineage nodes fade further.
    Reinforces "follow the chain you clicked" attention. Restores on hover. */
@@ -1864,7 +1759,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    node's whole life, and `both` keeps it filling its last keyframe forever —
    a filling animation outranks every author declaration under it. A `to` that
    restated the resting opacity and blur would therefore pin both properties,
-   and .rf-dim / .rf-spotlit-out fade with exactly those two: the search would
+   and .rf-spotlit-out fades with exactly those two: a selection would
    match, the class would land, and nothing on screen would change. Leaving a
    property out of the last keyframe hands it back to the cascade — the
    animation interpolates towards whatever the element's own rules say, so an
@@ -2802,7 +2697,7 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    when parseMcpName matched, which is exactly when categoryFor returned mcp. */
 .tool-burst.cat-mcp.mcp-hue { --cat-accent: hsl(var(--mcp-hue, 170) 65% var(--mcp-dot-l)); }
 
-/* Dimmed bursts — matches the rf-dim treatment on agent nodes when /-search
+/* Dimmed bursts — matches the spotlight treatment on agent nodes when a selection
    has an active query that doesn't include this bubble's agent. */
 .tool-burst.dim {
   opacity: 0.22;
@@ -3695,7 +3590,7 @@ button.tool.clickable:last-child { border-bottom: none; }
 }
 
 /* Also the reduced-motion entrance for every node and bubble on the canvas, and
-   there with `both` — so no `to { opacity: 1 }`, which would fill over .rf-dim,
+   there with `both` — so no `to { opacity: 1 }`, which would fill over .tool-burst.dim,
    .rf-spotlit-out and .tool-burst.dim and leave a reduced-motion user with a
    search that never dims anything. Fading to the cascade's own opacity is what
    every caller wanted anyway. */
