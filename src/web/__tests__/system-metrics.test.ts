@@ -15,6 +15,7 @@ import {
   parsePsProcesses,
   cpuFromDeltas,
   parseGetProcessJson,
+  psArgs,
   startSystemMetrics,
   stopSystemMetrics,
   swapFromMeminfo,
@@ -217,23 +218,29 @@ describe("the process list", () => {
     expect(parseGetProcessJson(json, 1024).map(r => r.cpuSec)).toEqual([null]);
   });
 
-  it("derives a percentage from two readings, normalised by core count", () => {
-    // 4 CPU-seconds burned over 2 wall-seconds on 2 cores = 100% of one machine.
+  it("derives a percentage against ONE core, so it runs past 100 like ps does", () => {
+    // 4 CPU-seconds burned over 2 wall-seconds = 200%, meaning two cores' worth.
+    // Dividing by core count here is what made the same workload read cores-times
+    // smaller on Windows than on Unix (#493): `ps -o pcpu` never divides either.
     const rows = [{ pid: 1, name: "a", cpuSec: 10, mem: 1 }];
-    const prev = new Map([[1, 6]]);
-    expect(cpuFromDeltas(rows, prev, 2000, 2)[0].cpu).toBe(100);
+    expect(cpuFromDeltas(rows, new Map([[1, 6]]), 2000)[0].cpu).toBe(200);
+  });
+
+  it("agrees with the Unix scale for a single busy core", () => {
+    const rows = [{ pid: 1, name: "a", cpuSec: 2, mem: 1 }];
+    expect(cpuFromDeltas(rows, new Map([[1, 1]]), 1000)[0].cpu).toBe(100);
   });
 
   it("reports null for a process that did not exist at the previous reading", () => {
     // Its whole lifetime is not a rate. Counting it would rank a compiler that
     // started a second ago as though it had been burning a core since boot.
     const rows = [{ pid: 9, name: "new", cpuSec: 30, mem: 1 }];
-    expect(cpuFromDeltas(rows, new Map(), 2000, 4)[0].cpu).toBeNull();
+    expect(cpuFromDeltas(rows, new Map(), 2000)[0].cpu).toBeNull();
   });
 
   it("discards a counter that went backwards, which means the pid was reused", () => {
     const rows = [{ pid: 1, name: "a", cpuSec: 2, mem: 1 }];
-    expect(cpuFromDeltas(rows, new Map([[1, 90]]), 2000, 4)[0].cpu).toBeNull();
+    expect(cpuFromDeltas(rows, new Map([[1, 90]]), 2000)[0].cpu).toBeNull();
   });
 
   it("falls back to memory order until a percentage exists to sort on", () => {
@@ -242,11 +249,41 @@ describe("the process list", () => {
       { pid: 2, name: "big", cpuSec: 5, mem: 9.0 },
     ];
     // No previous reading -> no cpu anywhere -> memory is the honest ordering.
-    expect(cpuFromDeltas(rows, null, 2000, 4).map(r => r.name)).toEqual(["big", "small"]);
+    expect(cpuFromDeltas(rows, null, 2000).map(r => r.name)).toEqual(["big", "small"]);
   });
 
   it("returns nothing rather than throwing on unparseable output", () => {
     expect(parseGetProcessJson("<html>error</html>", 1)).toEqual([]);
     expect(parseGetProcessJson(null, 1)).toEqual([]);
+  });
+});
+
+describe("the ps command, which is where the platforms actually differ", () => {
+  it("sorts by CPU on macOS with -r, the BSD spelling", () => {
+    expect(psArgs("darwin")).toEqual(["-Aceo", "pid,pcpu,pmem,comm", "-r"]);
+  });
+
+  it("does NOT pass -r on Linux, where it filters instead of sorting", () => {
+    // procps reads -r as "restrict the selection to only running processes" — a
+    // state filter. It listed whatever was in state R at the instant of the
+    // sample, in PID order, which is never the busiest: a process pinning a core
+    // while blocked on I/O sits in D. Nothing errored, so the table was
+    // plausible and wrong.
+    const args = psArgs("linux");
+    expect(args).not.toContain("-r");
+    expect(args).toContain("--sort=-pcpu");
+  });
+
+  it("asks both platforms for the same columns, so one parser reads both", () => {
+    const fmt = (a: string[]) => a.find(x => x.includes("pcpu") && x.includes("comm"));
+    expect(fmt(psArgs("darwin"))).toBe(fmt(psArgs("linux")));
+  });
+
+  it("never asks for the argument vector on either, so no prompt can leak in", () => {
+    for (const p of ["darwin", "linux"]) {
+      const args = psArgs(p);
+      expect(args.join(" ")).not.toMatch(/\bargs\b|\bcommand\b/);
+      expect(args.some(a => a.includes("comm"))).toBe(true);
+    }
   });
 });

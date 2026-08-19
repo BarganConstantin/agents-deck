@@ -333,10 +333,13 @@ export function parseGetProcessJson(json, totalMem) {
  * number invented from its whole lifetime, which would rank a freshly spawned
  * compiler as though it had been burning a core since boot.
  *
- * Normalised by core count so a Windows row means the same thing as the Unix
- * one: 100 is one machine, not one core.
+ * NOT divided by core count. `ps -o pcpu` reports a process against ONE core, so
+ * it runs past 100 on a multi-threaded process — 157 means "a core and a half",
+ * the same reading htop gives. Dividing the Windows figure normalised a scale
+ * that already matched and introduced the very mismatch it was meant to prevent,
+ * making the same workload read roughly cores-times smaller there.
  */
-export function cpuFromDeltas(rows, prev, elapsedMs, cores, limit = TOP_N) {
+export function cpuFromDeltas(rows, prev, elapsedMs, limit = TOP_N) {
   const secs = elapsedMs / 1000;
   const out = rows.map(r => {
     const before = prev instanceof Map ? prev.get(r.pid) : undefined;
@@ -345,7 +348,7 @@ export function cpuFromDeltas(rows, prev, elapsedMs, cores, limit = TOP_N) {
       const d = r.cpuSec - before;
       // A counter that went backwards means the pid was reused by a different
       // process; report nothing rather than a negative or a wild number.
-      if (d >= 0) cpu = Math.max(0, Math.min(100, Math.round((d / secs / Math.max(1, cores)) * 1000) / 10));
+      if (d >= 0) cpu = Math.max(0, Math.round((d / secs) * 1000) / 10);
     }
     return { pid: r.pid, cpu, mem: r.mem, name: r.name };
   });
@@ -374,13 +377,40 @@ export async function readProcesses(platform = process.platform) {
     if (!out) return [];
     const rows = parseGetProcessJson(out.trim(), os.totalmem());
     const now = Date.now();
-    const result = cpuFromDeltas(rows, prevProcCpu, now - prevProcAt, os.cpus().length);
+    const result = cpuFromDeltas(rows, prevProcCpu, now - prevProcAt);
     prevProcCpu = new Map(rows.filter(r => r.cpuSec != null).map(r => [r.pid, r.cpuSec]));
     prevProcAt = now;
     return result;
   }
-  const out = await run("ps", ["-Aceo", "pid,pcpu,pmem,comm", "-r"], 4_000);
+  const out = await run("ps", psArgs(platform), 4_000);
   return out ? parsePsProcesses(out) : [];
+}
+
+/**
+ * The `ps` argument vector for a Unix platform.
+ *
+ * Pure and exported because this is the half a fixture could never reach: a
+ * fixture proves the parser handles a given string, and cannot prove that this
+ * command produces that string on a platform the author is not sitting at. The
+ * command construction is where the platforms actually differ, and it was the
+ * part with no coverage.
+ *
+ * `-r` is not one flag with one meaning. On BSD it sorts by current CPU, which
+ * is what this table is. procps documents it as "restrict the selection to only
+ * running processes" — a state filter. A Linux deck was therefore listing
+ * whatever happened to be in state R at the instant of the sample, in PID order:
+ * on an idle machine one or two rows, and never the busiest ones, because a
+ * process pinning a core while blocked on I/O sits in D and one merely burning
+ * CPU over time is usually caught in S. Nothing errored and nothing was empty,
+ * so the table was plausible and wrong.
+ *
+ * The `-o` format is deliberately identical on both, so one parser reads both.
+ * Only the way each ps is asked to sort differs.
+ */
+export function psArgs(platform = process.platform) {
+  return platform === "darwin"
+    ? ["-Aceo", "pid,pcpu,pmem,comm", "-r"]
+    : ["-eo", "pid,pcpu,pmem,comm", "--sort=-pcpu"];
 }
 
 async function sampleMemory() {
