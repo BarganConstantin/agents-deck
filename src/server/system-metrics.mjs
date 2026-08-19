@@ -268,11 +268,53 @@ async function readSwap(platform = process.platform) {
 const TOP_N = 8;
 
 /**
- * Rows out of `ps -Aceo pid,pcpu,pmem,comm -r`.
+ * The `ps` argument list, which is not the same list on both Unixes.
  *
- * `-c` gives the executable name without its full path and without the argv
- * that would leak a prompt or a token into the UI; `-r` sorts by current CPU,
- * which is the ordering that answers "what is eating this machine right now".
+ * `-r` was shipped for both and means two different things. On BSD it sorts the
+ * output by current CPU, which is the ordering the panel is built around. On
+ * Linux procps it is *"restrict the selection to only running processes"* — a
+ * filter on state `R`, applied in PID order. A Linux deck therefore listed
+ * whatever happened to be on a CPU at the instant of the sample: usually one or
+ * two rows on an idle machine, and never the busiest ones, since a process
+ * pinning a core while blocked on I/O sits in `D` and one merely burning CPU
+ * over time is normally caught in `S`. Nothing errored and nothing was empty,
+ * which is why it survived two releases (#492).
+ *
+ * `--sort=-pcpu` is procps' own way to say what `-r` says on BSD. The column
+ * order is deliberately identical on both so one parser reads both, and `comm`
+ * stays last so a name containing a space survives intact.
+ *
+ * Keyed on linux rather than on darwin, because linux is the platform that is
+ * wrong: `-r` sorts on every BSD, while `--sort` is a procps long option that
+ * would make FreeBSD and OpenBSD exit non-zero. This way the only branch that
+ * changes is the one that was broken.
+ *
+ * Pure and exported for the same reason the parsers are: the command
+ * construction is the part that differs per platform, and a fixture cannot
+ * prove which flags were passed to produce it.
+ */
+export function psArgs(platform = process.platform) {
+  // procps: an explicit CPU sort, and `comm` in `-o` is what keeps argv — and
+  // any prompt or token on it — out of the panel. Linux `comm` comes from
+  // /proc/<pid>/comm and is capped at 15 characters.
+  if (platform === "linux") return ["-eo", "pid,pcpu,pmem,comm", "--sort=-pcpu"];
+  // BSD/macOS: `-c` prints the accounting name rather than the argument vector,
+  // and `-r` sorts by current CPU.
+  return ["-Aceo", "pid,pcpu,pmem,comm", "-r"];
+}
+
+/**
+ * Rows out of `ps -o pid,pcpu,pmem,comm`, in that column order on both Unixes —
+ * see psArgs for how each platform is asked for it.
+ *
+ * `pcpu` is a percentage of ONE core on both, so a multi-threaded process runs
+ * past 100 and that is information rather than an error: 157 is one and a half
+ * cores. cpuFromDeltas puts the Windows column on this same scale.
+ *
+ * There is no row limit in the query because neither `ps` has one and `run`
+ * deliberately never inherits a shell, so there is no `| head` to pipe into.
+ * The loop below stops at `limit` instead, which costs one parse of a string
+ * we have already paid to read.
  */
 export function parsePsProcesses(text, limit = TOP_N) {
   const lines = String(text ?? "").trim().split("\n");
@@ -333,10 +375,21 @@ export function parseGetProcessJson(json, totalMem) {
  * number invented from its whole lifetime, which would rank a freshly spawned
  * compiler as though it had been burning a core since boot.
  *
- * Normalised by core count so a Windows row means the same thing as the Unix
- * one: 100 is one machine, not one core.
+ * Per core, NOT per machine, because that is what the column beside it means:
+ * `ps -o pcpu` is a percentage of one core on both Unixes and is reported
+ * unmodified, so a row reading 157 there is a process using one and a half
+ * cores. This used to divide by the core count and clamp to 100 on the reasoning
+ * that Unix reported 0-100 — it does not, and never did, so the normalisation
+ * corrected a scale that already matched and introduced the mismatch it was
+ * written to prevent: on a 12-core machine six busy cores read 600 on macOS and
+ * 50 on Windows (#493). One CPU-second burned per wall-second is 100 here, on
+ * every platform.
+ *
+ * Core count is deliberately not a parameter any more. The aggregate meter's
+ * 0-100 convention (see cpuPercent) is a different question with a different
+ * answer, and the only way this drifts back is if a core count is in reach.
  */
-export function cpuFromDeltas(rows, prev, elapsedMs, cores, limit = TOP_N) {
+export function cpuFromDeltas(rows, prev, elapsedMs, limit = TOP_N) {
   const secs = elapsedMs / 1000;
   const out = rows.map(r => {
     const before = prev instanceof Map ? prev.get(r.pid) : undefined;
@@ -345,7 +398,7 @@ export function cpuFromDeltas(rows, prev, elapsedMs, cores, limit = TOP_N) {
       const d = r.cpuSec - before;
       // A counter that went backwards means the pid was reused by a different
       // process; report nothing rather than a negative or a wild number.
-      if (d >= 0) cpu = Math.max(0, Math.min(100, Math.round((d / secs / Math.max(1, cores)) * 1000) / 10));
+      if (d >= 0) cpu = Math.round((d / secs) * 1000) / 10;
     }
     return { pid: r.pid, cpu, mem: r.mem, name: r.name };
   });
@@ -374,12 +427,12 @@ export async function readProcesses(platform = process.platform) {
     if (!out) return [];
     const rows = parseGetProcessJson(out.trim(), os.totalmem());
     const now = Date.now();
-    const result = cpuFromDeltas(rows, prevProcCpu, now - prevProcAt, os.cpus().length);
+    const result = cpuFromDeltas(rows, prevProcCpu, now - prevProcAt);
     prevProcCpu = new Map(rows.filter(r => r.cpuSec != null).map(r => [r.pid, r.cpuSec]));
     prevProcAt = now;
     return result;
   }
-  const out = await run("ps", ["-Aceo", "pid,pcpu,pmem,comm", "-r"], 4_000);
+  const out = await run("ps", psArgs(platform), 4_000);
   return out ? parsePsProcesses(out) : [];
 }
 
