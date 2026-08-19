@@ -16,7 +16,7 @@ import { shortModel } from "./model-label";
 import ToolModal from "./components/ToolModal";
 import SessionClusters from "./components/SessionClusters";
 import SessionGroupNode from "./components/SessionGroupNode";
-import ToolBursts, { hashHue, mcpChipIdentity } from "./components/ToolBursts";
+import ToolBursts, { mcpChipIdentity } from "./components/ToolBursts";
 import SessionSummary from "./components/SessionSummary";
 import ContextModal from "./components/ContextModal";
 import SessionList from "./components/SessionList";
@@ -1897,37 +1897,6 @@ function Inner() {
     return () => window.clearTimeout(timer);
   }, [presentCats.length]);
 
-  // MCP server legend — unique servers observed across all tool calls, each
-  // with a count. Every dot is hued, because the row's job is to say how many
-  // DISTINCT servers this session has touched and identical dots cannot. That
-  // matches the bubble for a server the deck has no row for, which is hued the
-  // same way from the same hash; a server MCP_SERVERS does know is drawn on the
-  // canvas by its brand instead — 🐙 GitHub, base teal — and only its dot here
-  // is hashed, since a legend of eight identical teal dots would be a legend
-  // that has stopped counting.
-  const mcpServers = useMemo<Array<{ server: string; count: number; hue: number }>>(() => {
-    const counts = new Map<string, number>();
-    for (const a of stateRef.current.agents.values()) {
-      for (const t of a.tools) {
-        if (!t.name.startsWith("mcp__")) continue;
-        const rest = t.name.slice(5);
-        const idx = rest.indexOf("__");
-        const server = idx > 0 ? rest.slice(0, idx) : rest;
-        counts.set(server, (counts.get(server) ?? 0) + 1);
-      }
-    }
-    const out: Array<{ server: string; count: number; hue: number }> = [];
-    for (const [server, count] of counts) {
-      // ToolBursts' own hash, called rather than written out again. The djb2
-      // used to be spelled a second time here under a comment promising it was
-      // "the same hash ToolBursts uses" — a promise nothing checked, on a
-      // number whose whole job is to be identical on both surfaces.
-      out.push({ server, count, hue: hashHue(server) });
-    }
-    out.sort((a, b) => b.count - a.count);
-    return out;
-  }, [stateRef.current, stateRef.current.lastSeq]);
-
   const toggleCat = useCallback((c: DetailCategory) => {
     setHiddenCats(prev => {
       const next = new Set(prev);
@@ -2438,22 +2407,6 @@ function Inner() {
             {totalTokens.sum > 0 && (
               <span className="stat" title={`in:${totalTokens.inT.toLocaleString()}  out:${totalTokens.outT.toLocaleString()}  cache-r:${totalTokens.cacheR.toLocaleString()}  cache-c:${totalTokens.cacheC.toLocaleString()}`}>
                 <span className="count">{fmtTokens(totalTokens.sum)}</span><span className="lbl">tokens</span>
-              </span>
-            )}
-            {mcpServers.length > 0 && (
-              <span
-                className="stat mcp-legend"
-                title={`MCP servers seen this session:\n${mcpServers.map(s => `  ${s.server}: ${s.count} call${s.count === 1 ? "" : "s"}`).join("\n")}`}
-              >
-                {mcpServers.slice(0, 6).map(s => (
-                  <span
-                    key={s.server}
-                    className="mcp-dot"
-                    style={{ "--mcp-hue": s.hue } as React.CSSProperties}
-                  />
-                ))}
-                {mcpServers.length > 6 && <span className="mcp-more">+{mcpServers.length - 6}</span>}
-                <span className="lbl">mcp</span>
               </span>
             )}
             {totalTokens.cost.total > 0 && (() => {

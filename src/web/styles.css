@@ -62,7 +62,7 @@
   --session-rim-l: 55%;        /* both alpha-carrying cluster rims — decoration */
   --session-edge-l: 72%;       /* live parent→child edge — a 2px stroke, 3:1 */
   --session-edge-idle-l: 55%;  /* settled edge — 1.5px, same floor */
-  --mcp-dot-l: 65%;            /* topbar legend dot + the unknown-server burst stripe */
+  --mcp-dot-l: 65%;            /* the unknown-server burst stripe + the MCP chip's edge */
   color-scheme: dark;
 }
 
@@ -667,8 +667,8 @@ button:focus-visible { outline-offset: 1px; }
    beside it. Expanding would shove every control to its right by ~30px on a
    pointer that was only passing through. The row has room it did not have when
    this was written — it carried five stats then, and the sessions, agents and
-   events counters have since been removed, leaving tokens, cost, the MCP dots
-   and the blocked-session button — but the rule is not about room: a readout
+   events counters and the MCP legend have since been removed, leaving tokens,
+   cost and the blocked-session button — but the rule is not about room: a readout
    that reflows its neighbours because a pointer crossed it is a moving target,
    and there is still no responsive collapse anywhere in this sheet to absorb
    the shove. */
@@ -706,7 +706,15 @@ button:focus-visible { outline-offset: 1px; }
    meter is the first readout in the row, and a divider before it would hang off
    the status pill with nothing to its left. The pill leads the row and the run
    opens on its first readout — the same shape the row had when `sessions` was
-   the element with nothing drawn to its left. */
+   the element with nothing drawn to its left.
+   This pair and `.stat + .stat` are the whole run, and between them they survive
+   any readout leaving the MIDDLE of it: both are keyed on the class of the
+   element that DRAWS, so a `.stat` removed from inside the run just hands its
+   line to whatever closes up behind it. Only an element the selectors name as
+   the LEFT-hand side — the meter — can make one of them unmatchable, which is
+   what happened when the counters went and is why the rule moved then and did
+   not have to move when the MCP legend followed. topbar-divider-run.test.ts
+   walks every row the strip can render and counts the lines. */
 .topbar .status .sysmeter-wrap + .stat::before,
 .topbar .status .sysmeter + .stat::before {
   content: "";
@@ -1021,33 +1029,6 @@ button:focus-visible { outline-offset: 1px; }
 .topbar .status .count {
   color: var(--text);
   font-variant-numeric: tabular-nums;
-}
-
-/* MCP server legend — small row of hue dots in the topbar showing
-   which servers have been called. Hover for per-server tool counts. */
-.topbar .status .mcp-legend {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  cursor: default;
-}
-.topbar .status .mcp-legend .mcp-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  /* 8px of pure hue with nothing but a tooltip to name it — the fill IS the
-     identity here, which is why it gets the graphics floor rather than the
-     decoration treatment the cluster rims get. --mcp-hue comes from App. */
-  background: hsl(var(--mcp-hue, 200) 65% var(--mcp-dot-l));
-  border: 1px solid rgba(0,0,0,0.35);
-  box-shadow: 0 0 4px rgba(0,0,0,0.25);
-}
-.topbar .status .mcp-legend .mcp-more {
-  font-size: 9px;
-  color: var(--muted);
-  margin-left: 1px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* How many sessions are blocked on you (#337) — the only number in this bar
