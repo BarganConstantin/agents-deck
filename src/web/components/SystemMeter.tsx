@@ -303,7 +303,7 @@ function SystemPanel({ sys, usageOpen, onClose }: { sys: Snapshot; usageOpen: bo
       <div className="sd-head">
         <span className="sd-title">This machine</span>
         <span className="sd-sub">up {uptime(uptimeSec)} · {cores} cores</span>
-        <button type="button" className="sd-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
+        <button type="button" className="glyph-btn sd-close" onClick={onClose} aria-label="Close (Esc)" title="Close (Esc)">×</button>
       </div>
 
       {perCore && perCore.length > 0 && (
