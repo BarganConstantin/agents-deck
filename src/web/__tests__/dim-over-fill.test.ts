@@ -8,7 +8,7 @@
 // `both` keeps them applying their last keyframe long after they have finished.
 // A filling animation outranks every author declaration under it. Both terminal
 // keyframes restated `opacity` and `filter`, and `opacity` and `filter` are the
-// only two properties `.tool-burst.dim`, `.react-flow__node.rf-dim` and
+// only two properties `.tool-burst.dim` and
 // `.rf-spotlit-out` have. Every one of the three was dead: typing a search
 // matched, React added the class to the same element it was already on, and the
 // board did not change. Reduced motion swapped the entrance for `fadeIn`, also
@@ -185,11 +185,11 @@ describe("what a search dims outranks the entrance that was filling over it", ()
 
   it("still finds the three selectors the report named, so a pass means something", () => {
     const swept = BASES.flatMap(b => stateRules(b).map(s => s.selector));
-    for (const sel of [".tool-burst.dim", ".react-flow__node.rf-dim", ".react-flow__node.rf-spotlit-out"]) {
+    for (const sel of [".tool-burst.dim", ".react-flow__node.rf-spotlit-out"]) {
       expect(swept, sel).toContain(sel);
     }
     // Both dim with the same pair, and both are what the keyframes used to name.
-    for (const sel of swept.filter(s => /\.(dim|rf-dim|rf-spotlit-out)$/.test(s))) {
+    for (const sel of swept.filter(s => /\.(dim|rf-spotlit-out)$/.test(s))) {
       const props = stateRules(sel.startsWith(".tool-burst") ? ".tool-burst" : ".react-flow__node")
         .find(s => s.selector === sel)!.props;
       expect([...props].sort(), sel).toEqual(["filter", "opacity"]);

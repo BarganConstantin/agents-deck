@@ -21,7 +21,7 @@
 // The label is load-bearing past the chip it was written for, which is why this
 // is a fix to the function and not a `title` attribute over it:
 //
-//   * search-match.ts indexes the model TWICE, on the raw id and on this label,
+//   * the model used to be indexed TWICE, on the raw id and on this label,
 //     because neither string contains the other (#418). Two models sharing a
 //     label means a query for the words the user just read off a card returns
 //     both of them, on a canvas where nothing explains the second hit.
@@ -31,7 +31,7 @@
 //     one name over two different figures is what was.
 //
 // WHY THIS IS ITS OWN MODULE. `shortModel` lived in AgentNode.tsx, and #418 left
-// a note about it: search-match.ts is a pure rule with no DOM that was importing
+// a note about it: the match rule was pure, with no DOM, and was importing
 // a `.tsx` component — dragging React, reactflow and ContextModal behind it —
 // to reach one string function, and the note said the import should follow the
 // helper if it were ever extracted. It is extracted now because this fix had to

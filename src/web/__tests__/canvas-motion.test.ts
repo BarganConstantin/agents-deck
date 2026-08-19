@@ -278,7 +278,6 @@ const PRESSES: Press[] = [
   [".uh-close:active", "0.94", "transform"],
   [".uh-range-btn:active", "0.97", "transform"],
   [".uh-bar-col:active", "0.97", "transform"],
-  [".search-clear:active", "0.94", "transform"],
   [".session-list .sl-row:active", "0.97", "transform"],
   ["button.tool.clickable:active", "0.97", "transform"],
   [".selected-ribbon .selected-close:active", "0.94", "transform"],

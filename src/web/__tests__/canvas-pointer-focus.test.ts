@@ -184,7 +184,7 @@ describe("the ring #381 put there is exactly what it was (#434)", () => {
     const removers = [...bareCss.matchAll(/^([^{}\n][^{}]*)\{([^}]*)\}/gm)]
       .filter(([, , body]) => /outline\s*:\s*(none|0)\b/.test(body))
       .map(([, selector]) => selector.trim());
-    expect(removers).toEqual([".search input"]);
+    expect(removers).toEqual([]);
     expect(bareCss).not.toMatch(/:focus\s*:not\(\s*:focus-visible\s*\)/);
   });
 

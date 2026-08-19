@@ -745,7 +745,6 @@ interface ToolBurstsProps {
   measured: Map<string, { width: number; height: number }>;
   /** When set, bursts whose agent isn't in this set get dimmed (matches the
    *  /-search behaviour applied to nodes). null = no filter. */
-  dimUnmatched?: Set<string> | null;
   /** Spotlight: when an agent is selected, this set contains its lineage
    *  (ancestors + descendants). Bursts outside the lineage fade hard.
    *  null = no selection, full brightness everywhere. */
@@ -758,7 +757,7 @@ interface ToolBurstsProps {
   onOpenTool?: (toolId: string) => void;
 }
 
-export default function ToolBursts({ agents, visibleAgentIds, positions, pinned, measured, dimUnmatched, spotlight, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
+export default function ToolBursts({ agents, visibleAgentIds, positions, pinned, measured, spotlight, hiddenCategories, now, onOpenTool }: ToolBurstsProps) {
   // Deliberately NOT subscribed to the viewport. useViewport() fires on every
   // frame of a pan/zoom gesture, and this walk of the agents map — regex
   // parsing every tool input, allocating a fresh Burst per bubble — is pure
@@ -776,7 +775,6 @@ export default function ToolBursts({ agents, visibleAgentIds, positions, pinned,
   return (
     <BurstLayer
       bursts={bursts}
-      dimUnmatched={dimUnmatched}
       spotlight={spotlight}
       onOpenTool={onOpenTool}
     />
@@ -785,7 +783,6 @@ export default function ToolBursts({ agents, visibleAgentIds, positions, pinned,
 
 interface BurstLayerProps {
   bursts: Burst[];
-  dimUnmatched?: Set<string> | null;
   spotlight?: Set<string> | null;
   onOpenTool?: (toolId: string) => void;
 }
@@ -794,7 +791,7 @@ interface BurstLayerProps {
  *  coordinates, and every bubble/connector is drawn in screen space. Keeping
  *  the useViewport() subscription here — and only here — means a pan/zoom
  *  frame re-renders this and nothing above it. */
-function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerProps) {
+function BurstLayer({ bursts, spotlight, onOpenTool }: BurstLayerProps) {
   const { x, y, zoom } = useViewport();
 
   return (
@@ -809,9 +806,8 @@ function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerP
           const tx = (b.worldX + 6) * zoom + x;
           const ty = (b.worldY + BUBBLE_HALF_H) * zoom + y;
           const cx = sx + (tx - sx) * 0.55;
-          const isDim = dimUnmatched != null && !dimUnmatched.has(b.agentId);
           const isSpotOut = spotlight != null && !spotlight.has(b.agentId);
-          const opacity = b.fade * (isDim || isSpotOut ? 0.14 : 1);
+          const opacity = b.fade * (isSpotOut ? 0.14 : 1);
           return (
             <path
               key={`l:${b.id}`}
@@ -845,9 +841,8 @@ function BurstLayer({ bursts, dimUnmatched, spotlight, onOpenTool }: BurstLayerP
         const innerStyle: React.CSSProperties & Record<string, string | number> = b.mcpHue != null
           ? { "--mcp-hue": b.mcpHue }
           : {};
-        const isDimmed = dimUnmatched != null && !dimUnmatched.has(b.agentId);
         const isSpotOut = spotlight != null && !spotlight.has(b.agentId);
-        const dimClass = isDimmed || isSpotOut ? " dim" : "";
+        const dimClass = isSpotOut ? " dim" : "";
         return (
           <div key={b.id} className="tool-burst-wrap" style={wrapStyle}>
             {/* Decoration, and now honest about it.

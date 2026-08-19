@@ -386,7 +386,6 @@ const CONTROLS: Control[] = [
   { at: 'button.btn.icon-btn[aria-expanded="true"]', beds: [...TOPBAR, "--panel"] },
   { at: "button.btn.warn", fillFrom: "button.btn", states: ["button.btn.warn:hover"], beds: [...TOPBAR, "--panel"] },
   { at: "button.btn.danger", fillFrom: "button.btn", states: ["button.btn.danger:hover"], beds: ["--panel"] },
-  { at: ".search input", states: [".search input:focus"], beds: TOPBAR },
   { at: ".topbar .waiting-stat", states: [".topbar .waiting-stat:hover"], beds: TOPBAR },
   // The skip link (#381). It is only ever on screen while it holds focus, and
   // it is drawn over the topbar it skips past — so the beds are the bar's two
@@ -738,7 +737,7 @@ describe("the control surface, promoted (#332)", () => {
     }
     const darkFill = over(resolve("var(--ctl-fill)", "dark"), parseColor(TOK.dark["--panel"]));
     expect(contrastRatio(parseColor(TOK.dark["--muted"]), darkFill)).toBeLessThan(BODY);
-    for (const sel of [".selected-ribbon", ".search input", ".aa-field input", ".session-list .sl-row:hover"]) {
+    for (const sel of [".selected-ribbon", ".aa-field input", ".session-list .sl-row:hover"]) {
       expect(decl(sel, "background"), sel).toBe("var(--bg-soft)");
     }
   });

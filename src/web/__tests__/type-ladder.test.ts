@@ -395,7 +395,7 @@ describe("one token per dimming decision, and two decisions (#379 §2)", () => {
     // quiet affordance rather than a dead control; the search dim has its own
     // ladder; the rest is decoration with no state at all. Equal numbers, three
     // different decisions — a token over them would be worse than the literals.
-    for (const sel of [".ap-failure-x", ".react-flow__node.rf-dim:hover", ".tool-burst.dim:hover"]) {
+    for (const sel of [".ap-failure-x", ".tool-burst.dim:hover"]) {
       expect(decl(sel, "opacity"), sel).toBe("0.6");
     }
     expect(decl(".ap-dot", "opacity")).toBe("0.55");
