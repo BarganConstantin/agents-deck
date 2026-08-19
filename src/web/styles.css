@@ -668,12 +668,36 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
    pointer that was only passing through, and this strip has no room to give:
    it already carries five stats, the MCP dots and the blocked-session button
    with no responsive collapse anywhere in the sheet. */
+.topbar .status .sysmeter-wrap { position: relative; display: inline-flex; align-items: center; }
 .topbar .status .sysmeter {
   display: inline-flex;
   align-items: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  /* Padding gives the pointer a target worth aiming at — the graphic itself is
+     36x14, which is under any sane hit-area floor — and the negative margin
+     hands the space back so the strip's rhythm is unchanged. */
+  padding: 5px 7px;
+  margin: -5px -7px;
+  border-radius: 6px;
+  /* The press eases back rather than snapping — the convention every other
+     pressable control in this sheet follows (#355). */
+  transition: background 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
+/* Two bars and a number look like a readout, so nothing about the resting state
+   says "press me". The fill on hover is what the other icon controls in this bar
+   already do, and holding it while the panel is up keeps the panel visibly
+   attached to the thing that opened it. */
+.topbar .status .sysmeter:hover,
+.topbar .status .sysmeter[aria-expanded="true"] { background: var(--line); }
 /* Same separator the stats draw between themselves — this sits in that run and
    should not look bolted onto the end of it. */
+.topbar .status .stat + .sysmeter-wrap::before,
 .topbar .status .stat + .sysmeter::before {
   content: "";
   display: inline-block;
@@ -688,8 +712,13 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   position: relative;
   width: 36px;
   height: 14px;
-  cursor: default;
 }
+/* Only the idle skeleton is inert. Once the meter has a reading it is a button,
+   and `cursor: default` here — left over from when this was a <span> — was
+   overriding the pointer across the whole 36x14 graphic, leaving it on the
+   padding ring alone. Aiming at the number, the one part you want to press, got
+   an arrow. */
+.sysmeter.idle .sm-box { cursor: default; }
 .sysmeter .sm-graphic,
 .sysmeter .sm-read {
   position: absolute;
@@ -774,6 +803,166 @@ button:focus-visible, .search input:focus-visible { outline-offset: 1px; }
   .sysmeter .sm-ram-fill {
     transition: none;
   }
+}
+
+/* ---------------- machine detail ----------------
+   Docked in the right rail, in the same slot family as the usage panel, rather
+   than floating over the canvas. The two queue instead of overlapping: alone,
+   this takes the slot usage would have had; with usage open it steps one panel
+   further left. One rail, read right to left, nothing stacked on anything.
+
+   Everything inside is in bytes and cores rather than ratios — the percentage
+   is what the topbar already answered, and "how much of how much" is what you
+   opened this for. */
+.sysdetail {
+  position: fixed;
+  top: 60px;
+  right: var(--rail-r);  /* the usage panel's slot, when usage is not using it */
+  z-index: 20;
+  width: 280px;          /* the usage panel's width, so the rail reads as one system */
+  max-height: calc(100vh - 76px);
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  font-size: 11px;
+  color: var(--text);
+  text-align: left;
+  cursor: default;
+  animation: sdIn 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Where the right rail actually starts, which is NOT a constant: the usage
+   panel clears the detail panel at 368px, and drops to 8px when that panel is
+   closed (`.app:not(:has(.detail)) .usage-panel`, further down this sheet).
+   Pinning 368 here is what made this panel sit 360px away from usage whenever
+   the detail panel was shut — the rail had moved and only one of the two
+   panels knew. A variable so the pair cannot drift apart again. */
+.app { --rail-r: 368px; }
+.app:not(:has(.detail)) { --rail-r: 8px; }
+
+/* One panel further left: the rail's own offset, plus usage's width, plus the
+   gap. Eight was too tight to read as two things; twenty separates them
+   without opening a corridor. */
+.sysdetail.shifted { right: calc(var(--rail-r) + 280px + 20px); }
+@keyframes sdIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.sd-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.sd-title { font-size: 12px; font-weight: 600; }
+.sd-sub { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sd-close {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+  transition: color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.sd-close:hover { color: var(--text); }
+.sd-close:active { transform: scale(0.97); }
+.topbar .status .sysmeter:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .sd-close:active,
+  .topbar .status .sysmeter:active { transform: none; }
+}
+
+.sd-section + .sd-section { margin-top: 13px; }
+.sd-h {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* One column per core, so the shape of the load is visible — a saturated
+   machine and one hot single-threaded job read identically in the aggregate. */
+.sd-cores {
+  display: grid;
+  grid-template-columns: repeat(var(--n), 1fr);
+  gap: 2px;
+  height: 26px;
+}
+.sd-core {
+  display: flex;
+  align-items: flex-end;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.sysdetail .sd-core-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: height 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sd-row + .sd-row { margin-top: 9px; }
+.sd-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.sd-row-label { color: var(--muted); }
+.sd-row-val { font-variant-numeric: tabular-nums; color: var(--muted); }
+.sd-row-val b { color: var(--text); font-weight: 600; }
+.sd-track {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.sysdetail .sd-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms ease;
+}
+.sd-fill.warn { background: var(--warn); }
+
+.sd-load { display: flex; gap: 14px; }
+.sd-load-item { display: flex; flex-direction: column; gap: 1px; font-variant-numeric: tabular-nums; }
+.sd-load-item b { font-size: 13px; font-weight: 600; }
+.sd-load-item span { color: var(--muted); font-size: 10px; }
+.sd-load-item.over b { color: var(--warn); }
+
+.sd-note { margin-top: 5px; color: var(--muted); font-size: 10px; }
+
+.sysdetail .sd-procs { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.sysdetail .sd-procs th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--muted);
+  padding-bottom: 3px;
+}
+.sysdetail .sd-procs th:first-child, .sd-procs th:nth-child(2) { text-align: right; width: 34px; }
+.sysdetail .sd-procs td { padding: 2px 0; }
+.sd-num { text-align: right; padding-right: 8px !important; font-weight: 600; }
+.sd-dim { color: var(--muted); font-weight: 400; }
+.sysdetail .sd-proc-name {
+  padding-left: 2px;
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sysdetail { animation: none; }
+  .sysdetail .sd-core-fill,
+  .sysdetail .sd-fill { transition: none; }
 }
 .topbar .status .pill {
   display: inline-flex;

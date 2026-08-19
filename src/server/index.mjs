@@ -14,7 +14,7 @@ import { CODEX_HOME, CODEX_SESSIONS_DIR, STOP, walkRolloutDays } from "./codex-d
 import { PRODUCT } from "./brand.mjs";
 import { invokedName, renameNotice } from "./invoked-as.mjs";
 import { appendLogLine, codexCwdInWorkspace, writesCodexLog } from "./log-writer.mjs";
-import { startSystemMetrics, systemSnapshot } from "./system-metrics.mjs";
+import { readProcesses, startSystemMetrics, systemSnapshot } from "./system-metrics.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..", "..");
@@ -3054,6 +3054,11 @@ export async function startServer({ port = 4317, host = "127.0.0.1", persist = n
     // Machine state, not session state: sampled on the server's own timer and
     // deliberately kept out of the event stream. See src/server/system-metrics.mjs.
     if (req.method === "GET"  && url.pathname === "/api/system")       return send(res, 200, systemSnapshot());
+    // On demand only — the process list costs a subprocess on every platform,
+    // so it is fetched while the detail panel is open and never on the timer.
+    if (req.method === "GET"  && url.pathname === "/api/system/processes") {
+      return guard(readProcesses().then(procs => send(res, 200, { ok: true, procs })), res);
+    }
     if (req.method === "GET"  && url.pathname === "/api/codex-quota") return guard(handleCodexQuota(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/ccusage")     return guard(handleCcusage(req, res), res);
     if (req.method === "GET"  && url.pathname === "/api/claude-accounts") return guard(handleClaudeAccounts(req, res), res);

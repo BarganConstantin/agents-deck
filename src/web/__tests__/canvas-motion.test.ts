@@ -256,6 +256,10 @@ type Press = [selector: string, scale: string, prop: "transform" | "scale"];
  *  which ones had been got to. */
 const PRESSES: Press[] = [
   ["button.btn:active:not(:disabled)", "0.97", "transform"],
+  // The machine meter and its panel's close button — same convention, joined
+  // here rather than exempted, which is what #355 asked of the next control.
+  [".topbar .status .sysmeter:active", "0.97", "transform"],
+  [".sd-close:active", "0.97", "transform"],
   [".topbar .waiting-stat:active", "0.97", "transform"],
   [".topbar .brand button.v:active", "0.97", "transform"],
   [".ap-manage-btn:active:not(:disabled)", "0.97", "transform"],
