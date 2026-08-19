@@ -287,48 +287,97 @@ export function parsePsProcesses(text, limit = TOP_N) {
 }
 
 /**
- * Rows out of the Windows performance counter.
+ * Rows out of `Get-Process`.
  *
- * `Get-Process` is the obvious call and the wrong one: its `CPU` property is
- * total processor SECONDS consumed since the process started, so sorting by it
- * ranks whatever has been running longest rather than whatever is busy now — a
- * different question, and not the one the panel asks. The formatted performance
- * counter publishes `PercentProcessorTime` directly, already a rate, so one
- * query gives the same thing `ps -r` gives on Unix without a second sample.
+ * NOT `Win32_PerfFormattedData_PerfProc_Process`, which is what this used and
+ * which is not a class you may assume exists. It is published by perflib, and
+ * perflib is deregistered often enough to matter — a corporate image, a bad
+ * in-place upgrade, a half-run `lodctr`. On a machine reported from the field
+ * the class was simply absent (`Get-CimInstance: Invalid class`), and `typeperf`
+ * failed identically, which places the fault below WMI rather than in it. WMI
+ * was only mirroring what perflib had stopped publishing.
  *
- * `_Total` and `Idle` are pseudo-processes in that class and are dropped.
+ * `Get-Process` reads through NtQuerySystemInformation instead, so it depends on
+ * nothing that can be unregistered. The cost is that its `CPU` is total
+ * processor SECONDS since the process started, not a rate — so a percentage has
+ * to be derived from two readings, exactly the way the machine-wide figure is
+ * already derived from two tick samples. Reliability is worth one extra poll:
+ * an instant number from a class that may not exist is worth nothing at all.
  */
-export function parseWindowsProcesses(json, totalMem, limit = TOP_N) {
+export function parseGetProcessJson(json, totalMem) {
   let rows;
   try { rows = typeof json === "string" ? JSON.parse(json) : json; }
   catch { return []; }
   if (!rows) return [];
   if (!Array.isArray(rows)) rows = [rows];
-  const cores = os.cpus().length || 1;
   return rows
-    .filter(r => r && r.Name && r.Name !== "_Total" && r.Name !== "Idle")
+    .filter(r => r && r.ProcessName)
     .map(r => ({
-      pid: Number(r.IDProcess) || 0,
-      // The counter is per-core-summed, exactly like macOS's 0-to-N00 scale, so
-      // it is normalised here to the 0-100 the Unix branch already reports.
-      cpu: Math.round((Number(r.PercentProcessorTime) || 0) / cores * 10) / 10,
+      pid: Number(r.Id) || 0,
+      name: String(r.ProcessName),
+      // Null rather than 0 when the process denies the read: a system process
+      // we cannot query has an unknown CPU time, and calling that zero would
+      // rank it as idle.
+      cpuSec: typeof r.CPU === "number" ? r.CPU : null,
       mem: totalMem > 0
         ? Math.round((Number(r.WorkingSetPrivate) || 0) / totalMem * 1000) / 10
         : 0,
-      name: String(r.Name),
-    }))
-    .sort((a, b) => b.cpu - a.cpu)
-    .slice(0, limit);
+    }));
+}
+
+/**
+ * Turn two `Get-Process` readings into a percentage per process.
+ *
+ * `prev` maps pid to the cpuSec of the previous reading. A pid absent from it —
+ * a process that started since — has no delta and reports null rather than a
+ * number invented from its whole lifetime, which would rank a freshly spawned
+ * compiler as though it had been burning a core since boot.
+ *
+ * Normalised by core count so a Windows row means the same thing as the Unix
+ * one: 100 is one machine, not one core.
+ */
+export function cpuFromDeltas(rows, prev, elapsedMs, cores, limit = TOP_N) {
+  const secs = elapsedMs / 1000;
+  const out = rows.map(r => {
+    const before = prev instanceof Map ? prev.get(r.pid) : undefined;
+    let cpu = null;
+    if (r.cpuSec != null && before != null && secs > 0) {
+      const d = r.cpuSec - before;
+      // A counter that went backwards means the pid was reused by a different
+      // process; report nothing rather than a negative or a wild number.
+      if (d >= 0) cpu = Math.max(0, Math.min(100, Math.round((d / secs / Math.max(1, cores)) * 1000) / 10));
+    }
+    return { pid: r.pid, cpu, mem: r.mem, name: r.name };
+  });
+  // Until the second reading lands there is no CPU to sort on, so the list is
+  // ordered by memory — which is a real answer to "what is this machine doing",
+  // not a placeholder.
+  const haveCpu = out.some(r => r.cpu != null);
+  out.sort(haveCpu
+    ? (a, b) => (b.cpu ?? -1) - (a.cpu ?? -1)
+    : (a, b) => b.mem - a.mem);
+  return out.slice(0, limit);
 }
 
 /** The process list, on demand only — never on the ambient timer. */
+/** Previous Windows reading, so the next one can be a rate. Cleared with the
+ *  rest of the sampler state. */
+let prevProcCpu = null;
+let prevProcAt = 0;
+
 export async function readProcesses(platform = process.platform) {
   if (platform === "win32") {
     const out = await run("powershell.exe", [
       "-NoProfile", "-NonInteractive", "-Command",
-      "Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Select-Object Name,IDProcess,PercentProcessorTime,WorkingSetPrivate | ConvertTo-Json -Compress",
+      "Get-Process | Select-Object Id,ProcessName,CPU,@{n='WorkingSetPrivate';e={$_.PrivateMemorySize64}} | ConvertTo-Json -Compress",
     ], 6_000);
-    return out ? parseWindowsProcesses(out.trim(), os.totalmem()) : [];
+    if (!out) return [];
+    const rows = parseGetProcessJson(out.trim(), os.totalmem());
+    const now = Date.now();
+    const result = cpuFromDeltas(rows, prevProcCpu, now - prevProcAt, os.cpus().length);
+    prevProcCpu = new Map(rows.filter(r => r.cpuSec != null).map(r => [r.pid, r.cpuSec]));
+    prevProcAt = now;
+    return result;
   }
   const out = await run("ps", ["-Aceo", "pid,pcpu,pmem,comm", "-r"], 4_000);
   return out ? parsePsProcesses(out) : [];
@@ -386,6 +435,8 @@ export function stopSystemMetrics() {
   memory = null;
   cores = null;
   swap = null;
+  prevProcCpu = null;
+  prevProcAt = 0;
 }
 
 /**

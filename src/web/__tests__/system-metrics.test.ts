@@ -13,7 +13,8 @@ import {
   availableFromMeminfo,
   availableFromVmStat,
   parsePsProcesses,
-  parseWindowsProcesses,
+  cpuFromDeltas,
+  parseGetProcessJson,
   startSystemMetrics,
   stopSystemMetrics,
   swapFromMeminfo,
@@ -192,33 +193,60 @@ describe("the process list", () => {
     expect(parsePsProcesses(null)).toEqual([]);
   });
 
-  it("normalises the Windows counter to the same 0-100 scale as ps", () => {
-    // PercentProcessorTime is summed across cores, like macOS's 0-to-N00 scale.
-    // Reporting it raw would make a Windows row read many times larger than the
-    // identical load on Unix.
-    const cores = require("node:os").cpus().length;
+  it("reads Get-Process, not the perf counter class that may not exist", () => {
+    // Win32_PerfFormattedData_PerfProc_Process is published by perflib, and
+    // perflib is deregistered often enough to matter: on a machine reported
+    // from the field the class was absent outright, and `typeperf` failed the
+    // same way, which puts the fault below WMI rather than in it. Get-Process
+    // reads through NtQuerySystemInformation and depends on nothing that can be
+    // unregistered.
     const json = JSON.stringify([
-      { Name: "_Total", IDProcess: 0, PercentProcessorTime: 100 * cores, WorkingSetPrivate: 0 },
-      { Name: "Idle", IDProcess: 0, PercentProcessorTime: 90 * cores, WorkingSetPrivate: 0 },
-      { Name: "node", IDProcess: 42, PercentProcessorTime: 50 * cores, WorkingSetPrivate: 1024 ** 3 },
-      { Name: "chrome", IDProcess: 7, PercentProcessorTime: 10 * cores, WorkingSetPrivate: 512 * 1024 ** 2 },
+      { Id: 42, ProcessName: "node", CPU: 12.5, WorkingSetPrivate: 1024 ** 3 },
+      { Id: 7, ProcessName: "chrome", CPU: 3.25, WorkingSetPrivate: 512 * 1024 ** 2 },
     ]);
-    const rows = parseWindowsProcesses(json, 32 * 1024 ** 3);
-    // _Total and Idle are pseudo-processes in that class, not things running.
+    const rows = parseGetProcessJson(json, 32 * 1024 ** 3);
     expect(rows.map(r => r.name)).toEqual(["node", "chrome"]);
-    expect(rows[0].cpu).toBe(50);
+    expect(rows[0].cpuSec).toBe(12.5);
     expect(rows[0].mem).toBeCloseTo(3.1, 1);
   });
 
-  it("accepts the single object PowerShell emits when only one row matches", () => {
-    // ConvertTo-Json returns an object, not an array, for a one-element result —
-    // the classic Windows-only crash this codebase has hit before.
-    const one = '{"Name":"node","IDProcess":42,"PercentProcessorTime":0,"WorkingSetPrivate":0}';
-    expect(parseWindowsProcesses(one, 32 * 1024 ** 3).map(r => r.name)).toEqual(["node"]);
+  it("keeps an unreadable CPU null rather than calling it zero", () => {
+    // A system process we cannot query has an UNKNOWN cpu time. Zero would sort
+    // it as idle, which is a claim the reading does not support.
+    const json = '[{"Id":4,"ProcessName":"System","CPU":null,"WorkingSetPrivate":0}]';
+    expect(parseGetProcessJson(json, 1024).map(r => r.cpuSec)).toEqual([null]);
+  });
+
+  it("derives a percentage from two readings, normalised by core count", () => {
+    // 4 CPU-seconds burned over 2 wall-seconds on 2 cores = 100% of one machine.
+    const rows = [{ pid: 1, name: "a", cpuSec: 10, mem: 1 }];
+    const prev = new Map([[1, 6]]);
+    expect(cpuFromDeltas(rows, prev, 2000, 2)[0].cpu).toBe(100);
+  });
+
+  it("reports null for a process that did not exist at the previous reading", () => {
+    // Its whole lifetime is not a rate. Counting it would rank a compiler that
+    // started a second ago as though it had been burning a core since boot.
+    const rows = [{ pid: 9, name: "new", cpuSec: 30, mem: 1 }];
+    expect(cpuFromDeltas(rows, new Map(), 2000, 4)[0].cpu).toBeNull();
+  });
+
+  it("discards a counter that went backwards, which means the pid was reused", () => {
+    const rows = [{ pid: 1, name: "a", cpuSec: 2, mem: 1 }];
+    expect(cpuFromDeltas(rows, new Map([[1, 90]]), 2000, 4)[0].cpu).toBeNull();
+  });
+
+  it("falls back to memory order until a percentage exists to sort on", () => {
+    const rows = [
+      { pid: 1, name: "small", cpuSec: 5, mem: 0.5 },
+      { pid: 2, name: "big", cpuSec: 5, mem: 9.0 },
+    ];
+    // No previous reading -> no cpu anywhere -> memory is the honest ordering.
+    expect(cpuFromDeltas(rows, null, 2000, 4).map(r => r.name)).toEqual(["big", "small"]);
   });
 
   it("returns nothing rather than throwing on unparseable output", () => {
-    expect(parseWindowsProcesses("<html>error</html>", 1)).toEqual([]);
-    expect(parseWindowsProcesses(null, 1)).toEqual([]);
+    expect(parseGetProcessJson("<html>error</html>", 1)).toEqual([]);
+    expect(parseGetProcessJson(null, 1)).toEqual([]);
   });
 });
