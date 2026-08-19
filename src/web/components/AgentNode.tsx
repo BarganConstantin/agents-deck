@@ -15,6 +15,10 @@ import { fmtTokens } from "../token-format";
 // The card's elapsed clock, which used to be declared in this file and which
 // the detail panel wrote out again, one tier short. See duration.ts.
 import { elapsed } from "../duration";
+// Which naming record reaches the face of the card and which stays in the
+// tooltip. Shared with the cluster header rather than decided twice, because
+// the column cap in #521 is only sound while both surfaces show the same field.
+import { sessionDisplay } from "../session-display";
 import { ContextDonut } from "./ContextModal";
 
 /** Multi-line breakdown for the cost chip tooltip — shows the actual
@@ -92,6 +96,12 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
   const cardTooltip = data.sessionTitle
     ? (data.cwd ? `${data.cwd}\n${data.sessionTitle}` : data.sessionTitle)
     : data.cwd;
+  // Two strings for the name row, chosen once. `face` is the name when the
+  // session has one and the sentence when it does not, which is the common
+  // case rather than the fallback: 0.2% of the transcripts on this machine
+  // carry an agent-name and 4.1% carry an ai-title, and not one of them
+  // carries a name without a title. See session-display.ts for the sweep.
+  const naming = sessionDisplay(data.sessionName, data.sessionTitle);
 
   return (
     // --accent itself is built in styles.css from this hue: the token that
@@ -150,27 +160,36 @@ export default function AgentNode({ data, selected }: NodeProps<AgentNodeData & 
             : null}
       </div>
 
-      {/* The name Claude Code gives the session, on a row of its own for the
+      {/* What Claude Code calls this session, on a row of its own for the
           reason the row below restates: the header is full at 260px, and the
           meta row above would have to ellipsis the model chip away to fit a
           slug that runs to 29 characters.
 
-          Root only. The agent-name records name a SESSION; a subagent has none
-          of its own, and copying the parent name onto every child would print
-          the same string five times on one canvas.
+          The NAME when the session has one, the TITLE when it does not, and the
+          same row either way. #520 drew the name alone, which measured across
+          every transcript on this machine renders for 0.2% of them; the title
+          reaches 4.1%, and 25.3% of the transcripts big enough to be a real
+          session. There is no transcript here with a name and no title, so the
+          title is not the degraded mode — for 96% of the sessions with anything
+          to say at all it is the only record there is.
 
-          It does NOT replace the id. The name is rewritten as the session moves
-          and two sessions can hold the same one, so it is a description, not an
-          address — the short id in the cluster header stays the thing that
-          still means this node in five minutes. Mutable fact on the card,
-          stable one on the frame around it.
+          Root only. Both records name a SESSION; a subagent has neither, and
+          copying the parent naming onto every child would print the same string
+          five times on one canvas.
 
-          Claude only, and ABSENT rather than empty: a Codex rollout carries no
-          such record, so this row does not render there at all and a Codex card
-          keeps exactly the shape it has today. */}
-      {data.kind === "root" && data.sessionName && (
-        <div className="session-name" title={data.sessionTitle ?? data.sessionName}>
-          {data.sessionName}
+          It does NOT replace the id. Both records are rewritten as the session
+          moves and two sessions can hold the same one, so this is a
+          description, not an address — the short id in the cluster header stays
+          the thing that still means this node in five minutes. Mutable fact on
+          the card, stable one on the frame around it.
+
+          ABSENT rather than empty when there is neither: a Codex rollout
+          carries no such record and a young Claude session has not been given
+          one yet, so this row does not render for either and both keep exactly
+          the shape they have today. */}
+      {data.kind === "root" && naming.face && (
+        <div className="session-name" title={naming.tooltip}>
+          {naming.face}
         </div>
       )}
 

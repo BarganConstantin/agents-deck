@@ -164,17 +164,28 @@ export interface AgentNodeData {
    *  Claude only: a Codex rollout carries no such record, so the field stays
    *  undefined there and the card renders exactly what it always did.
    *
+   *  RARE. Present on 18 of the 7,743 transcripts under ~/.claude/projects on
+   *  this machine — 0.2%, and 1.1% of the ones over 50 KB. Nothing may be built
+   *  on it alone; see `sessionTitle` and session-display.ts.
+   *
    *  It is a description, not an address. It is rewritten as the session moves
    *  and two sessions may well share one, which is why it is shown NEXT TO the
    *  session id rather than in place of it. */
   sessionName?: string;
   /** The session's `ai-title` — a sentence, e.g. "Inspect repository to
-   *  understand current state". Tooltip only: it does not fit a 260px card.
+   *  understand current state".
+   *
+   *  The COMMON one, by a factor of seventeen: 318 of those 7,743 transcripts
+   *  carry it and 25.3% of the ones over 50 KB do, and not one transcript here
+   *  has a `sessionName` without also having this. So it is what the card and
+   *  the cluster header actually draw most of the time — `sessionName ?? this`,
+   *  decided in session-display.ts — rather than tooltip-only as #520 had it.
    *
    *  Often EQUAL to `sessionName` rather than a longer form of it. CC overwrites
    *  the title with the slug once a session has a name — measured at 353 of 685
-   *  records in one transcript here — so anything rendering both has to drop
-   *  this one when they match, or the tooltip just repeats the card. */
+   *  records in one transcript here, and across the whole sweep every one of the
+   *  18 named sessions ends up with the two byte-identical — so the reducer
+   *  drops this one when they match, or the tooltip just repeats the card. */
   sessionTitle?: string;
   prompts: PromptEntry[];
   toolCount: number;

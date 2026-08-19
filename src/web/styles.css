@@ -2390,7 +2390,9 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
   text-overflow: ellipsis;
 }
 
-/* The name Claude Code gave the session, under the meta row.
+/* What Claude Code calls the session, under the meta row — its agent-name when
+   it has one and its ai-title when it does not, which on the transcripts here is
+   the title 96% of the time.
 
    11px monospace is .sub's own type, not a new step — the type ladder holds at
    eleven sizes and a name does not earn a twelfth. Hierarchy comes from colour
@@ -2400,9 +2402,14 @@ button.btn.icon-btn[aria-expanded="true"]:hover {
    have put a 29-character slug in front of the model chip, and .sub ellipsises
    at the container, so the chip would have been the part that vanished.
 
-   Monospace matches the slug it renders: CC names sessions in kebab-case, and
-   the tabular feel of a mono face makes two similar names easier to tell apart
-   at a glance than a proportional one does. */
+   Monospace, and it stays monospace now the row usually holds a sentence rather
+   than a kebab slug. #520 justified the face by the slug it drew, which was
+   already only half true — five of the ten distinct agent-names on this machine
+   are sentences too. The reason that survives is the column: NAME_COLUMNS in
+   SessionClusters.tsx is 32 because 210px of text at this size is 31.7 monospace
+   columns, and that is what lets the cluster header promise never to show more
+   of the field than this row does. A proportional face makes that promise
+   unmeasurable, for a legibility gain a 240px card at 11px will not show. */
 .agent-node .session-name {
   margin-top: 4px;
   font-size: 11px;
