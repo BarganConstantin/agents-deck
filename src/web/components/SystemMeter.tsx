@@ -378,8 +378,11 @@ function SystemPanel({ sys, usageOpen, onClose }: { sys: Snapshot; usageOpen: bo
             <tbody>
               {procs.map(p => (
                 <tr key={p.pid}>
-                  {/* A process can exceed 100% on Unix: that is it using more
-                      than one core, which is information rather than an error.
+                  {/* Per core on every platform, so a process can exceed 100%:
+                      that is it using more than one core, which is information
+                      rather than an error. Windows used to divide this by the
+                      core count and cap it at 100, which made the same build
+                      read ~cores× smaller there (#493).
                       Null is the Windows first reading, where a percentage does
                       not exist yet because it takes two samples to make one —
                       a dash, never a zero, which would rank it as idle. */}

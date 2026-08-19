@@ -13,6 +13,7 @@ import {
   availableFromMeminfo,
   availableFromVmStat,
   parsePsProcesses,
+  psArgs,
   cpuFromDeltas,
   parseGetProcessJson,
   startSystemMetrics,
@@ -217,23 +218,26 @@ describe("the process list", () => {
     expect(parseGetProcessJson(json, 1024).map(r => r.cpuSec)).toEqual([null]);
   });
 
-  it("derives a percentage from two readings, normalised by core count", () => {
-    // 4 CPU-seconds burned over 2 wall-seconds on 2 cores = 100% of one machine.
+  it("derives a percentage from two readings, per core like the Unix column", () => {
+    // 4 CPU-seconds burned over 2 wall-seconds = two cores' worth = 200, the
+    // same reading `ps -o pcpu` gives for the same work. Not 100: that was the
+    // core-count division of #493, which made this the only column on the deck
+    // whose meaning depended on the machine it ran on.
     const rows = [{ pid: 1, name: "a", cpuSec: 10, mem: 1 }];
     const prev = new Map([[1, 6]]);
-    expect(cpuFromDeltas(rows, prev, 2000, 2)[0].cpu).toBe(100);
+    expect(cpuFromDeltas(rows, prev, 2000)[0].cpu).toBe(200);
   });
 
   it("reports null for a process that did not exist at the previous reading", () => {
     // Its whole lifetime is not a rate. Counting it would rank a compiler that
     // started a second ago as though it had been burning a core since boot.
     const rows = [{ pid: 9, name: "new", cpuSec: 30, mem: 1 }];
-    expect(cpuFromDeltas(rows, new Map(), 2000, 4)[0].cpu).toBeNull();
+    expect(cpuFromDeltas(rows, new Map(), 2000)[0].cpu).toBeNull();
   });
 
   it("discards a counter that went backwards, which means the pid was reused", () => {
     const rows = [{ pid: 1, name: "a", cpuSec: 2, mem: 1 }];
-    expect(cpuFromDeltas(rows, new Map([[1, 90]]), 2000, 4)[0].cpu).toBeNull();
+    expect(cpuFromDeltas(rows, new Map([[1, 90]]), 2000)[0].cpu).toBeNull();
   });
 
   it("falls back to memory order until a percentage exists to sort on", () => {
@@ -242,11 +246,128 @@ describe("the process list", () => {
       { pid: 2, name: "big", cpuSec: 5, mem: 9.0 },
     ];
     // No previous reading -> no cpu anywhere -> memory is the honest ordering.
-    expect(cpuFromDeltas(rows, null, 2000, 4).map(r => r.name)).toEqual(["big", "small"]);
+    expect(cpuFromDeltas(rows, null, 2000).map(r => r.name)).toEqual(["big", "small"]);
   });
 
   it("returns nothing rather than throwing on unparseable output", () => {
     expect(parseGetProcessJson("<html>error</html>", 1)).toEqual([]);
     expect(parseGetProcessJson(null, 1)).toEqual([]);
+  });
+});
+
+// The parsers had fixtures; the command that produces the fixture had none, and
+// that is the half that differs per platform. `ps -Aceo pid,pcpu,pmem,comm -r`
+// shipped for both Unixes in 1.36.0 and 1.36.1, and `-r` is a CPU sort on BSD
+// and a filter on state `R` in PID order on procps. The Linux table was never
+// empty and never errored — it was just not the busiest processes (#492).
+describe("the ps invocation, which is not the same on both Unixes", () => {
+  it("never passes -r on Linux, where it filters to state R instead of sorting", () => {
+    expect(psArgs("linux")).not.toContain("-r");
+  });
+
+  it("asks procps for the sort it does understand", () => {
+    // --sort=-pcpu is procps' own way to say what -r says on BSD.
+    expect(psArgs("linux")).toContain("--sort=-pcpu");
+  });
+
+  it("keeps macOS on the flags that were right there all along", () => {
+    // Unchanged from 1.36.0: -r sorts by CPU on BSD, -c prints the accounting
+    // name instead of the argument vector.
+    expect(psArgs("darwin")).toEqual(["-Aceo", "pid,pcpu,pmem,comm", "-r"]);
+  });
+
+  it("leaves the other BSDs on the BSD form rather than a GNU long option", () => {
+    // --sort is procps-only; handing it to FreeBSD's ps would exit non-zero and
+    // blank a table that works today. Linux is the platform that was wrong, so
+    // linux is the only branch that changes.
+    expect(psArgs("freebsd")).toEqual(psArgs("darwin"));
+    expect(psArgs("openbsd")).toEqual(psArgs("darwin"));
+  });
+
+  it("asks for the same four columns in the same order, so one parser reads both", () => {
+    // The parser takes pid, pcpu, pmem and then everything left on the line as
+    // the name. A different column order on Linux would mean silently reading
+    // the memory column as CPU.
+    for (const platform of ["darwin", "linux"]) {
+      const spec = psArgs(platform).find(a => a.includes("pid,"));
+      expect(spec).toBe("pid,pcpu,pmem,comm");
+    }
+  });
+
+  it("never asks for argv on either Unix, which is what keeps a prompt out of the UI", () => {
+    // `comm` is the executable name. `args`/`command` would put the full command
+    // line — every prompt and every token typed on one — into the panel.
+    for (const platform of ["darwin", "linux"]) {
+      const joined = psArgs(platform).join(" ");
+      expect(joined).not.toMatch(/\bargs\b|\bcommand\b/);
+    }
+  });
+
+  it("parses real procps output, truncated 15-character comm and all", () => {
+    // Shaped like `ps -eo pid,pcpu,pmem,comm --sort=-pcpu` on procps: a wider
+    // PID column, a COMMAND header rather than COMM, and names capped at 15
+    // characters by /proc/<pid>/comm. The rows are sorted by CPU descending and
+    // include sleeping processes — which is the whole difference from the state
+    // R filter that shipped.
+    const PROCPS = `    PID %CPU %MEM COMMAND
+   4821 98.7  3.1 node
+   1290 51.9  1.9 containerd-shim
+      1  0.1  0.4 systemd
+`;
+    const rows = parsePsProcesses(PROCPS);
+    expect(rows.map(r => r.pid)).toEqual([4821, 1290, 1]);
+    expect(rows.map(r => r.cpu)).toEqual([98.7, 51.9, 0.1]);
+    // Truncation shortens the name; it must not shift a column or drop a row.
+    expect(rows[1]).toEqual({ pid: 1290, cpu: 51.9, mem: 1.9, name: "containerd-shim" });
+  });
+});
+
+// Both platforms report a CPU column and they were on different scales, so the
+// same workload read roughly `cores`x smaller on Windows: on a 12-core machine
+// six busy cores were 600 on macOS and 50 on Windows (#493). The test that stops
+// this recurring pins the agreement rather than either number.
+describe("one CPU scale across platforms", () => {
+  /** One core, fully busy, expressed the way each platform reports it. */
+  const unixCpu = (pcpu: string) =>
+    parsePsProcesses(`  PID  %CPU %MEM COMM\n  42 ${pcpu}  1.0 busy\n`)[0].cpu;
+  const winCpu = (cpuSecBurned: number, wallMs: number) =>
+    cpuFromDeltas(
+      [{ pid: 42, name: "busy", cpuSec: 100 + cpuSecBurned, mem: 1.0 }],
+      new Map([[42, 100]]),
+      wallMs,
+    )[0].cpu;
+
+  it("reads the same for one fully busy core through either parser", () => {
+    // Unix: pcpu is a percentage of one core. Windows: 2 CPU-seconds burned over
+    // 2 wall-seconds is one core held for the whole interval. Same machine state,
+    // so the same number — whatever convention that number belongs to.
+    expect(winCpu(2, 2000)).toBe(unixCpu("100.0"));
+    expect(winCpu(2, 2000)).toBe(100);
+  });
+
+  it("agrees on the multi-core reading that a 0-100 column cannot express", () => {
+    // The `dotnet 157` row from the issue: one and a half cores. Windows used to
+    // print 13.1 for this on a 12-core machine.
+    expect(winCpu(3.14, 2000)).toBe(unixCpu("157.0"));
+    expect(winCpu(3.14, 2000)).toBe(157);
+  });
+
+  it("no longer caps Windows at 100, which hid every multi-threaded process", () => {
+    // Six cores busy for the interval. The old clamp made this 50 on a 12-core
+    // machine, in a column whose top value everywhere else is 1200.
+    expect(winCpu(12, 2000)).toBe(600);
+  });
+
+  it("does not vary with the core count, because core count is no longer in reach", () => {
+    // cpuFromDeltas takes no `cores` argument any more. The 4th positional is
+    // the row limit, so a stray core count cannot quietly divide anything again.
+    const rows = [
+      { pid: 1, name: "a", cpuSec: 4, mem: 1 },
+      { pid: 2, name: "b", cpuSec: 3, mem: 1 },
+    ];
+    const prev = new Map([[1, 2], [2, 2]]);
+    expect(cpuFromDeltas(rows, prev, 1000, 1)).toEqual([
+      { pid: 1, cpu: 200, mem: 1, name: "a" },
+    ]);
   });
 });
