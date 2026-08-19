@@ -22,6 +22,7 @@
 // is the question you open a panel to ask. Everything below the fold is in bytes
 // and cores, not ratios.
 import React, { useEffect, useRef, useState } from "react";
+import { readStored } from "../storage";
 
 /** Matches the server's CPU cadence, so the meter advances one bucket per poll
  *  rather than redrawing the same frame or skipping one. */
@@ -34,6 +35,30 @@ const BUCKETS = 20;
 
 const W = 36;
 const SPARK_H = 8;
+
+/** In the `agent-dag.*` namespace like every other key here; brand.ts explains
+ *  why the rename stops at the storage layer. */
+const OPEN_KEY = "agent-dag.systemPanelOpen";
+
+/**
+ * Whether the panel was open when this tab was last looked at.
+ *
+ * Read through storage.ts rather than window.localStorage directly: this runs
+ * inside a useState initialiser, and the property read throws outright on a
+ * browser that blocks site data, which would take the whole topbar with it.
+ *
+ * Defaults to CLOSED, unlike the usage panel's default. Usage is the panel you
+ * keep up; this one answers a question you asked once, and a machine readout
+ * that reopens itself on every refresh would be occupying the rail on behalf of
+ * a decision nobody made.
+ */
+function loadOpen(): boolean {
+  return readStored(OPEN_KEY) === "1";
+}
+function saveOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(OPEN_KEY, open ? "1" : "0"); } catch {}
+}
 
 interface Memory { total: number; available: number; usedPct: number }
 interface Swap { total: number; used: number }
@@ -144,7 +169,8 @@ function useProcesses(on: boolean): Proc[] | null {
 
 export default function SystemMeter({ usageOpen = false }: { usageOpen?: boolean }) {
   const sys = useSystem();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<boolean>(loadOpen);
+  useEffect(() => { saveOpen(open); }, [open]);
   const btnRef = useRef<HTMLButtonElement>(null);
 
   // Before the first reading the meter holds its slot and draws its two empty
